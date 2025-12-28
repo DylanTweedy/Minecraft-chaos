@@ -9,12 +9,10 @@ Wireless item transfer network for Minecraft Bedrock (Behavior Pack + Script API
    - Input Node filter controls which items can be pulled.
    - Output Node filter controls which items can be inserted.
    - Empty filter means "allow all".
-4. Punch or use a node to rebind to the nearest crystal if needed.
 5. Watch for a brief particle beam on bind and on successful transfers.
 
 ## Getting the blocks in-game
 Use the items to place blocks normally (recommended so the node records the attached face):
-- `/give @s chaos:chaos_crystal 1`
 - `/give @s chaos:chaos_input_node 1`
 - `/give @s chaos:chaos_output_node 1`
 
