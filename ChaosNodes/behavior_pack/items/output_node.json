@@ -9,9 +9,6 @@
       "minecraft:display_name": {
         "value": "tile.chaos:output_node.name"
       },
-      "minecraft:icon": {
-        "texture": "chaos_output_node"
-      },
       "minecraft:block": {
         "name": "chaos:output_node"
       }

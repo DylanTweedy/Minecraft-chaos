@@ -9,9 +9,6 @@
       "minecraft:display_name": {
         "value": "tile.chaos:input_node.name"
       },
-      "minecraft:icon": {
-        "texture": "chaos_input_node"
-      },
       "minecraft:block": {
         "name": "chaos:input_node"
       }
