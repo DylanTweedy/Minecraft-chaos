@@ -4,19 +4,27 @@
     "description": {
       "identifier": "chaos:output_node",
       "menu_category": {
-        "category": "construction",
-        "group": "itemGroup.name.construction"
+        "category": "items",
+        "group": "itemGroup.name.items"
       }
     },
     "components": {
       "minecraft:destroy_time": 2.0,
       "minecraft:explosion_resistance": 10.0,
+      "minecraft:collision_box": {
+        "origin": [-8, 0, -8],
+        "size": [16, 16, 16]
+      },
       "minecraft:geometry": "geometry.chaos_output_node",
       "minecraft:material_instances": {
         "*": {
           "texture": "chaos_output_node",
           "render_method": "opaque"
         }
+      },
+      "minecraft:selection_box": {
+        "origin": [-8, 0, -8],
+        "size": [16, 16, 16]
       }
     }
   }
