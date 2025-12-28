@@ -5,10 +5,10 @@
     "chaos_wand": {
       "textures": "textures/items/chaos_wand"
     },
-    "chaos_input_node": {
+    "input_node": {
       "textures": "textures/blocks/input_node_side"
     },
-    "chaos_output_node": {
+    "output_node": {
       "textures": "textures/blocks/output_node_side"
     }
   }

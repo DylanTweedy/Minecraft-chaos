@@ -1,0 +1,5 @@
+item.chaos:wand.name=Chaos Wand
+item.chaos:input_node.name=Chaos Input Node
+tile.chaos:input_node.name=Chaos Input Node
+item.chaos:output_node.name=Chaos Output Node
+tile.chaos:output_node.name=Chaos Output Node
