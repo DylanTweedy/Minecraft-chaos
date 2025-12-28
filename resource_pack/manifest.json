@@ -1,0 +1,17 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Chaos Logistics RP",
+    "description": "Phase 1: Chaos Logistics resource pack",
+    "uuid": "7a96f7d0-19b0-4a3e-86fb-0bb8e6f9f8ab",
+    "version": [0, 1, 0],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "35d3f8d2-44b8-4db0-9c5b-62f2f48c2f32",
+      "version": [0, 1, 0]
+    }
+  ]
+}

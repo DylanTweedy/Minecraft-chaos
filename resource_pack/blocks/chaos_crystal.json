@@ -1,0 +1,16 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:block": {
+    "description": {
+      "identifier": "chaos:chaos_crystal"
+    },
+    "components": {
+      "minecraft:material_instances": {
+        "*": {
+          "texture": "stone",
+          "render_method": "opaque"
+        }
+      }
+    }
+  }
+}

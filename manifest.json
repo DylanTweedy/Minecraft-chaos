@@ -1,0 +1,35 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Chaos Logistics BP",
+    "description": "Phase 1: Chaos Logistics wireless item network",
+    "uuid": "c1d9e8b4-88b4-4f8d-9f83-405d3a1f0a2b",
+    "version": [0, 1, 0],
+    "min_engine_version": [1, 20, 0]
+  },
+  "capabilities": ["experimental_custom_blocks"],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "1.8.0"
+    },
+    {
+      "uuid": "7a96f7d0-19b0-4a3e-86fb-0bb8e6f9f8ab",
+      "version": [0, 1, 0]
+    }
+  ],
+  "modules": [
+    {
+      "type": "data",
+      "uuid": "0c3d0528-9b61-4c14-a0e8-8f4d7e1f8b05",
+      "version": [0, 1, 0]
+    },
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "f3a2a3f6-2a62-4b9a-bce7-0c21f7a1ed65",
+      "version": [0, 1, 0],
+      "entry": "scripts/main.js"
+    }
+  ]
+}
