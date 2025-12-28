@@ -25,3 +25,12 @@ the wrong face unless you rebind or replace them by hand.
 - Only the Chaos Crystal runs per-tick logic.
 - The network uses bounded sampling per tick, so large networks transfer slower but stay performant.
 - No cross-dimension networks in Phase 1.
+- Ensure both the Behavior Pack and Resource Pack are enabled for the custom blocks and items to appear.
+- If your Bedrock version prompts for experimental features to allow custom blocks, enable them.
+
+## Faster iteration (dev workflow)
+For quicker iteration, put the folders directly in the development pack directories so you can edit and reload without re-importing:
+- Behavior Pack: `com.mojang/development_behavior_packs/ChaosLogisticsBP`
+- Resource Pack: `com.mojang/development_resource_packs/ChaosLogisticsRP`
+
+Then use the in-game **/reload** command to reload packs while the world is running.

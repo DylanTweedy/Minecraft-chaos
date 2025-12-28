@@ -7,6 +7,17 @@
     "version": [0, 1, 0],
     "min_engine_version": [1, 20, 0]
   },
+  "capabilities": ["experimental_custom_blocks"],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "1.8.0"
+    },
+    {
+      "uuid": "7a96f7d0-19b0-4a3e-86fb-0bb8e6f9f8ab",
+      "version": [0, 1, 0]
+    }
+  ],
   "modules": [
     {
       "type": "data",

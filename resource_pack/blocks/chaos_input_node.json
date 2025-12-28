@@ -1,0 +1,16 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:block": {
+    "description": {
+      "identifier": "chaos:chaos_input_node"
+    },
+    "components": {
+      "minecraft:material_instances": {
+        "*": {
+          "texture": "emerald_block",
+          "render_method": "opaque"
+        }
+      }
+    }
+  }
+}
