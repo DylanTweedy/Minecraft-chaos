@@ -6,6 +6,9 @@
       "category": "items"
     },
     "components": {
+      "minecraft:display_name": {
+        "value": "item.chaos:wand.name"
+      },
       "minecraft:icon": {
         "texture": "chaos_wand"
       },
