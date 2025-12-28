@@ -1,0 +1,18 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:item": {
+    "description": {
+      "identifier": "chaos:chaos_input_node",
+      "category": "items"
+    },
+    "components": {
+      "minecraft:icon": {
+        "texture": "chaos_input_node"
+      },
+      "minecraft:max_stack_size": 64,
+      "minecraft:block_placer": {
+        "block": "chaos:input_node"
+      }
+    }
+  }
+}
