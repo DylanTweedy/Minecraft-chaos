@@ -1,0 +1,17 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Chaos Nodes RP",
+    "description": "Resources for Chaos Nodes",
+    "uuid": "e86a4f93-a137-491a-be79-afaea999129f",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "235e404b-b62c-42e7-96ed-ebb79ed28e5b",
+      "version": [1, 0, 0]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+# Ignore generated resource and behavior packs
+resource_packs/
+behavior_packs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

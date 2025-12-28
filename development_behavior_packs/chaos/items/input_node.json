@@ -1,0 +1,17 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:item": {
+    "description": {
+      "identifier": "chaos:input_node",
+      "category": "items"
+    },
+    "components": {
+      "minecraft:display_name": {
+        "value": "tile.chaos:input_node.name"
+      },
+      "minecraft:block": {
+        "name": "chaos:input_node"
+      }
+    }
+  }
+}
