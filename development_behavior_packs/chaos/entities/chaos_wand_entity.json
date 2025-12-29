@@ -1,0 +1,25 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:entity": {
+    "description": {
+      "identifier": "chaos:wand_entity",
+      "is_spawnable": false,
+      "is_summonable": true,
+      "is_experimental": false,
+      "materials": ["entity_albedo"],
+      "textures": ["textures/items/chaos_wand"],
+      "render_controllers": ["controller.render.chaos_wand"]
+    },
+    "components": {
+      "minecraft:health": { "value": 1 },
+      "minecraft:collision_box": { "origin": [ -0.25, 0, -0.25 ], "size": [ 0.5, 0.5, 0.5 ] },
+      "minecraft:physics": { "has_gravity": false },
+      "minecraft:pushable": { "is_pushable": false },
+      "minecraft:render": {
+        "geometry": "geometry.chaos_wand",
+        "materials": ["entity_albedo"],
+        "textures": ["textures/items/chaos_wand"]
+      }
+    }
+  }
+}

@@ -13,8 +13,8 @@ Wireless item transfer network for Minecraft Bedrock (Behavior Pack + Script API
 
 ## Getting the blocks in-game
 Use the items to place blocks normally (recommended so the node records the attached face):
-- `/give @s chaos:chaos_input_node 1`
-- `/give @s chaos:chaos_output_node 1`
+- `/give @s chaos:input_node 1`
+- `/give @s chaos:output_node 1`
 
 You can also use `/setblock` with the same identifiers, but nodes placed that way may attach to
 the wrong face unless you rebind or replace them by hand.
