@@ -2,22 +2,33 @@
   "format_version": 2,
   "header": {
     "name": "Chaos Nodes BP",
-    "description": "Behaviors for Chaos Nodes",
+    "description": "Behaviors for Chaos Nodes (Script API)",
     "uuid": "963d04c0-3259-4681-b79f-5e2cd8df864a",
-    "version": [1, 0, 0],
-    "min_engine_version": [1, 20, 0]
+    "version": [1, 0, 1],
+    "min_engine_version": [1, 21, 0]
   },
   "modules": [
     {
       "type": "data",
       "uuid": "49bee388-646a-4631-ab63-2861f33e1648",
-      "version": [1, 0, 0]
+      "version": [1, 0, 1]
+    },
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "b8b52d8c-3c7b-4a0b-a7d4-1d6c4d63a3f2",
+      "version": [1, 0, 1],
+      "entry": "scripts/main.js"
     }
   ],
   "dependencies": [
     {
       "uuid": "e86a4f93-a137-491a-be79-afaea999129f",
-      "version": [1, 0, 0]
+      "version": [1, 0, 1]
+    },
+    {
+      "module_name": "@minecraft/server",
+      "version": "2.4.0"
     }
   ]
 }

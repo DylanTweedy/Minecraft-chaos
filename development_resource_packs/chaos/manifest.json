@@ -4,14 +4,20 @@
     "name": "Chaos Nodes RP",
     "description": "Resources for Chaos Nodes",
     "uuid": "e86a4f93-a137-491a-be79-afaea999129f",
-    "version": [1, 0, 0],
-    "min_engine_version": [1, 20, 0]
+    "version": [1, 0, 1],
+    "min_engine_version": [1, 21, 0]
   },
   "modules": [
     {
       "type": "resources",
       "uuid": "235e404b-b62c-42e7-96ed-ebb79ed28e5b",
-      "version": [1, 0, 0]
+      "version": [1, 0, 1]
+    }
+  ],
+  "dependencies": [
+    {
+      "uuid": "963d04c0-3259-4681-b79f-5e2cd8df864a",
+      "version": [1, 0, 1]
     }
   ]
 }
