@@ -1,17 +1,9 @@
 {
-  "format_version": "1.21.130",
+  "format_version": "1.19.30",
   "chaos:input_node": {
-    "textures": {
-      "up": "input_node_top",
-      "down": "input_node_bottom",
-      "side": "input_node_side"
-    }
+    "sound": "amethyst_block"
   },
   "chaos:output_node": {
-    "textures": {
-      "up": "output_node_top",
-      "down": "output_node_bottom",
-      "side": "output_node_side"
-    }
+    "sound": "amethyst_block"
   }
 }
