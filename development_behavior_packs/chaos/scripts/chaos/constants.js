@@ -1,16 +1,23 @@
-export const MOD = "chaos";
-export const LOG_TAG = "[Chaos]";
+// scripts/chaos/constants.js
 
-export const BLOCK_INPUT = "chaos:input_node";
-export const BLOCK_OUTPUT = "chaos:output_node";
-export const ITEM_WAND = "chaos:wand";
+export const MOD = "Chaos";
 
-// Dynamic property keys
-export const DP_PAIRS = "chaos:pairs_v1";
+// Pairing / pending
+export const PENDING_TIMEOUT_TICKS = 20 * 60; // 60s at 20 TPS
 
-// Pairing UX
-export const PENDING_TIMEOUT_TICKS = 20 * 60; // 60s
+// Dynamic Properties (chunked storage)
+export const DP_PAIRS_COUNT = "chaos:pairs_count";
+export const DP_PAIRS_CHUNK_PREFIX = "chaos:pairs_chunk_";
 
-// Transfer tuning
-export const TRANSFER_INTERVAL_TICKS = 10; // run loop every 10 ticks
-export const TRANSFER_PER_PAIR_PER_TICK = 1; // move 1 item per loop
+// Tune these if you like
+export const DP_PAIRS_MAX_CHUNKS = 8;      // supports fairly big networks
+export const DP_PAIRS_CHUNK_SIZE = 14000;  // keep chunks comfortably sized
+
+// Sounds (vanilla)
+export const SFX_SELECT_INPUT = "random.click";
+export const SFX_PAIR_SUCCESS = "random.levelup";
+
+// Particles (vanilla)
+export const PARTICLE_SELECT_INPUT = "minecraft:basic_flame_particle";
+export const PARTICLE_PAIR_SUCCESS = "minecraft:basic_flame_particle";
+export const PARTICLE_BEAM = "minecraft:basic_flame_particle";

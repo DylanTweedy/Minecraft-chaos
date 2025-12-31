@@ -1,129 +1,165 @@
+// scripts/main.js
 import { world, system } from "@minecraft/server";
+
+import { setPending, getPending } from "./chaos/state.js";
+import {
+  addOutput,
+  getOutputsArray,
+  getPairsMap,                 // ✅ for global totals
+  loadPairsFromWorldSafe,
+  savePairsToWorldSafe,
+  isPersistenceEnabled,
+} from "./chaos/pairs.js";
+
+import { fxSelectInput, fxPairSuccess } from "./chaos/fx.js";
+
+import {
+  SFX_SELECT_INPUT,
+  SFX_PAIR_SUCCESS,
+  PARTICLE_SELECT_INPUT,
+  PARTICLE_PAIR_SUCCESS,
+  PARTICLE_BEAM,
+} from "./chaos/constants.js";
 
 const WAND_ID = "chaos:wand";
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
-const TIMEOUT_MS = 60_000;
 
-// player.id -> { key, expiresAt }
-const pendingInput = new Map();
-
-// memory-only pairs (for now): inputKey -> outputKey
-const pairs = new Map();
-
-function makeKey(block) {
-  const dim = block.dimension.id;
-  const { x, y, z } = block.location;
-  return `${dim}|${x},${y},${z}`;
+function makeKey(dimId, x, y, z) {
+  return `${dimId}|${x},${y},${z}`;
 }
 
-function fmtPos(block) {
+function makeKeyFromBlock(block) {
+  const dimId = block.dimension.id;
   const { x, y, z } = block.location;
-  return `(${x},${y},${z})`;
+  return makeKey(dimId, x, y, z);
 }
 
-function clearPending(p, reason) {
-  if (pendingInput.delete(p.id)) {
-    p.sendMessage(`§7[Chaos] Pending cleared (${reason})`);
+// Central FX config (easy to tweak / debug)
+const FX = {
+  sfxSelect: SFX_SELECT_INPUT ?? "random.levelup",
+  sfxPair: SFX_PAIR_SUCCESS ?? "random.levelup",
+  particleSelect: PARTICLE_SELECT_INPUT,
+  particleSuccess: PARTICLE_PAIR_SUCCESS,
+  particleBeam: PARTICLE_BEAM,
+};
+
+// Prevent delayed load from wiping early interactions
+let pairsReady = false;
+
+function getGlobalLinkCount() {
+  try {
+    const map = getPairsMap();
+    let total = 0;
+    for (const set of map.values()) total += set.size;
+    return total;
+  } catch {
+    return 0;
   }
 }
 
-function setPending(p, inputBlock) {
-  const key = makeKey(inputBlock);
-  const expiresAt = Date.now() + TIMEOUT_MS;
+function getGlobalInputCount() {
+  try {
+    return getPairsMap().size;
+  } catch {
+    return 0;
+  }
+}
 
-  pendingInput.set(p.id, { key, expiresAt });
+// ---- Boot: delay DP reads safely ----
+system.runTimeout(() => {
+  world.sendMessage("§a[Chaos] Script loaded ✅");
 
-  p.sendMessage(`§a[Chaos] Input selected… §f${fmtPos(inputBlock)} §8(60s)`);
-
-  // Timeout: only clears if it's still the same pending selection
   system.runTimeout(() => {
-    const cur = pendingInput.get(p.id);
-    if (!cur) return;
-    if (cur.key !== key) return;
-    if (Date.now() < cur.expiresAt) return;
+    loadPairsFromWorldSafe();
+    pairsReady = true;
 
-    pendingInput.delete(p.id);
-    p.sendMessage("§6[Chaos] Pending input timed out (60s)");
-  }, Math.ceil(TIMEOUT_MS / 50));
-}
+    world.sendMessage(
+      `§b[Chaos] Pairs loaded. Persistence: ${isPersistenceEnabled() ? "§aON" : "§cOFF"}`
+    );
 
-function getPending(p) {
-  const cur = pendingInput.get(p.id);
-  if (!cur) return null;
+    const inputs = getGlobalInputCount();
+    const links = getGlobalLinkCount();
+    world.sendMessage(`§7[Chaos] Current links: §f${links}§7 across §f${inputs}§7 inputs`);
+  }, 1);
+}, 1);
 
-  if (Date.now() >= cur.expiresAt) {
-    pendingInput.delete(p.id);
-    p.sendMessage("§6[Chaos] Pending input timed out (60s)");
-    return null;
-  }
-
-  return cur;
-}
-
+// ---- Component registration ----
 system.beforeEvents.startup.subscribe((ev) => {
-  const reg = ev.itemComponentRegistry;
-
-  if (!reg || typeof reg.registerCustomComponent !== "function") {
-    world.sendMessage("§c[Chaos] itemComponentRegistry missing (enable Custom Components V2 + restart world)");
-    return;
-  }
-
-  reg.registerCustomComponent("chaos:wand_logic", {
+  ev.itemComponentRegistry.registerCustomComponent("chaos:wand_logic", {
     onUseOn: (e) => {
-      const p = e.source;
-      if (!p || p.typeId !== "minecraft:player") return;
+      const player = e.source;
+      if (!player || player.typeId !== "minecraft:player") return;
 
       const item = e.itemStack;
       if (!item || item.typeId !== WAND_ID) return;
 
-      const b = e.block;
-      if (!b) {
-        p.sendMessage("§c[Chaos] onUseOn fired but block was null");
+      const block = e.block;
+      if (!block) return;
+
+      if (!pairsReady) {
+        player.sendMessage("§e[Chaos] Loading links… try again in a moment.");
         return;
       }
 
-      // Debug every hit
-      p.sendMessage(`§7[Chaos] WAND HIT: §f${b.typeId} §8${fmtPos(b)}`);
+      const typeId = block.typeId;
 
-      // Input selection
-      if (b.typeId === INPUT_ID) {
-        clearPending(p, "replaced");
-        setPending(p, b);
+      // ---------- Select input ----------
+      if (typeId === INPUT_ID) {
+        const key = makeKeyFromBlock(block);
+
+        setPending(player.id, {
+          dimId: block.dimension.id,
+          x: block.location.x,
+          y: block.location.y,
+          z: block.location.z,
+          tick: system.currentTick,
+        });
+
+        fxSelectInput(player, block, FX);
+        player.sendMessage(`§a[Chaos] Input selected: §f${key}`);
         return;
       }
 
-      // Output selection / pairing
-      if (b.typeId === OUTPUT_ID) {
-        const pending = getPending(p);
-
+      // ---------- Link output ----------
+      if (typeId === OUTPUT_ID) {
+        const pending = getPending(player.id);
         if (!pending) {
-          p.sendMessage("§c[Chaos] No input selected…");
+          player.sendMessage("§e[Chaos] No input selected.");
           return;
         }
 
-        const outKey = makeKey(b);
+        const inputKey = makeKey(pending.dimId, pending.x, pending.y, pending.z);
+        const outputKey = makeKeyFromBlock(block);
 
-        if (outKey === pending.key) {
-          p.sendMessage("§c[Chaos] Cannot pair node to itself");
+        if (inputKey === outputKey) {
+          player.sendMessage("§c[Chaos] Cannot link a node to itself.");
           return;
         }
 
-        pairs.set(pending.key, outKey);
+        const added = addOutput(inputKey, outputKey);
+        if (added) savePairsToWorldSafe();
 
-        p.sendMessage("§b[Chaos] Paired!");
-        p.sendMessage(`§7[Chaos] (memory) ${pending.key} -> ${outKey}`);
+        const outputsNow = getOutputsArray(inputKey);
+        const globalLinks = getGlobalLinkCount();
+        const globalInputs = getGlobalInputCount();
 
-        clearPending(p, "paired");
+        fxPairSuccess(
+          player,
+          { x: pending.x, y: pending.y, z: pending.z },
+          block.location,
+          FX
+        );
+
+        // ✅ Per-input + global totals
+        player.sendMessage(
+          added
+            ? `§b[Chaos] Linked ✓ (§f${outputsNow.length}§b outputs for this input | §f${globalLinks}§b links across §f${globalInputs}§b inputs)`
+            : `§7[Chaos] Already linked (§f${outputsNow.length}§7 outputs for this input | §f${globalLinks}§7 links total)`
+        );
+
         return;
       }
-
-      // Not a node
-      p.sendMessage("§8[Chaos] Not a node (ignored)");
-    }
+    },
   });
 });
-
-system.runTimeout(() => {
-  world.sendMessage("§a[Chaos] Script loaded ✅ (Phase 1 pairing)");
-}, 1);
