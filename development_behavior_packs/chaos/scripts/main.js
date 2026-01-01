@@ -1,11 +1,10 @@
 // scripts/main.js
 import { world, system } from "@minecraft/server";
 
-import { setPending, getPending } from "./chaos/state.js";
+import { setPending, getPending, clearPending } from "./chaos/state.js";
 import {
-  addOutput,
-  getOutputsArray,
-  getPairsMap,                 // ✅ for global totals
+  toggleOutput,
+  getPairsMap,
   loadPairsFromWorldSafe,
   savePairsToWorldSafe,
   isPersistenceEnabled,
@@ -14,75 +13,58 @@ import {
 import { fxSelectInput, fxPairSuccess } from "./chaos/fx.js";
 
 import {
+  getGlobalInputCount,
+  getGlobalLinkCount,
+  getPerInputOutputCount,
+} from "./chaos/stats.js";
+
+import {
   SFX_SELECT_INPUT,
   SFX_PAIR_SUCCESS,
+  SFX_UNPAIR,
   PARTICLE_SELECT_INPUT,
   PARTICLE_PAIR_SUCCESS,
   PARTICLE_BEAM,
+  PARTICLE_UNPAIR_SUCCESS,
+  PARTICLE_UNPAIR_BEAM,
 } from "./chaos/constants.js";
+
+import { makeKeyFromBlock, pendingToKey } from "./chaos/keys.js";
+import { handleWandUseOn } from "./chaos/wand.js";
+import { bootChaos } from "./chaos/bootstrap.js";
 
 const WAND_ID = "chaos:wand";
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
 
-function makeKey(dimId, x, y, z) {
-  return `${dimId}|${x},${y},${z}`;
-}
-
-function makeKeyFromBlock(block) {
-  const dimId = block.dimension.id;
-  const { x, y, z } = block.location;
-  return makeKey(dimId, x, y, z);
-}
-
 // Central FX config (easy to tweak / debug)
 const FX = {
-  sfxSelect: SFX_SELECT_INPUT ?? "random.levelup",
-  sfxPair: SFX_PAIR_SUCCESS ?? "random.levelup",
+  sfxSelect: (SFX_SELECT_INPUT != null ? SFX_SELECT_INPUT : "random.levelup"),
+  sfxPair: (SFX_PAIR_SUCCESS != null ? SFX_PAIR_SUCCESS : "random.levelup"),
+  sfxUnpair: (SFX_UNPAIR != null ? SFX_UNPAIR : "random.anvil_land"),
+
   particleSelect: PARTICLE_SELECT_INPUT,
   particleSuccess: PARTICLE_PAIR_SUCCESS,
   particleBeam: PARTICLE_BEAM,
+
+  // NEW: unpair visuals (fx.js falls back safely if undefined)
+  particleUnpair: PARTICLE_UNPAIR_SUCCESS,
+  particleBeamUnpair: PARTICLE_UNPAIR_BEAM,
 };
 
-// Prevent delayed load from wiping early interactions
 let pairsReady = false;
 
-function getGlobalLinkCount() {
-  try {
-    const map = getPairsMap();
-    let total = 0;
-    for (const set of map.values()) total += set.size;
-    return total;
-  } catch {
-    return 0;
-  }
-}
-
-function getGlobalInputCount() {
-  try {
-    return getPairsMap().size;
-  } catch {
-    return 0;
-  }
-}
-
-// ---- Boot: delay DP reads safely ----
-system.runTimeout(() => {
-  world.sendMessage("§a[Chaos] Script loaded ✅");
-
-  system.runTimeout(() => {
-    loadPairsFromWorldSafe();
-    pairsReady = true;
-
-    world.sendMessage(
-      `§b[Chaos] Pairs loaded. Persistence: ${isPersistenceEnabled() ? "§aON" : "§cOFF"}`
-    );
-
-    const inputs = getGlobalInputCount();
-    const links = getGlobalLinkCount();
-    world.sendMessage(`§7[Chaos] Current links: §f${links}§7 across §f${inputs}§7 inputs`);
-  }, 1);
-}, 1);
+// ---- Boot (DP load is delayed inside bootstrap) ----
+bootChaos({
+  world,
+  system,
+  loadPairsFromWorldSafe,
+  isPersistenceEnabled,
+  getPairsMap,
+  getGlobalInputCount,
+  getGlobalLinkCount,
+  onReady: () => { pairsReady = true; },
+});
 
 // ---- Component registration ----
 system.beforeEvents.startup.subscribe((ev) => {
@@ -91,75 +73,45 @@ system.beforeEvents.startup.subscribe((ev) => {
       const player = e.source;
       if (!player || player.typeId !== "minecraft:player") return;
 
-      const item = e.itemStack;
-      if (!item || item.typeId !== WAND_ID) return;
-
-      const block = e.block;
-      if (!block) return;
-
       if (!pairsReady) {
         player.sendMessage("§e[Chaos] Loading links… try again in a moment.");
         return;
       }
 
-      const typeId = block.typeId;
+      handleWandUseOn(e, {
+        // ids
+        WAND_ID,
+        INPUT_ID,
+        OUTPUT_ID,
 
-      // ---------- Select input ----------
-      if (typeId === INPUT_ID) {
-        const key = makeKeyFromBlock(block);
+        // state
+        getPending,
+        setPending,
+        clearPending,
 
-        setPending(player.id, {
-          dimId: block.dimension.id,
-          x: block.location.x,
-          y: block.location.y,
-          z: block.location.z,
-          tick: system.currentTick,
-        });
+        // pairs / persistence
+        toggleOutput,
+        savePairsToWorldSafe,
+        isPersistenceEnabled,
+        getPairsMap,
 
-        fxSelectInput(player, block, FX);
-        player.sendMessage(`§a[Chaos] Input selected: §f${key}`);
-        return;
-      }
+        // stats
+        getGlobalInputCount,
+        getGlobalLinkCount,
+        getPerInputOutputCount,
 
-      // ---------- Link output ----------
-      if (typeId === OUTPUT_ID) {
-        const pending = getPending(player.id);
-        if (!pending) {
-          player.sendMessage("§e[Chaos] No input selected.");
-          return;
-        }
+        // keys
+        makeKeyFromBlock,
+        pendingToKey,
 
-        const inputKey = makeKey(pending.dimId, pending.x, pending.y, pending.z);
-        const outputKey = makeKeyFromBlock(block);
+        // fx
+        fxSelectInput,
+        fxPairSuccess,
+        FX,
 
-        if (inputKey === outputKey) {
-          player.sendMessage("§c[Chaos] Cannot link a node to itself.");
-          return;
-        }
-
-        const added = addOutput(inputKey, outputKey);
-        if (added) savePairsToWorldSafe();
-
-        const outputsNow = getOutputsArray(inputKey);
-        const globalLinks = getGlobalLinkCount();
-        const globalInputs = getGlobalInputCount();
-
-        fxPairSuccess(
-          player,
-          { x: pending.x, y: pending.y, z: pending.z },
-          block.location,
-          FX
-        );
-
-        // ✅ Per-input + global totals
-        player.sendMessage(
-          added
-            ? `§b[Chaos] Linked ✓ (§f${outputsNow.length}§b outputs for this input | §f${globalLinks}§b links across §f${globalInputs}§b inputs)`
-            : `§7[Chaos] Already linked (§f${outputsNow.length}§7 outputs for this input | §f${globalLinks}§7 links total)`
-        );
-
-        return;
-      }
+        // runtime
+        system,
+      });
     },
   });
 });

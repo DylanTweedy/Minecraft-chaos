@@ -1,30 +1,31 @@
+// scripts/chaos/state.js
 import { system } from "@minecraft/server";
-import { PENDING_TIMEOUT_TICKS } from "./constants.js";
 
-const pendingByPlayerId = new Map();
+// 60 seconds @ 20tps
+const TIMEOUT_TICKS = 20 * 60;
 
-/**
- * @param {string} playerId
- * @param {{ dimId: string, x:number, y:number, z:number, tick:number }} sel
- */
-export function setPending(playerId, sel) {
-  pendingByPlayerId.set(playerId, sel);
+// playerId -> pending
+// pending = { type: "input"|"output", dimId, x, y, z, tick }
+const pendingByPlayer = new Map();
+
+export function setPending(playerId, pending) {
+  pendingByPlayer.set(playerId, pending);
 }
 
-/** @param {string} playerId */
 export function clearPending(playerId) {
-  pendingByPlayerId.delete(playerId);
+  pendingByPlayer.delete(playerId);
 }
 
-/** @param {string} playerId */
 export function getPending(playerId) {
-  const sel = pendingByPlayerId.get(playerId);
-  if (!sel) return null;
+  const p = pendingByPlayer.get(playerId);
+  if (!p) return null;
 
-  const age = system.currentTick - sel.tick;
-  if (age > PENDING_TIMEOUT_TICKS) {
-    pendingByPlayerId.delete(playerId);
+  // Expire
+  const age = system.currentTick - (p.tick ?? system.currentTick);
+  if (age > TIMEOUT_TICKS) {
+    pendingByPlayer.delete(playerId);
     return null;
   }
-  return sel;
+
+  return p;
 }

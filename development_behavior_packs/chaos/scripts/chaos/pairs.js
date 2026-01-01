@@ -59,6 +59,29 @@ export function clearOutputs(inputKey) {
 }
 
 /**
+ * ✅ Toggle membership:
+ * If outputKey exists for inputKey => remove
+ * else => add
+ * Returns: { added:boolean, removed:boolean }
+ */
+export function toggleOutput(inputKey, outputKey) {
+  let set = pairs.get(inputKey);
+  if (!set) {
+    set = new Set();
+    pairs.set(inputKey, set);
+  }
+
+  if (set.has(outputKey)) {
+    set.delete(outputKey);
+    if (set.size === 0) pairs.delete(inputKey);
+    return { added: false, removed: true };
+  }
+
+  set.add(outputKey);
+  return { added: true, removed: false };
+}
+
+/**
  * IMPORTANT:
  * Call this ONLY after startup, e.g. system.runTimeout(() => loadPairsFromWorldSafe(), 1)
  */
