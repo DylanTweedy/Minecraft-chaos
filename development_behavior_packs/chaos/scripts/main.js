@@ -34,6 +34,13 @@ import { handleWandUseOn } from "./chaos/wand.js";
 import { bootChaos } from "./chaos/bootstrap.js";
 import { createTransferController } from "./chaos/transfer.js";
 
+import { startLinkVision } from "./chaos/linkVision.js";
+startLinkVision();
+
+import { startCleanupOnBreak } from "./chaos/cleanupOnBreak.js";
+startCleanupOnBreak();
+
+
 const WAND_ID = "chaos:wand";
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
