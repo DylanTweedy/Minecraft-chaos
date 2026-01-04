@@ -1,5 +1,6 @@
 // scripts/chaos/fx/presets.js
 import { FX } from "./fxConfig.js";
+import { MolangVariableMap } from "@minecraft/server";
 
 function cloneFx(base, overrides) {
   const next = {};
@@ -21,7 +22,17 @@ export function makeVisionFx() {
     particleUnpair: null,
     particleBeam: FX.particleBeam,
     particleBeamUnpair: FX.particleBeam,
+    beamMolang: () => makeColorMolang(0.4, 0.7, 1.0, 1.0), // vision (soft blue)
   });
+}
+
+function makeColorMolang(r, g, b, a) {
+  const m = new MolangVariableMap();
+  m.setFloat("variable.chaos_color_r", r);
+  m.setFloat("variable.chaos_color_g", g);
+  m.setFloat("variable.chaos_color_b", b);
+  m.setFloat("variable.chaos_color_a", a);
+  return m;
 }
 
 export function makeUnpairFx() {
@@ -34,5 +45,18 @@ export function makeUnpairFx() {
     particleUnpair: FX.particleUnpair,
     particleBeam: null,
     particleBeamUnpair: FX.particleBeamUnpair,
+  });
+}
+
+export function makeBeamFx(overrides) {
+  // Beam-only preset (no sfx, no endpoint particles)
+  return cloneFx(FX, {
+    sfxPair: null,
+    sfxUnpair: null,
+    particleSuccess: null,
+    particleUnpair: null,
+    particleBeam: FX.particleBeam,
+    particleBeamUnpair: FX.particleBeam,
+    ...(overrides || {}),
   });
 }

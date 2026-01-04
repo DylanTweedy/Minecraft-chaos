@@ -12,6 +12,15 @@ import {
   PARTICLE_UNPAIR_BEAM,
 } from "../core/constants.js";
 
+function makeColorMolang(r, g, b, a) {
+  const m = new MolangVariableMap();
+  m.setFloat("variable.chaos_color_r", r);
+  m.setFloat("variable.chaos_color_g", g);
+  m.setFloat("variable.chaos_color_b", b);
+  m.setFloat("variable.chaos_color_a", a);
+  return m;
+}
+
 // Must match transfer_orb.json lifetime (seconds)
 const ORB_LIFETIME_SECONDS = 1.0;
 
@@ -33,6 +42,11 @@ export const FX = {
 
   particleTransferBeam: "chaos:transfer_beam",
   particleTransferItem: "chaos:transfer_orb",
+
+  // Default tinting. Override in presets for vision if needed.
+  beamMolang: () => makeColorMolang(0.2, 0.8, 1.0, 1.0),        // link (cyan)
+  beamMolangUnpair: () => makeColorMolang(1.0, 0.35, 0.2, 1.0), // unlink (red-orange)
+  transferBeamMolang: () => makeColorMolang(1.0, 0.85, 0.2, 1.0), // transfer (gold)
 
   // Signature supports extra args (fx.js will pass them):
   // makeMolang(dir, fromBlock, toBlock, itemTypeId)

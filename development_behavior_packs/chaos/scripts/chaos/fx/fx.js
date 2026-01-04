@@ -41,7 +41,7 @@ function safeSpawnParticle(dimension, particleId, location, molang) {
   }
 }
 
-function drawBeam(dimension, from, to, particleId) {
+export function drawBeamParticles(dimension, from, to, particleId, molang, stepOverride) {
   try {
     if (!dimension || !from || !to || !particleId) return;
 
@@ -52,7 +52,7 @@ function drawBeam(dimension, from, to, particleId) {
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (dist <= 0.001) return;
 
-    const step = 0.35;
+    const step = Math.max(0.05, Number(stepOverride) || 0.35);
     const steps = Math.max(1, Math.floor(dist / step));
 
     for (let i = 0; i <= steps; i++) {
@@ -61,7 +61,7 @@ function drawBeam(dimension, from, to, particleId) {
         x: from.x + dx * t,
         y: from.y + dy * t,
         z: from.z + dz * t,
-      });
+      }, molang);
     }
   } catch {
     // ignore
@@ -100,6 +100,12 @@ export function fxPairSuccess(player, fromPos, toPos, fx) {
     const beamParticle = isUnpair
       ? (fx.particleBeamUnpair || fx.particleBeam)
       : fx.particleBeam;
+    let beamMolang = isUnpair
+      ? (fx.beamMolangUnpair || fx.beamMolang)
+      : fx.beamMolang;
+    if (typeof beamMolang === "function") {
+      try { beamMolang = beamMolang(); } catch { beamMolang = null; }
+    }
 
     safePlaySound(player, soundId, toPos);
 
@@ -109,7 +115,8 @@ export function fxPairSuccess(player, fromPos, toPos, fx) {
     safeSpawnParticle(dim, particleSuccess, a);
     safeSpawnParticle(dim, particleSuccess, b);
 
-    drawBeam(dim, a, b, beamParticle);
+    const beamStep = fx && fx.beamStep;
+    drawBeamParticles(dim, a, b, beamParticle, beamMolang, beamStep);
 
     if (isUnpair && fx && fx.particleUnpairExtra) {
       safeSpawnParticle(dim, fx.particleUnpairExtra, a);
@@ -144,7 +151,12 @@ export function fxTransferItem(fromBlock, toBlock, itemTypeId, fx) {
     };
 
     // Beam first
-    drawBeam(dim, from, to, fx && fx.particleTransferBeam);
+    const transferStep = fx && (fx.transferBeamStep || fx.beamStep);
+    let transferMolang = fx && (fx.transferBeamMolang || fx.beamMolang);
+    if (typeof transferMolang === "function") {
+      try { transferMolang = transferMolang(); } catch { transferMolang = null; }
+    }
+    drawBeamParticles(dim, from, to, fx && fx.particleTransferBeam, transferMolang, transferStep);
 
     const orb = fx && fx.particleTransferItem;
     if (!orb) return;
