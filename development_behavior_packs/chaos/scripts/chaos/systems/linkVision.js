@@ -3,7 +3,7 @@ import { world, system } from "@minecraft/server";
 
 import { getPairsMap } from "../features/links/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
-import { PARTICLE_BEAM } from "../core/constants.js";
+import { makeVisionFx } from "../fx/presets.js";
 
 const WAND_ID = "chaos:wand";
 
@@ -117,14 +117,7 @@ export function startLinkVision() {
   // - no sound
   // - no endpoint "success" particles
   // - beam particle only
-  const visionFx = {
-    sfxPair: null,
-    sfxUnpair: null,
-    particleSuccess: null,
-    particleUnpair: null,
-    particleBeam: PARTICLE_BEAM,
-    particleBeamUnpair: PARTICLE_BEAM,
-  };
+  const visionFx = makeVisionFx();
 
   system.runInterval(() => {
     _tick++;
