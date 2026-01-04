@@ -1,4 +1,4 @@
-// scripts/chaos/bootstrap.js
+// scripts/chaos/bootstrap/bootChaos.js
 // Safe bootstrap: no DP at import-time; everything runs after startup tick.
 
 export function bootChaos(deps) {

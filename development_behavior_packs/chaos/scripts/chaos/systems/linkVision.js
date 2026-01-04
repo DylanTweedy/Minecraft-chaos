@@ -1,9 +1,9 @@
 // scripts/chaos/linkVision.js
 import { world, system } from "@minecraft/server";
 
-import { getPairsMap } from "./pairs.js";
-import { fxPairSuccess } from "./fx.js";
-import { PARTICLE_BEAM } from "./constants.js";
+import { getPairsMap } from "../features/links/pairs.js";
+import { fxPairSuccess } from "../fx/fx.js";
+import { PARTICLE_BEAM } from "../core/constants.js";
 
 const WAND_ID = "chaos:wand";
 

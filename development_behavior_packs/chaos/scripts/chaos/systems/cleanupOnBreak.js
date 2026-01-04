@@ -1,14 +1,14 @@
 // scripts/chaos/cleanupOnBreak.js
 import { world } from "@minecraft/server";
 
-import { getPairsMap, savePairsToWorldSafe, isPersistenceEnabled } from "./pairs.js";
-import { fxPairSuccess } from "./fx.js";
+import { getPairsMap, savePairsToWorldSafe, isPersistenceEnabled } from "../features/links/pairs.js";
+import { fxPairSuccess } from "../fx/fx.js";
 import {
   SFX_UNPAIR,
   PARTICLE_UNPAIR_SUCCESS,
   PARTICLE_UNPAIR_BEAM,
   //PARTICLE_UNPAIR_EXTRA, // if you don't have this export, remove it + the line that uses it
-} from "./constants.js";
+} from "../core/constants.js";
 
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
