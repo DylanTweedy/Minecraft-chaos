@@ -68,6 +68,26 @@ export function drawBeamParticles(dimension, from, to, particleId, molang, stepO
   }
 }
 
+function burstAround(dimension, center, particleId, count, radius, molang) {
+  try {
+    if (!dimension || !center || !particleId) return;
+    const n = Math.max(1, count | 0);
+    const r = Math.max(0, Number(radius) || 0);
+    for (let i = 0; i < n; i++) {
+      const ox = (Math.random() * 2 - 1) * r;
+      const oy = (Math.random() * 2 - 1) * r;
+      const oz = (Math.random() * 2 - 1) * r;
+      safeSpawnParticle(dimension, particleId, {
+        x: center.x + ox,
+        y: center.y + oy,
+        z: center.z + oz,
+      }, molang);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // ---------- Public FX ----------
 
 export function fxSelectInput(player, block, fx) {
@@ -112,8 +132,17 @@ export function fxPairSuccess(player, fromPos, toPos, fx) {
     const a = { x: fromPos.x + 0.5, y: fromPos.y + 0.5, z: fromPos.z + 0.5 };
     const b = { x: toPos.x + 0.5, y: toPos.y + 0.5, z: toPos.z + 0.5 };
 
-    safeSpawnParticle(dim, particleSuccess, a);
-    safeSpawnParticle(dim, particleSuccess, b);
+    if (particleSuccess) {
+      const burstCount = isUnpair
+        ? (fx.unpairBurstCount ?? fx.successBurstCount ?? 6)
+        : (fx.successBurstCount ?? 6);
+      const burstRadius = isUnpair
+        ? (fx.unpairBurstRadius ?? fx.successBurstRadius ?? 0.35)
+        : (fx.successBurstRadius ?? 0.35);
+      // Small burst around endpoints instead of a single in-block particle
+      burstAround(dim, a, particleSuccess, burstCount, burstRadius, beamMolang);
+      burstAround(dim, b, particleSuccess, burstCount, burstRadius, beamMolang);
+    }
 
     const beamStep = fx && fx.beamStep;
     drawBeamParticles(dim, a, b, beamParticle, beamMolang, beamStep);

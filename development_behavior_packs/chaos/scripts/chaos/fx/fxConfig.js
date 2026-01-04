@@ -48,6 +48,12 @@ export const FX = {
   beamMolangUnpair: () => makeColorMolang(1.0, 0.35, 0.2, 1.0), // unlink (red-orange)
   transferBeamMolang: () => makeColorMolang(1.0, 0.85, 0.2, 1.0), // transfer (gold)
 
+  // Endpoint burst tuning
+  successBurstCount: 10,
+  successBurstRadius: 0.6,
+  unpairBurstCount: 10,
+  unpairBurstRadius: 0.6,
+
   // Signature supports extra args (fx.js will pass them):
   // makeMolang(dir, fromBlock, toBlock, itemTypeId)
   makeMolang: (dir, fromBlock, toBlock /*, itemTypeId */) => {

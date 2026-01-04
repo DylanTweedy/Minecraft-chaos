@@ -9,6 +9,7 @@ import { getPairsMap, loadPairsFromWorldSafe, savePairsToWorldSafe, isPersistenc
 import { toggleOutput } from "../features/links/pairs.js";
 import { fxSelectInput, fxPairSuccess, fxTransferItem } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
+import { makeLinkFx, makeTransferFx } from "../fx/presets.js";
 import { getGlobalInputCount, getGlobalLinkCount, getPerInputOutputCount } from "../core/stats.js";
 import { makeKeyFromBlock, pendingToKey } from "../features/links/keys.js";
 import { handleWandUseOn } from "../features/links/wand.js";
@@ -38,13 +39,16 @@ export function startChaos(ctx) {
     },
   });
 
+  const linkFx = makeLinkFx();
+  const transferFx = makeTransferFx();
+
   startTransferLoop({
     world,
     system,
     isPairsReady: () => pairsReady,
     getPairsMap,
     fxTransferItem,
-    FX,
+    FX: transferFx,
   });
 
   registerWandComponent({
@@ -68,6 +72,6 @@ export function startChaos(ctx) {
     fxSelectInput,
     fxPairSuccess,
     handleWandUseOn,
-    FX,
+    FX: linkFx,
   });
 }

@@ -13,6 +13,23 @@ function cloneFx(base, overrides) {
   return next;
 }
 
+export const BEAM_COLORS = {
+  link: [0.2, 0.8, 1.0, 1.0],     // cyan
+  unlink: [1.0, 0.35, 0.2, 1.0],  // red-orange
+  transfer: [1.0, 0.85, 0.2, 1.0],// gold
+  vision: [0.4, 0.7, 1.0, 1.0],   // soft blue
+};
+
+export function makeBeamMolang(color) {
+  const c = Array.isArray(color) ? color : [1, 1, 1, 1];
+  const m = new MolangVariableMap();
+  m.setFloat("variable.chaos_color_r", c[0]);
+  m.setFloat("variable.chaos_color_g", c[1]);
+  m.setFloat("variable.chaos_color_b", c[2]);
+  m.setFloat("variable.chaos_color_a", c[3]);
+  return m;
+}
+
 export function makeVisionFx() {
   // Silent beam-only FX for linkVision
   return cloneFx(FX, {
@@ -22,17 +39,8 @@ export function makeVisionFx() {
     particleUnpair: null,
     particleBeam: FX.particleBeam,
     particleBeamUnpair: FX.particleBeam,
-    beamMolang: () => makeColorMolang(0.4, 0.7, 1.0, 1.0), // vision (soft blue)
+    beamMolang: () => makeBeamMolang(BEAM_COLORS.vision),
   });
-}
-
-function makeColorMolang(r, g, b, a) {
-  const m = new MolangVariableMap();
-  m.setFloat("variable.chaos_color_r", r);
-  m.setFloat("variable.chaos_color_g", g);
-  m.setFloat("variable.chaos_color_b", b);
-  m.setFloat("variable.chaos_color_a", a);
-  return m;
 }
 
 export function makeUnpairFx() {
@@ -45,6 +53,20 @@ export function makeUnpairFx() {
     particleUnpair: FX.particleUnpair,
     particleBeam: null,
     particleBeamUnpair: FX.particleBeamUnpair,
+    beamMolangUnpair: () => makeBeamMolang(BEAM_COLORS.unlink),
+  });
+}
+
+export function makeLinkFx() {
+  return cloneFx(FX, {
+    particleSuccess: FX.particleSuccess,
+    beamMolang: () => makeBeamMolang(BEAM_COLORS.link),
+  });
+}
+
+export function makeTransferFx() {
+  return cloneFx(FX, {
+    transferBeamMolang: () => makeBeamMolang(BEAM_COLORS.transfer),
   });
 }
 
