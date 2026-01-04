@@ -40,6 +40,8 @@ startLinkVision();
 import { startCleanupOnBreak } from "./chaos/cleanupOnBreak.js";
 startCleanupOnBreak();
 
+import { startBeamSimV0 } from "./chaos/beamSim.js";
+startBeamSimV0();
 
 const WAND_ID = "chaos:wand";
 const INPUT_ID = "chaos:input_node";
@@ -144,7 +146,9 @@ bootChaos({
   getPairsMap,
   getGlobalInputCount,
   getGlobalLinkCount,
-  onReady: () => { pairsReady = true; },
+  onReady: () => {
+    pairsReady = true;
+  },
 });
 
 // Start transfer loop after ready
@@ -176,6 +180,13 @@ system.runInterval(() => {
     // never break load
   }
 }, 1);
+
+// ------------------------------------------------------------
+// ✅ Beam system (v0)
+// ------------------------------------------------------------
+// NOTE: Per the current authoritative direction, beam emit/collapse is
+// place/break driven and handled by chaos/beamSim.js (no redstone, no scanning,
+// no unrelated polling loops). main.js intentionally does not wire redstone.
 
 // Component registration
 system.beforeEvents.startup.subscribe((ev) => {
