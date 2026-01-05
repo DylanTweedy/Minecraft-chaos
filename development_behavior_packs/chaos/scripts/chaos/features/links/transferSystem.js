@@ -9,6 +9,7 @@ const OUTPUT_ID = "chaos:output_node";
 const PRISM_ID = "chaos:prism";
 const BEAM_ID = "chaos:beam";
 const DP_BEAMS = "chaos:beams_v0_json";
+const DP_TRANSFERS = "chaos:transfers_v0_json";
 const MAX_STEPS = MAX_BEAM_LEN * 12;
 
 const DEFAULTS = {
@@ -59,6 +60,14 @@ function safeJsonParse(s) {
   }
 }
 
+function safeJsonStringify(v) {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return null;
+  }
+}
+
 function loadBeamsMap(world) {
   try {
     const raw = world.getDynamicProperty(DP_BEAMS);
@@ -67,6 +76,27 @@ function loadBeamsMap(world) {
     return parsed;
   } catch {
     return {};
+  }
+}
+
+function loadInflight(world) {
+  try {
+    const raw = world.getDynamicProperty(DP_TRANSFERS);
+    const parsed = safeJsonParse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+
+function saveInflight(world, inflight) {
+  try {
+    const raw = safeJsonStringify(inflight);
+    if (typeof raw !== "string") return;
+    world.setDynamicProperty(DP_TRANSFERS, raw);
+  } catch {
+    // ignore
   }
 }
 
@@ -226,6 +256,8 @@ export function createNetworkTransferController(deps, opts) {
 
   const nextAllowed = new Map();
   const inflight = [];
+  let inflightDirty = false;
+  let lastSaveTick = 0;
 
   function getSpeed(block) {
     try {
@@ -242,6 +274,7 @@ export function createNetworkTransferController(deps, opts) {
 
   function start() {
     if (tickId !== null) return;
+    loadInflightState();
     tickId = system.runInterval(onTick, 1);
   }
 
@@ -249,6 +282,19 @@ export function createNetworkTransferController(deps, opts) {
     if (tickId === null) return;
     try { system.clearRun(tickId); } catch (_) {}
     tickId = null;
+  }
+
+  function loadInflightState() {
+    loadInflightStateFromWorld(world, inflight, cfg);
+    inflightDirty = false;
+    lastSaveTick = nowTick;
+  }
+
+  function persistInflightIfNeeded() {
+    if (!inflightDirty && (inflight.length === 0 || (nowTick - lastSaveTick) < 10)) return;
+    persistInflightStateToWorld(world, inflight);
+    inflightDirty = false;
+    lastSaveTick = nowTick;
   }
 
   function onTick() {
@@ -284,6 +330,8 @@ export function createNetworkTransferController(deps, opts) {
 
       if (didTransfer) budget--;
     }
+
+    persistInflightIfNeeded();
   }
 
   function resolveBlockInfo(inputKey) {
@@ -362,7 +410,9 @@ export function createNetworkTransferController(deps, opts) {
       stepIndex: 0,
       ticksUntilStep: cfg.orbStepTicks,
       outputKey: pathInfo.outputKey,
+      startPos: { x: inputInfo.pos.x, y: inputInfo.pos.y, z: inputInfo.pos.z },
     });
+    inflightDirty = true;
 
     return true;
   }
@@ -379,29 +429,58 @@ export function createNetworkTransferController(deps, opts) {
       if (nextIdx >= job.path.length) {
         finalizeJob(job);
         inflight.splice(i, 1);
+        inflightDirty = true;
         continue;
       }
 
       const cur = job.path[job.stepIndex];
       const next = job.path[nextIdx];
       const dim = world.getDimension(job.dimId);
-      if (!dim) {
-        inflight.splice(i, 1);
-        continue;
+      if (!dim) continue;
+
+      if (job.stepIndex < job.path.length - 1) {
+        const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+        if (!isPathBlock(curBlock)) {
+          dropItemAt(dim, cur, job.itemTypeId);
+          inflight.splice(i, 1);
+          inflightDirty = true;
+          continue;
+        }
+      }
+
+      if (nextIdx < job.path.length - 1) {
+        const nextBlock = dim.getBlock({ x: next.x, y: next.y, z: next.z });
+        if (!isPathBlock(nextBlock)) {
+          dropItemAt(dim, cur, job.itemTypeId);
+          inflight.splice(i, 1);
+          inflightDirty = true;
+          continue;
+        }
       }
 
       spawnOrbStep(dim, cur, next);
       job.stepIndex = nextIdx;
       job.ticksUntilStep = cfg.orbStepTicks;
+      inflightDirty = true;
     }
   }
 
   function finalizeJob(job) {
     const outInfo = resolveBlockInfo(job.outputKey);
-    if (!outInfo) return;
+    if (!outInfo) {
+      const dim = world.getDimension(job.dimId);
+      if (dim) {
+        const fallback = job.path[job.path.length - 1] || job.startPos;
+        if (fallback) dropItemAt(dim, fallback, job.itemTypeId);
+      }
+      return;
+    }
 
     const outBlock = outInfo.block;
-    if (!outBlock || outBlock.typeId !== OUTPUT_ID) return;
+    if (!outBlock || outBlock.typeId !== OUTPUT_ID) {
+      dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId);
+      return;
+    }
 
     const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
     if (outContainer && tryInsertOne(outContainer, new ItemStack(job.itemTypeId, 1))) return;
@@ -459,14 +538,52 @@ export function createNetworkTransferController(deps, opts) {
   return { start, stop };
 }
 
+function sanitizeInflightEntry(entry) {
+  try {
+    if (!entry || typeof entry !== "object") return null;
+    if (typeof entry.dimId !== "string") return null;
+    if (typeof entry.itemTypeId !== "string") return null;
+    if (!Array.isArray(entry.path) || entry.path.length === 0) return null;
+    if (!Number.isFinite(entry.stepIndex)) entry.stepIndex = 0;
+    if (!Number.isFinite(entry.ticksUntilStep)) entry.ticksUntilStep = 1;
+    if (!entry.outputKey || typeof entry.outputKey !== "string") return null;
+    if (!entry.startPos || !Number.isFinite(entry.startPos.x)) entry.startPos = null;
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
+function loadInflightStateFromWorld(world, inflight, cfg) {
+  const raw = loadInflight(world);
+  inflight.length = 0;
+  for (const entry of raw) {
+    const clean = sanitizeInflightEntry(entry);
+    if (!clean) continue;
+    if (clean.path.length > MAX_STEPS) continue;
+    if (clean.ticksUntilStep < 1) clean.ticksUntilStep = cfg.orbStepTicks;
+    inflight.push(clean);
+  }
+}
+
+function persistInflightStateToWorld(world, inflight) {
+  saveInflight(world, inflight);
+}
+
 function validatePathStart(dim, path) {
   const checks = Math.min(2, path.length);
   for (let i = 0; i < checks; i++) {
     const p = path[i];
     const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
-    if (!b || b.typeId !== BEAM_ID) return false;
+    if (!isPathBlock(b)) return false;
   }
   return true;
+}
+
+function isPathBlock(block) {
+  if (!block) return false;
+  const id = block.typeId;
+  return id === BEAM_ID || id === PRISM_ID || id === OUTPUT_ID;
 }
 
 function findDropLocation(dim, loc) {
