@@ -7,16 +7,31 @@ import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 
 const WAND_ID = "chaos:wand";
+const INPUT_ID = "chaos:input_node";
+const OUTPUT_ID = "chaos:output_node";
+const PRISM_ID = "chaos:prism";
+const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
+const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
+const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
+
+const LEVEL_STEP = 50;
+const MAX_LEVEL = 5;
 
 // ---------- Perf knobs ----------
 const TICK_INTERVAL = 10;              // interval ticks (we budget inside)
 const REBUILD_CACHE_EVERY_TICKS = 20; // refresh flattened link list sometimes
+const COUNTS_CACHE_TICKS = 20;
+const MAX_LOOK_DISTANCE = 16;
 
 // ---------- Internal state ----------
 let _tick = 0;
 let _cacheSig = "";
 let _flatLinks = []; // [{ dimId, inPos:{x,y,z}, outPos:{x,y,z} }]
 const _rrIndexByPlayer = new Map(); // playerId -> cursor
+let _countsTick = -9999;
+let _inputCounts = {};
+let _outputCounts = {};
+let _prismCounts = {};
 
 function isHoldingWand(player) {
   try {
@@ -35,6 +50,118 @@ function distSq(a, b) {
   const dy = a.y - b.y;
   const dz = a.z - b.z;
   return dx * dx + dy * dy + dz * dz;
+}
+
+function safeJsonParse(s) {
+  try {
+    if (typeof s !== "string" || !s) return null;
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function getInputCountsCached() {
+  if ((_tick - _countsTick) <= COUNTS_CACHE_TICKS) return _inputCounts;
+  _countsTick = _tick;
+  try {
+    const raw = world.getDynamicProperty(DP_INPUT_LEVELS);
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      _inputCounts = {};
+      return _inputCounts;
+    }
+    _inputCounts = parsed;
+    return _inputCounts;
+  } catch {
+    _inputCounts = {};
+    return _inputCounts;
+  }
+}
+
+function getOutputCountsCached() {
+  if ((_tick - _countsTick) <= COUNTS_CACHE_TICKS) return _outputCounts;
+  try {
+    const raw = world.getDynamicProperty(DP_OUTPUT_LEVELS);
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      _outputCounts = {};
+      return _outputCounts;
+    }
+    _outputCounts = parsed;
+    return _outputCounts;
+  } catch {
+    _outputCounts = {};
+    return _outputCounts;
+  }
+}
+
+function getPrismCountsCached() {
+  if ((_tick - _countsTick) <= COUNTS_CACHE_TICKS) return _prismCounts;
+  try {
+    const raw = world.getDynamicProperty(DP_PRISM_LEVELS);
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      _prismCounts = {};
+      return _prismCounts;
+    }
+    _prismCounts = parsed;
+    return _prismCounts;
+  } catch {
+    _prismCounts = {};
+    return _prismCounts;
+  }
+}
+
+function getLevelForCount(count) {
+  const lvl = 1 + Math.floor(Math.max(0, count) / LEVEL_STEP);
+  return Math.min(Math.max(1, lvl), MAX_LEVEL);
+}
+
+function getTargetBlock(player) {
+  try {
+    const hit = player.getBlockFromViewDirection({ maxDistance: MAX_LOOK_DISTANCE });
+    return hit?.block || null;
+  } catch {
+    return null;
+  }
+}
+
+function showWandStats(player) {
+  const block = getTargetBlock(player);
+  if (!block) return;
+
+  const id = block.typeId;
+  if (id !== INPUT_ID && id !== OUTPUT_ID && id !== PRISM_ID) return;
+
+  const loc = block.location;
+  const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
+  let count = null;
+  if (id === INPUT_ID) {
+    const counts = getInputCountsCached();
+    count = (counts && counts[key] != null) ? Number(counts[key]) : null;
+  } else if (id === OUTPUT_ID) {
+    const counts = getOutputCountsCached();
+    count = (counts && counts[key] != null) ? Number(counts[key]) : null;
+  } else if (id === PRISM_ID) {
+    const counts = getPrismCountsCached();
+    count = (counts && counts[key] != null) ? Number(counts[key]) : null;
+  }
+
+  const level = Number.isFinite(count)
+    ? getLevelForCount(count)
+    : (block.permutation?.getState("chaos:level") || 1);
+
+  const typeLabel = (id === INPUT_ID) ? "Input" : (id === OUTPUT_ID ? "Output" : "Prism");
+  const countLabel = Number.isFinite(count) ? `${count}` : "n/a";
+
+  try {
+    player.onScreenDisplay.setActionBar(
+      `Chaos ${typeLabel} | L${level} | Transfers: ${countLabel}`
+    );
+  } catch {
+    // ignore
+  }
 }
 
 function parseKey(key) {
@@ -165,6 +292,8 @@ export function startLinkVision() {
 
     for (const player of world.getAllPlayers()) {
       if (!isHoldingWand(player)) continue;
+
+      showWandStats(player);
 
       const dimId = player.dimension.id;
       const pLoc = player.location;

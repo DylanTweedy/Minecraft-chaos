@@ -11,6 +11,8 @@ const BEAM_ID = "chaos:beam";
 const DP_BEAMS = "chaos:beams_v0_json";
 const DP_TRANSFERS = "chaos:transfers_v0_json";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
+const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
+const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
 const MAX_STEPS = MAX_BEAM_LEN * 12;
 
 const DEFAULTS = {
@@ -123,6 +125,48 @@ function saveInputLevels(world, levels) {
     const raw = safeJsonStringify(levels);
     if (typeof raw !== "string") return;
     world.setDynamicProperty(DP_INPUT_LEVELS, raw);
+  } catch {
+    // ignore
+  }
+}
+
+function loadOutputLevels(world) {
+  try {
+    const raw = world.getDynamicProperty(DP_OUTPUT_LEVELS);
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function saveOutputLevels(world, levels) {
+  try {
+    const raw = safeJsonStringify(levels);
+    if (typeof raw !== "string") return;
+    world.setDynamicProperty(DP_OUTPUT_LEVELS, raw);
+  } catch {
+    // ignore
+  }
+}
+
+function loadPrismLevels(world) {
+  try {
+    const raw = world.getDynamicProperty(DP_PRISM_LEVELS);
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function savePrismLevels(world, levels) {
+  try {
+    const raw = safeJsonStringify(levels);
+    if (typeof raw !== "string") return;
+    world.setDynamicProperty(DP_PRISM_LEVELS, raw);
   } catch {
     // ignore
   }
@@ -307,6 +351,12 @@ export function createNetworkTransferController(deps, opts) {
   const transferCounts = new Map();
   let levelsDirty = false;
   let lastLevelsSaveTick = 0;
+  const outputCounts = new Map();
+  let outputLevelsDirty = false;
+  let lastOutputLevelsSaveTick = 0;
+  const prismCounts = new Map();
+  let prismLevelsDirty = false;
+  let lastPrismLevelsSaveTick = 0;
 
   function getSpeed(block) {
     try {
@@ -325,6 +375,8 @@ export function createNetworkTransferController(deps, opts) {
     if (tickId !== null) return;
     loadInflightState();
     loadLevelsState();
+    loadOutputLevelsState();
+    loadPrismLevelsState();
     tickId = system.runInterval(onTick, 1);
   }
 
@@ -369,6 +421,48 @@ export function createNetworkTransferController(deps, opts) {
     lastLevelsSaveTick = nowTick;
   }
 
+  function loadOutputLevelsState() {
+    const raw = loadOutputLevels(world);
+    outputCounts.clear();
+    for (const [k, v] of Object.entries(raw)) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) continue;
+      outputCounts.set(k, n | 0);
+    }
+    outputLevelsDirty = false;
+    lastOutputLevelsSaveTick = nowTick;
+  }
+
+  function persistOutputLevelsIfNeeded() {
+    if (!outputLevelsDirty && (nowTick - lastOutputLevelsSaveTick) < 200) return;
+    const obj = {};
+    for (const [k, v] of outputCounts.entries()) obj[k] = v;
+    saveOutputLevels(world, obj);
+    outputLevelsDirty = false;
+    lastOutputLevelsSaveTick = nowTick;
+  }
+
+  function loadPrismLevelsState() {
+    const raw = loadPrismLevels(world);
+    prismCounts.clear();
+    for (const [k, v] of Object.entries(raw)) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) continue;
+      prismCounts.set(k, n | 0);
+    }
+    prismLevelsDirty = false;
+    lastPrismLevelsSaveTick = nowTick;
+  }
+
+  function persistPrismLevelsIfNeeded() {
+    if (!prismLevelsDirty && (nowTick - lastPrismLevelsSaveTick) < 200) return;
+    const obj = {};
+    for (const [k, v] of prismCounts.entries()) obj[k] = v;
+    savePrismLevels(world, obj);
+    prismLevelsDirty = false;
+    lastPrismLevelsSaveTick = nowTick;
+  }
+
   function onTick() {
     nowTick++;
 
@@ -405,6 +499,8 @@ export function createNetworkTransferController(deps, opts) {
 
     persistInflightIfNeeded();
     persistLevelsIfNeeded();
+    persistOutputLevelsIfNeeded();
+    persistPrismLevelsIfNeeded();
   }
 
   function resolveBlockInfo(inputKey) {
@@ -541,6 +637,13 @@ export function createNetworkTransferController(deps, opts) {
         }
       }
 
+      if (job.stepIndex < job.path.length - 1) {
+        const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+        if (curBlock?.typeId === PRISM_ID) {
+          notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
+        }
+      }
+
       spawnOrbStep(dim, cur, next);
       job.stepIndex = nextIdx;
       job.ticksUntilStep = job.stepTicks || cfg.orbStepTicks;
@@ -570,6 +673,7 @@ export function createNetworkTransferController(deps, opts) {
     const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
     if (outContainer && tryInsertOne(outContainer, new ItemStack(job.itemTypeId, 1))) {
       releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+      noteOutputTransfer(job.outputKey, outBlock);
       return;
     }
 
@@ -603,6 +707,48 @@ export function createNetworkTransferController(deps, opts) {
   function updateBlockLevel(block, level) {
     try {
       if (!block || block.typeId !== INPUT_ID) return;
+      const perm = block.permutation;
+      if (!perm) return;
+      const next = perm.withState("chaos:level", level | 0);
+      block.setPermutation(next);
+    } catch {
+      // ignore
+    }
+  }
+
+  function notePrismPassage(prismKey, block) {
+    const current = prismCounts.has(prismKey) ? prismCounts.get(prismKey) : 0;
+    const next = current + 1;
+    prismCounts.set(prismKey, next);
+    prismLevelsDirty = true;
+    const level = getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
+    updatePrismBlockLevel(block, level);
+  }
+
+  function updatePrismBlockLevel(block, level) {
+    try {
+      if (!block || block.typeId !== PRISM_ID) return;
+      const perm = block.permutation;
+      if (!perm) return;
+      const next = perm.withState("chaos:level", level | 0);
+      block.setPermutation(next);
+    } catch {
+      // ignore
+    }
+  }
+
+  function noteOutputTransfer(outputKey, block) {
+    const current = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
+    const next = current + 1;
+    outputCounts.set(outputKey, next);
+    outputLevelsDirty = true;
+    const level = getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
+    updateOutputBlockLevel(block, level);
+  }
+
+  function updateOutputBlockLevel(block, level) {
+    try {
+      if (!block || block.typeId !== OUTPUT_ID) return;
       const perm = block.permutation;
       if (!perm) return;
       const next = perm.withState("chaos:level", level | 0);
