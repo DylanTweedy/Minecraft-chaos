@@ -12,7 +12,12 @@
       "minecraft:geometry": "geometry.chaos.beam",
 
       "minecraft:material_instances": {
-        "*": { "texture": "chaos_beam", "render_method": "blend" }
+          "*": {
+    "texture": "chaos_beam",
+    "render_method": "blend",
+    "ambient_occlusion": false,
+    "face_dimming": false
+  }
       },
 
       "minecraft:collision_box": false,
@@ -21,6 +26,8 @@
         "origin": [0.4375, 0.4375, 0.4375],
         "size":   [0.125,  0.125,  0.125]
       },
+
+      "minecraft:replaceable": { "value": true },
 
       "minecraft:light_emission": 8,
       "minecraft:destructible_by_mining": { "seconds_to_destroy": 0.0 },

@@ -1,13 +1,14 @@
 // scripts/chaos/beamSim.js
 import { world, system, BlockPermutation } from "@minecraft/server";
+import { MAX_BEAM_LEN } from "./beamConfig.js";
 
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
+const PRISM_ID = "chaos:prism";
 const BEAM_ID = "chaos:beam";
-
-// v0 rules
-const MAX_LEN = 16;          // maximum beam length (blocks)
-const STEPS_PER_TICK = 1;    // 1 block per tick, but we do ONE RAY at a time (no random interleave)
+const INPUTS_PER_TICK = 1;
+const RELAYS_PER_TICK = 1;
+const VALIDATIONS_PER_TICK = 12;
 const TICK_INTERVAL = 1;
 
 // Beam block supports axis states (now x/y/z)
@@ -20,6 +21,8 @@ const DP_BEAMS = "chaos:beams_v0_json";
 
 // Placement settle window (bounded, event-seeded; NOT polling/scanning)
 const EMIT_RETRY_TICKS = 4;
+
+const PASS_THROUGH_IDS = new Set(["minecraft:air", BEAM_ID, OUTPUT_ID]);
 
 // -----------------------------------------------------------------------------
 // Persistent model
@@ -106,115 +109,135 @@ function axisForDir(dx, dy, dz) {
   return AXIS_X;
 }
 
-// -----------------------------------------------------------------------------
-// Sequential growth scheduler (ONE RAY at a time)
-// -----------------------------------------------------------------------------
-
-// Active ray being grown step-by-step
-let active = null; // { inputKey, dimId, rayIndex, dx,dy,dz, axis, nextX,nextY,nextZ, remaining }
-
-// Inputs waiting their turn (FIFO)
-const pendingInputs = []; // [inputKey, ...]
-const pendingSet = new Set(); // quick dedupe
-
-function enqueueInputForGrowth(inputKey) {
-  if (!inputKey) return;
-  if (active && active.inputKey === inputKey) return;
-  if (pendingSet.has(inputKey)) return;
-  pendingSet.add(inputKey);
-  pendingInputs.push(inputKey);
+function beamDirsForAxis(axis) {
+  if (axis === AXIS_Y) return [{ dx: 0, dy: 1, dz: 0 }, { dx: 0, dy: -1, dz: 0 }];
+  if (axis === AXIS_X) return [{ dx: 0, dy: 0, dz: 1 }, { dx: 0, dy: 0, dz: -1 }];
+  if (axis === AXIS_Z) return [{ dx: 1, dy: 0, dz: 0 }, { dx: -1, dy: 0, dz: 0 }];
+  return [{ dx: 0, dy: 0, dz: 1 }, { dx: 0, dy: 0, dz: -1 }];
 }
 
-function startNextRayForInput(inputKey, entry) {
-  // entry.rays exists; find first ray that is not complete yet (blocks length < MAX_LEN) or simply by index order.
-  // We track "nextRay" in memory only (not persisted). If absent, start at 0.
-  if (entry.__nextRayIndex == null || !Number.isFinite(entry.__nextRayIndex)) entry.__nextRayIndex = 0;
+function isPassThrough(id) {
+  return PASS_THROUGH_IDS.has(id);
+}
 
-  while (entry.__nextRayIndex < entry.rays.length) {
-    const idx = entry.__nextRayIndex;
-    entry.__nextRayIndex++;
-
-    const r = entry.rays[idx];
-    if (!r) continue;
-
-    // If the ray already has blocks (e.g., rebuild state), we still treat it as complete and skip.
-    // Rebuild path clears beams first, so blocks should be empty on rebuild.
-    // This guard keeps us safe if anything weird was persisted.
-    const blocks = Array.isArray(r.blocks) ? r.blocks : [];
-    if (blocks.length > 0) continue;
-
-    active = {
-      inputKey,
-      dimId: entry.dimId,
-      rayIndex: idx,
-      dx: r.dx,
-      dy: r.dy,
-      dz: r.dz,
-      axis: r.axis,
-      nextX: entry.x + r.dx,
-      nextY: entry.y + r.dy,
-      nextZ: entry.z + r.dz,
-      remaining: MAX_LEN,
-    };
-    return true;
+function getBeamAxis(block) {
+  try {
+    const axis = block?.permutation?.getState("chaos:axis");
+    if (axis === AXIS_X || axis === AXIS_Y || axis === AXIS_Z) return axis;
+  } catch {
+    // ignore
   }
+  return AXIS_X;
+}
 
-  // No more rays for this input
+function beamAxisMatchesDir(block, dx, dy, dz) {
+  const axis = getBeamAxis(block);
+  return axis === axisForDir(dx, dy, dz);
+}
+
+function prismHasBeamNeighbor(dim, loc) {
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+  for (const d of dirs) {
+    const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
+    if (b?.typeId === BEAM_ID && beamAxisMatchesDir(b, d.dx, d.dy, d.dz)) return true;
+  }
   return false;
 }
 
-function pickNextActive(map) {
-  if (active) return;
+// -----------------------------------------------------------------------------
+// Queues (budgeted per tick)
+// -----------------------------------------------------------------------------
+const pendingInputs = [];
+const pendingInputsSet = new Set();
 
-  while (pendingInputs.length > 0) {
-    const inputKey = pendingInputs.shift();
-    pendingSet.delete(inputKey);
+const pendingRelays = [];
+const pendingRelaysSet = new Set();
 
-    const entry = map[inputKey];
-    if (!entry) continue;
+const pendingValidations = [];
+const pendingValidationsSet = new Set();
 
-    const dim = getDimensionById(entry.dimId);
-    if (!dim) continue;
+function enqueueInputForRescan(inputKey) {
+  if (!inputKey) return;
+  if (pendingInputsSet.has(inputKey)) return;
+  pendingInputsSet.add(inputKey);
+  pendingInputs.push(inputKey);
+}
 
-    const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-    if (!ib || ib.typeId !== INPUT_ID) continue;
+function enqueueBeamValidation(beamKey) {
+  if (!beamKey) return;
+  if (pendingValidationsSet.has(beamKey)) return;
+  pendingValidationsSet.add(beamKey);
+  pendingValidations.push(beamKey);
+}
 
-    // Start the first ray for this input
-    if (startNextRayForInput(inputKey, entry)) return;
+function enqueueRelayForRescan(prismKey) {
+  if (!prismKey) return;
+  if (pendingRelaysSet.has(prismKey)) return;
+  pendingRelaysSet.add(prismKey);
+  pendingRelays.push(prismKey);
+}
 
-    // If none started, try next input
+function enqueueAdjacentBeams(dim, loc) {
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+  for (const d of dirs) {
+    const x = loc.x + d.dx;
+    const y = loc.y + d.dy;
+    const z = loc.z + d.dz;
+    const b = dim.getBlock({ x, y, z });
+    if (b?.typeId === BEAM_ID) {
+      enqueueBeamValidation(key(dim.id, x, y, z));
+    }
+  }
+}
+
+function enqueueAdjacentPrisms(dim, loc) {
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+  for (const d of dirs) {
+    const x = loc.x + d.dx;
+    const y = loc.y + d.dy;
+    const z = loc.z + d.dz;
+    const b = dim.getBlock({ x, y, z });
+    if (b?.typeId === PRISM_ID) {
+      enqueueRelayForRescan(key(dim.id, x, y, z));
+    }
   }
 }
 
 // -----------------------------------------------------------------------------
 // Beam placement helpers
 // -----------------------------------------------------------------------------
-function tryPlaceBeam(dim, x, y, z, axis) {
+function placeBeamIfAir(dim, x, y, z, axis) {
   try {
     const b = dim.getBlock({ x, y, z });
-    if (!b) return { ok: false, passthroughOutput: false };
+    if (!b || b.typeId !== "minecraft:air") return false;
 
-    const id = b.typeId;
-
-    // Output nodes are taps (do not replace, but beam continues through)
-    if (id === OUTPUT_ID) return { ok: true, passthroughOutput: true };
-
-    // Stop if we hit an input node (avoid beam interfering with other emitters)
-    if (id === INPUT_ID) return { ok: false, passthroughOutput: false };
-
-    // Only place into air or replace existing beam
-    if (id !== "minecraft:air" && id !== BEAM_ID) return { ok: false, passthroughOutput: false };
-
-    // axis must be one of x/y/z (we keep x/z swapped upstream to match geometry)
     const safeAxis = (axis === AXIS_Y ? AXIS_Y : (axis === AXIS_Z ? AXIS_Z : AXIS_X));
-
-    // Reliable custom permutation placement
     const perm = BlockPermutation.resolve(BEAM_ID, { "chaos:axis": safeAxis });
     b.setPermutation(perm);
-
-    return { ok: true, passthroughOutput: false };
+    return true;
   } catch {
-    return { ok: false, passthroughOutput: false };
+    return false;
   }
 }
 
@@ -223,6 +246,16 @@ function removeRecordedBeams(entry) {
     const dim = getDimensionById(entry?.dimId);
     if (!dim) return;
 
+    const recorded = Array.isArray(entry?.beams) ? entry.beams : [];
+    for (const bk of recorded) {
+      const p = parseKey(bk);
+      if (!p) continue;
+      if (p.dimId !== entry.dimId) continue;
+      const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
+      if (b?.typeId === BEAM_ID) b.setType("minecraft:air");
+    }
+
+    // legacy cleanup (rays.blocks)
     const rays = Array.isArray(entry?.rays) ? entry.rays : [];
     for (const r of rays) {
       const blocks = Array.isArray(r?.blocks) ? r.blocks : [];
@@ -230,18 +263,168 @@ function removeRecordedBeams(entry) {
         const p = parseKey(bk);
         if (!p) continue;
         if (p.dimId !== entry.dimId) continue;
-
         const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
-        if (!b) continue;
-
-        if (b.typeId === BEAM_ID) {
-          b.setType("minecraft:air");
-        }
+        if (b?.typeId === BEAM_ID) b.setType("minecraft:air");
       }
     }
   } catch {
     // ignore
   }
+}
+
+// -----------------------------------------------------------------------------
+// LOS scanning and rebuild
+// -----------------------------------------------------------------------------
+function scanOutputsInDir(dim, loc, dx, dy, dz) {
+  const outputs = [];
+  let prismDist = 0;
+  for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+    const x = loc.x + dx * i;
+    const y = loc.y + dy * i;
+    const z = loc.z + dz * i;
+    const b = dim.getBlock({ x, y, z });
+    if (!b) break;
+
+    const id = b.typeId;
+    if (id === OUTPUT_ID) {
+      outputs.push(i);
+      continue;
+    }
+    if (id === PRISM_ID) {
+      prismDist = i;
+      break;
+    }
+    if (id === "minecraft:air") continue;
+    if (id === BEAM_ID) {
+      if (beamAxisMatchesDir(b, dx, dy, dz)) continue;
+      break;
+    }
+
+    // Any other block (including inputs) blocks the scan.
+    break;
+  }
+  return { outputs, prismDist };
+}
+
+function recordBeamKey(recorded, recordedSet, dimId, x, y, z) {
+  const k = key(dimId, x, y, z);
+  if (recordedSet.has(k)) return;
+  recordedSet.add(k);
+  recorded.push(k);
+}
+
+function fillBeamsToDistance(dim, loc, dx, dy, dz, dist, axis, recorded, recordedSet) {
+  for (let i = 1; i < dist; i++) {
+    const x = loc.x + dx * i;
+    const y = loc.y + dy * i;
+    const z = loc.z + dz * i;
+    const b = dim.getBlock({ x, y, z });
+    if (!b) break;
+
+    const id = b.typeId;
+    if (id === "minecraft:air") {
+      if (placeBeamIfAir(dim, x, y, z, axis)) recordBeamKey(recorded, recordedSet, dim.id, x, y, z);
+      continue;
+    }
+
+    if (id === BEAM_ID) {
+      if (beamAxisMatchesDir(b, dx, dy, dz)) {
+        recordBeamKey(recorded, recordedSet, dim.id, x, y, z);
+        continue;
+      }
+      break;
+    }
+
+    if (id === OUTPUT_ID) continue;
+    if (id === PRISM_ID) break;
+
+    // Blocker appeared unexpectedly; stop filling.
+    break;
+  }
+}
+
+function rebuildInputBeams(entry) {
+  const dim = getDimensionById(entry?.dimId);
+  if (!dim) return;
+
+  const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
+  if (!ib || ib.typeId !== INPUT_ID) return;
+
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+
+  const recorded = [];
+  const recordedSet = new Set();
+  for (const d of dirs) {
+    const res = scanOutputsInDir(dim, entry, d.dx, d.dy, d.dz);
+    const maxOut = res.outputs.length > 0 ? res.outputs[res.outputs.length - 1] : 0;
+    const axis = axisForDir(d.dx, d.dy, d.dz);
+    if (maxOut > 0) {
+      fillBeamsToDistance(dim, entry, d.dx, d.dy, d.dz, maxOut, axis, recorded, recordedSet);
+    }
+    if (res.prismDist > 1) {
+      fillBeamsToDistance(dim, entry, d.dx, d.dy, d.dz, res.prismDist, axis, recorded, recordedSet);
+      const prismKey = key(entry.dimId, entry.x + d.dx * res.prismDist, entry.y + d.dy * res.prismDist, entry.z + d.dz * res.prismDist);
+      enqueueRelayForRescan(prismKey);
+    }
+  }
+
+  entry.beams = recorded;
+  delete entry.rays;
+}
+
+function rebuildRelayBeams(entry, map) {
+  const dim = getDimensionById(entry?.dimId);
+  if (!dim) return;
+
+  const pb = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
+  if (!pb || pb.typeId !== PRISM_ID) {
+    removeRecordedBeams(entry);
+    delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
+    return;
+  }
+
+  if (!prismHasBeamNeighbor(dim, entry)) {
+    removeRecordedBeams(entry);
+    delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
+    return;
+  }
+
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+
+  const recorded = [];
+  const recordedSet = new Set();
+  for (const d of dirs) {
+    const res = scanOutputsInDir(dim, entry, d.dx, d.dy, d.dz);
+    const maxOut = res.outputs.length > 0 ? res.outputs[res.outputs.length - 1] : 0;
+    const axis = axisForDir(d.dx, d.dy, d.dz);
+    if (maxOut > 0) {
+      fillBeamsToDistance(dim, entry, d.dx, d.dy, d.dz, maxOut, axis, recorded, recordedSet);
+    }
+    if (res.prismDist > 1) {
+      fillBeamsToDistance(dim, entry, d.dx, d.dy, d.dz, res.prismDist, axis, recorded, recordedSet);
+      const prismKey = key(entry.dimId, entry.x + d.dx * res.prismDist, entry.y + d.dy * res.prismDist, entry.z + d.dz * res.prismDist);
+      enqueueRelayForRescan(prismKey);
+    }
+  }
+
+  entry.beams = recorded;
+  entry.kind = "prism";
+  delete entry.rays;
+  map[key(entry.dimId, entry.x, entry.y, entry.z)] = entry;
 }
 
 function rebuildOrRemoveAllDeterministically() {
@@ -263,10 +446,8 @@ function rebuildOrRemoveAllDeterministically() {
       continue;
     }
 
-    // Deterministic cleanup
     removeRecordedBeams(entry);
 
-    // Verify input still exists
     const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
     if (!ib || ib.typeId !== INPUT_ID) {
       delete map[inputKey];
@@ -274,38 +455,106 @@ function rebuildOrRemoveAllDeterministically() {
       continue;
     }
 
-    // Rebuild: normalize rays (empty blocks) and schedule for sequential growth
-    entry.rays = makeAllRays();
-
-    // Memory-only cursor (not persisted, safe)
-    entry.__nextRayIndex = 0;
-
+    entry.beams = [];
+    entry.kind = "input";
+    delete entry.rays;
     map[inputKey] = entry;
     changed = true;
 
-    enqueueInputForGrowth(inputKey);
+    enqueueInputForRescan(inputKey);
   }
 
   if (changed) saveBeamsMap(map);
 }
 
-// 6-direction rays
-function makeAllRays() {
-  const dirs = [
-    { dx: 1, dy: 0, dz: 0 },
-    { dx: -1, dy: 0, dz: 0 },
-    { dx: 0, dy: 0, dz: 1 },
-    { dx: 0, dy: 0, dz: -1 },
-    { dx: 0, dy: 1, dz: 0 },
-    { dx: 0, dy: -1, dz: 0 },
-  ];
-  return dirs.map((d) => ({
-    dx: d.dx,
-    dy: d.dy,
-    dz: d.dz,
-    axis: axisForDir(d.dx, d.dy, d.dz),
-    blocks: [],
-  }));
+// -----------------------------------------------------------------------------
+// Beam validation (local, budgeted)
+// -----------------------------------------------------------------------------
+function beamValidFromInput(dim, inputLoc, dx, dy, dz, beamDist) {
+  let farthestOutput = 0;
+  for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+    const x = inputLoc.x + dx * i;
+    const y = inputLoc.y + dy * i;
+    const z = inputLoc.z + dz * i;
+    const b = dim.getBlock({ x, y, z });
+    if (!b) break;
+
+    const id = b.typeId;
+    if (id === OUTPUT_ID || id === PRISM_ID) {
+      farthestOutput = i;
+      break;
+    }
+    if (id === "minecraft:air") continue;
+    if (id === BEAM_ID) {
+      if (beamAxisMatchesDir(b, dx, dy, dz)) continue;
+      break;
+    }
+
+    break;
+  }
+  return farthestOutput > beamDist;
+}
+
+function beamValidFromPrism(dim, prismLoc, dx, dy, dz, beamDist) {
+  if (!prismHasBeamNeighbor(dim, prismLoc)) return false;
+
+  let farthestNode = 0;
+  for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+    const x = prismLoc.x + dx * i;
+    const y = prismLoc.y + dy * i;
+    const z = prismLoc.z + dz * i;
+    const b = dim.getBlock({ x, y, z });
+    if (!b) break;
+
+    const id = b.typeId;
+    if (id === OUTPUT_ID || id === PRISM_ID) {
+      farthestNode = i;
+      break;
+    }
+    if (id === "minecraft:air") continue;
+    if (id === BEAM_ID) {
+      if (beamAxisMatchesDir(b, dx, dy, dz)) continue;
+      break;
+    }
+    break;
+  }
+  return farthestNode > beamDist;
+}
+
+function isBeamStillValid(dim, loc) {
+  const b = dim.getBlock(loc);
+  if (!b || b.typeId !== BEAM_ID) return false;
+
+  const axis = getBeamAxis(b);
+  const dirs = beamDirsForAxis(axis);
+
+  for (const d of dirs) {
+    for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+      const x = loc.x + d.dx * i;
+      const y = loc.y + d.dy * i;
+      const z = loc.z + d.dz * i;
+      const scan = dim.getBlock({ x, y, z });
+      if (!scan) break;
+
+      const id = scan.typeId;
+      if (id === INPUT_ID) {
+        if (beamValidFromInput(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) return true;
+        break;
+      }
+      if (id === PRISM_ID) {
+        if (beamValidFromPrism(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) return true;
+        break;
+      }
+      if (id === BEAM_ID) {
+        if (beamAxisMatchesDir(scan, d.dx, d.dy, d.dz)) continue;
+        break;
+      }
+      if (isPassThrough(id)) continue;
+      break;
+    }
+  }
+
+  return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -353,6 +602,49 @@ const FACE_OFFSETS = {
   East: { x: 1, y: 0, z: 0 },
 };
 
+function handleBlockChanged(dim, loc) {
+  if (!dim || !loc) return;
+
+  enqueueAdjacentBeams(dim, loc);
+  enqueueAdjacentPrisms(dim, loc);
+
+  const self = dim.getBlock(loc);
+  if (self?.typeId === PRISM_ID) {
+    enqueueRelayForRescan(key(dim.id, loc.x, loc.y, loc.z));
+  }
+
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+
+  for (const d of dirs) {
+    for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+      const x = loc.x + d.dx * i;
+      const y = loc.y + d.dy * i;
+      const z = loc.z + d.dz * i;
+      const b = dim.getBlock({ x, y, z });
+      if (!b) break;
+
+      const id = b.typeId;
+      if (id === INPUT_ID) {
+        enqueueInputForRescan(key(dim.id, x, y, z));
+        break;
+      }
+      if (id === PRISM_ID) {
+        enqueueRelayForRescan(key(dim.id, x, y, z));
+        break;
+      }
+      if (isPassThrough(id)) continue;
+      break;
+    }
+  }
+}
+
 function handleInputPlaced(block) {
   try {
     if (!block) return;
@@ -369,40 +661,29 @@ function handleInputPlaced(block) {
     const inputKey = key(dimId, x, y, z);
 
     const map = loadBeamsMap();
-
-    if (map[inputKey]) {
-      removeRecordedBeams(map[inputKey]);
-    }
-
-    const entry = {
-      dimId,
-      x,
-      y,
-      z,
-      rays: makeAllRays(),
-      __nextRayIndex: 0, // memory-only cursor for sequential growth
-    };
-
+    const entry = { dimId, x, y, z, beams: [], kind: "input" };
     map[inputKey] = entry;
     saveBeamsMap(map);
 
-    // Sequential growth: do NOT enqueue all rays; enqueue this input for processing.
-    enqueueInputForGrowth(inputKey);
+    enqueueInputForRescan(inputKey);
+    handleBlockChanged(dim, loc);
   } catch {
     // ignore
   }
 }
 
+// -----------------------------------------------------------------------------
+// Event wiring + main tick
+// -----------------------------------------------------------------------------
 export function startBeamSimV0() {
-  // Reload safety
   rebuildOrRemoveAllDeterministically();
 
-  // Place = emit
   world.afterEvents.playerPlaceBlock.subscribe((ev) => {
     try {
       const b = ev?.block;
       if (!b) return;
       scheduleEmitAt(b.dimension, b.location, 0);
+      handleBlockChanged(b.dimension, b.location);
     } catch {
       // ignore
     }
@@ -414,6 +695,7 @@ export function startBeamSimV0() {
         const b = ev?.block;
         if (!b) return;
         scheduleEmitAt(b.dimension, b.location, 0);
+        handleBlockChanged(b.dimension, b.location);
       } catch {
         // ignore
       }
@@ -428,6 +710,7 @@ export function startBeamSimV0() {
         const b = ev?.block;
         if (!b) return;
         scheduleEmitAt(b.dimension, b.location, 0);
+        handleBlockChanged(b.dimension, b.location);
       } catch {
         // ignore
       }
@@ -460,113 +743,91 @@ export function startBeamSimV0() {
     // ignore
   }
 
-  // Break = collapse
   world.afterEvents.playerBreakBlock.subscribe((ev) => {
     try {
       const brokenId = ev.brokenBlockPermutation?.type?.id;
-      if (brokenId !== INPUT_ID) return;
-
-      const dimId = ev.block?.dimension?.id;
+      const dim = ev.block?.dimension;
       const loc = ev.block?.location;
-      if (!dimId || !loc) return;
+      if (!dim || !loc) return;
 
-      const inputKey = key(dimId, loc.x, loc.y, loc.z);
-
-      const map = loadBeamsMap();
-      const entry = map[inputKey];
-      if (!entry) return;
-
-      removeRecordedBeams(entry);
-
-      delete map[inputKey];
-      saveBeamsMap(map);
-
-      // If currently active, cancel it
-      if (active && active.inputKey === inputKey) active = null;
-
-      // Remove from pending queue
-      if (pendingSet.has(inputKey)) {
-        pendingSet.delete(inputKey);
-        for (let i = pendingInputs.length - 1; i >= 0; i--) {
-          if (pendingInputs[i] === inputKey) pendingInputs.splice(i, 1);
+      if (brokenId === INPUT_ID) {
+        const inputKey = key(dim.id, loc.x, loc.y, loc.z);
+        const map = loadBeamsMap();
+        if (map[inputKey]) {
+          delete map[inputKey];
+          saveBeamsMap(map);
         }
       }
 
-      pendingEmit.delete(inputKey);
+      handleBlockChanged(dim, loc);
     } catch {
       // ignore
     }
   });
 
-  // Growth tick (sequential ray growth)
   system.runInterval(() => {
-    let budget = STEPS_PER_TICK;
-    if (budget <= 0) return;
-
     const map = loadBeamsMap();
+    let changed = false;
 
-    // If no active ray, pick the next input and start its next ray
-    pickNextActive(map);
-    if (!active) return;
+    let validationBudget = VALIDATIONS_PER_TICK;
+    while (validationBudget-- > 0 && pendingValidations.length > 0) {
+      const beamKey = pendingValidations.shift();
+      pendingValidationsSet.delete(beamKey);
 
-    // Process one step (budget is 1, but keep loop structure safe)
-    while (budget-- > 0 && active) {
-      const entry = map[active.inputKey];
-      if (!entry) {
-        active = null;
-        break;
+      const p = parseKey(beamKey);
+      if (!p) continue;
+      const dim = getDimensionById(p.dimId);
+      if (!dim) continue;
+
+      const loc = { x: p.x, y: p.y, z: p.z };
+      if (isBeamStillValid(dim, loc)) continue;
+
+      const b = dim.getBlock(loc);
+      if (b?.typeId === BEAM_ID) {
+        b.setType("minecraft:air");
+        enqueueAdjacentBeams(dim, loc);
       }
+    }
 
-      const dim = getDimensionById(active.dimId);
-      if (!dim) {
-        active = null;
-        break;
-      }
+    let inputBudget = INPUTS_PER_TICK;
+    while (inputBudget-- > 0 && pendingInputs.length > 0) {
+      const inputKey = pendingInputs.shift();
+      pendingInputsSet.delete(inputKey);
 
-      // If input vanished, collapse and drop entry
+      const entry = map[inputKey];
+      if (!entry) continue;
+
+      const dim = getDimensionById(entry.dimId);
+      if (!dim) continue;
+
       const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
       if (!ib || ib.typeId !== INPUT_ID) {
-        removeRecordedBeams(entry);
-        delete map[active.inputKey];
-        saveBeamsMap(map);
-        active = null;
-        break;
+        delete map[inputKey];
+        changed = true;
+        continue;
       }
 
-      const res = tryPlaceBeam(dim, active.nextX, active.nextY, active.nextZ, active.axis);
-      if (!res.ok) {
-        // Ray blocked -> finish this ray and start next ray for same input (next tick)
-        active = null;
-        // Ensure entry has cursor; then enqueue input back if it has more rays
-        if (entry.__nextRayIndex == null || !Number.isFinite(entry.__nextRayIndex)) entry.__nextRayIndex = 0;
-        enqueueInputForGrowth(key(entry.dimId, entry.x, entry.y, entry.z));
-        break;
-      }
-
-      // Record only actual beam placements (outputs are pass-through)
-      if (!res.passthroughOutput) {
-        const ray = entry.rays?.[active.rayIndex];
-        if (ray) {
-          if (!Array.isArray(ray.blocks)) ray.blocks = [];
-          ray.blocks.push(key(active.dimId, active.nextX, active.nextY, active.nextZ));
-        }
-      }
-
-      // Advance step
-      active.remaining = (active.remaining | 0) - 1;
-
-      if (active.remaining > 0) {
-        active.nextX += active.dx;
-        active.nextY += active.dy;
-        active.nextZ += active.dz;
-      } else {
-        // Ray complete -> clear active and enqueue this input to continue with next ray
-        active = null;
-        enqueueInputForGrowth(key(entry.dimId, entry.x, entry.y, entry.z));
-      }
-
-      // Persist any changes (blocks list updates)
-      saveBeamsMap(map);
+      rebuildInputBeams(entry);
+      map[inputKey] = entry;
+      changed = true;
     }
+
+    let relayBudget = RELAYS_PER_TICK;
+    while (relayBudget-- > 0 && pendingRelays.length > 0) {
+      const prismKey = pendingRelays.shift();
+      pendingRelaysSet.delete(prismKey);
+
+      const entry = map[prismKey] || (() => {
+        const p = parseKey(prismKey);
+        if (!p) return null;
+        return { dimId: p.dimId, x: p.x, y: p.y, z: p.z, beams: [], kind: "prism" };
+      })();
+      if (!entry) continue;
+
+      rebuildRelayBeams(entry, map);
+      changed = true;
+    }
+
+    if (changed) saveBeamsMap(map);
   }, TICK_INTERVAL);
 }
