@@ -19,11 +19,19 @@ const DEFAULTS = {
   maxTransfersPerTick: 4,
   perInputIntervalTicks: 10,
   cacheTicks: 10,
+  cacheTicksWithStamp: 60,
+  maxVisitedPerSearch: 200,
   orbStepTicks: 20,
   maxOutputOptions: 6,
   levelStep: 50,
   maxLevel: 5,
+  itemsPerOrbBase: 1,
+  itemsPerOrbStep: 1,
+  maxItemsPerOrb: 16,
   minOrbStepTicks: 4,
+  orbVisualMinSpeedScale: 1.0,
+  orbVisualMaxSpeedScale: 1.0,
+  orbStepLevelBoost: 0.75,
 };
 
 const reservedByOutput = new Map();
@@ -182,6 +190,7 @@ function getNodeType(id) {
 function allowAdjacentNode(curType, nodeType) {
   if (curType === "prism" || nodeType === "prism") return true;
   if (nodeType === "output") return true;
+  if (nodeType === "input") return true;
   return false;
 }
 
@@ -241,7 +250,10 @@ export function createTransferPathfinder(deps, opts) {
     const stamp = (typeof getNetworkStamp === "function") ? getNetworkStamp() : null;
     const cached = cache.get(inputKey);
     if (cached) {
-      const okTick = (nowTick - cached.tick) <= cfg.cacheTicks;
+      const ttl = (stamp == null || stamp !== cached.stamp)
+        ? cfg.cacheTicks
+        : Math.max(cfg.cacheTicks, cfg.cacheTicksWithStamp);
+      const okTick = (nowTick - cached.tick) <= ttl;
       const okStamp = (stamp == null || stamp === cached.stamp);
       if (okTick && okStamp) return cached.outputs;
     }
@@ -265,6 +277,7 @@ export function createTransferPathfinder(deps, opts) {
     }
 
     const visited = new Set();
+    let visitedCount = 0;
     const queue = [];
     queue.push({
       nodePos: { x: parsed.x, y: parsed.y, z: parsed.z },
@@ -272,18 +285,18 @@ export function createTransferPathfinder(deps, opts) {
       path: [],
     });
     visited.add(key(parsed.dimId, parsed.x, parsed.y, parsed.z));
+    visitedCount++;
 
     const dirs = makeDirs();
     const outputs = [];
     while (queue.length > 0) {
+      if (visitedCount >= cfg.maxVisitedPerSearch) break;
       const cur = queue.shift();
       if (!cur) continue;
 
       for (const d of dirs) {
         const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
         if (!edge) continue;
-
-        if (edge.nodeType === "input") continue;
 
         const nextKey = key(parsed.dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
         if (visited.has(nextKey)) continue;
@@ -299,6 +312,7 @@ export function createTransferPathfinder(deps, opts) {
           });
           if (outputs.length >= cfg.maxOutputOptions) {
             visited.add(nextKey);
+            visitedCount++;
             queue.push({
               nodePos: edge.nodePos,
               nodeType: edge.nodeType,
@@ -309,11 +323,13 @@ export function createTransferPathfinder(deps, opts) {
         }
 
         visited.add(nextKey);
+        visitedCount++;
         queue.push({
           nodePos: edge.nodePos,
           nodeType: edge.nodeType,
           path: nextPath,
         });
+        if (visitedCount >= cfg.maxVisitedPerSearch) break;
       }
       if (outputs.length >= cfg.maxOutputOptions) break;
     }
@@ -528,7 +544,8 @@ export function createNetworkTransferController(deps, opts) {
     const inContainer = getAttachedInventoryContainer(inBlock, inDim);
     if (!inContainer) return false;
 
-    const pull = findFirstNonEmptySlot(inContainer);
+    const inputFilter = getFilterContainer(inBlock);
+    const pull = findFirstMatchingSlot(inContainer, inputFilter);
     if (!pull) return false;
 
     const inSlot = pull.slot;
@@ -540,7 +557,10 @@ export function createNetworkTransferController(deps, opts) {
       : null;
     if (!options || !Array.isArray(options) || options.length === 0) return false;
 
-    let pathInfo = pickWeightedRandom(options);
+    const filteredOptions = filterOutputsByWhitelist(options, inStack.typeId, resolveBlockInfo);
+    if (!filteredOptions || filteredOptions.length === 0) return false;
+
+    let pathInfo = pickWeightedRandom(filteredOptions);
     if (!pathInfo || !Array.isArray(pathInfo.path) || pathInfo.path.length === 0) return false;
     if (pathInfo.path.length > MAX_STEPS) return false;
 
@@ -551,7 +571,9 @@ export function createNetworkTransferController(deps, opts) {
       if (typeof invalidateInput === "function") invalidateInput(inputKey);
       const freshOptions = findPathForInput ? findPathForInput(inputKey, nowTick) : null;
       if (!freshOptions || !Array.isArray(freshOptions) || freshOptions.length === 0) return false;
-      const freshPick = pickWeightedRandom(freshOptions);
+      const freshFiltered = filterOutputsByWhitelist(freshOptions, inStack.typeId, resolveBlockInfo);
+      if (!freshFiltered || freshFiltered.length === 0) return false;
+      const freshPick = pickWeightedRandom(freshFiltered);
       if (!freshPick || !Array.isArray(freshPick.path) || freshPick.path.length === 0) return false;
       if (!validatePathStart(dim, freshPick.path)) return false;
       pathInfo = freshPick;
@@ -567,19 +589,26 @@ export function createNetworkTransferController(deps, opts) {
     const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
     if (!outContainer) return false;
 
-    if (!canInsertOneWithReservations(pathInfo.outputKey, outContainer, inStack.typeId)) return false;
+    const previewLevel = getNextInputLevel(inputKey);
+    const desiredAmount = getTransferAmount(previewLevel, inStack);
+    const capacity = getInsertCapacityWithReservations(pathInfo.outputKey, outContainer, inStack.typeId, inStack);
+    const transferAmount = Math.min(desiredAmount, inStack.amount, capacity);
+    if (transferAmount <= 0) return false;
 
-    if (!spawnOrbStep(inDim, inBlock.location, pathInfo.path[0])) return false;
+    const firstStep = pathInfo.path[0];
+    const firstBlock = inDim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
+    if (!spawnOrbStep(inDim, inBlock.location, firstStep, previewLevel, inBlock, firstBlock)) return false;
 
     const current = inContainer.getItem(inSlot);
     if (!current || current.typeId !== inStack.typeId || current.amount <= 0) return false;
 
-    if (!decrementInputSlotSafe(inContainer, inSlot, current, 1)) return false;
+    if (!decrementInputSlotSafe(inContainer, inSlot, current, transferAmount)) return false;
 
     const level = noteTransferAndGetLevel(inputKey, inBlock);
     inflight.push({
       dimId: inputInfo.pos.dimId,
       itemTypeId: inStack.typeId,
+      amount: transferAmount,
       path: pathInfo.path,
       stepIndex: 0,
       stepTicks: getOrbStepTicks(level),
@@ -588,7 +617,7 @@ export function createNetworkTransferController(deps, opts) {
       startPos: { x: inputInfo.pos.x, y: inputInfo.pos.y, z: inputInfo.pos.z },
       level: level,
     });
-    reserveOutputSlot(pathInfo.outputKey, inStack.typeId, 1);
+    reserveOutputSlot(pathInfo.outputKey, inStack.typeId, transferAmount);
     inflightDirty = true;
 
     return true;
@@ -615,11 +644,12 @@ export function createNetworkTransferController(deps, opts) {
       const dim = world.getDimension(job.dimId);
       if (!dim) continue;
 
+      const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+      const nextBlock = dim.getBlock({ x: next.x, y: next.y, z: next.z });
       if (job.stepIndex < job.path.length - 1) {
-        const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
         if (!isPathBlock(curBlock)) {
-          dropItemAt(dim, cur, job.itemTypeId);
-          releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+          dropItemAt(dim, cur, job.itemTypeId, job.amount);
+          releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
           inflight.splice(i, 1);
           inflightDirty = true;
           continue;
@@ -627,10 +657,9 @@ export function createNetworkTransferController(deps, opts) {
       }
 
       if (nextIdx < job.path.length - 1) {
-        const nextBlock = dim.getBlock({ x: next.x, y: next.y, z: next.z });
         if (!isPathBlock(nextBlock)) {
-          dropItemAt(dim, cur, job.itemTypeId);
-          releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+          dropItemAt(dim, cur, job.itemTypeId, job.amount);
+          releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
           inflight.splice(i, 1);
           inflightDirty = true;
           continue;
@@ -638,13 +667,12 @@ export function createNetworkTransferController(deps, opts) {
       }
 
       if (job.stepIndex < job.path.length - 1) {
-        const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
         if (curBlock?.typeId === PRISM_ID) {
           notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
         }
       }
 
-      spawnOrbStep(dim, cur, next);
+      spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock);
       job.stepIndex = nextIdx;
       job.ticksUntilStep = job.stepTicks || cfg.orbStepTicks;
       inflightDirty = true;
@@ -657,28 +685,28 @@ export function createNetworkTransferController(deps, opts) {
       const dim = world.getDimension(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
-        if (fallback) dropItemAt(dim, fallback, job.itemTypeId);
+        if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
       }
-      releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+      releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
       return;
     }
 
     const outBlock = outInfo.block;
     if (!outBlock || outBlock.typeId !== OUTPUT_ID) {
-      dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId);
-      releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+      dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId, job.amount);
+      releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
       return;
     }
 
     const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
-    if (outContainer && tryInsertOne(outContainer, new ItemStack(job.itemTypeId, 1))) {
-      releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+    if (outContainer && tryInsertAmount(outContainer, job.itemTypeId, job.amount)) {
+      releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
       noteOutputTransfer(job.outputKey, outBlock);
       return;
     }
 
-    dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId);
-    releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+    dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
+    releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
   }
 
   function noteTransferAndGetLevel(inputKey, block) {
@@ -691,17 +719,34 @@ export function createNetworkTransferController(deps, opts) {
     return level;
   }
 
+  function getNextInputLevel(inputKey) {
+    const current = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
+    return getLevelForCount(current + 1, cfg.levelStep, cfg.maxLevel);
+  }
+
   function getLevelForCount(count, step, maxLevel) {
     const base = Math.max(1, step | 0);
     const lvl = 1 + Math.floor(Math.max(0, count) / base);
     return Math.min(Math.max(1, lvl), Math.max(1, maxLevel | 0));
   }
 
+  function getTransferAmount(level, stack) {
+    const base = Math.max(1, cfg.itemsPerOrbBase | 0);
+    const step = Math.max(0, cfg.itemsPerOrbStep | 0);
+    const maxItems = Math.max(1, cfg.maxItemsPerOrb | 0);
+    const lvl = Math.max(1, level | 0);
+    const desired = base + (lvl - 1) * step;
+    const maxStack = Math.max(1, stack?.maxAmount || 64);
+    return Math.min(maxItems, maxStack, desired);
+  }
+
   function getOrbStepTicks(level) {
     const safeLevel = Math.max(1, level | 0);
     const base = Math.max(1, cfg.orbStepTicks | 0);
     const minTicks = Math.max(1, cfg.minOrbStepTicks | 0);
-    return Math.max(minTicks, Math.floor(base / safeLevel));
+    const boost = Math.max(0.1, Number(cfg.orbStepLevelBoost) || 0.75);
+    const scale = 1 + (safeLevel - 1) * boost;
+    return Math.max(minTicks, Math.floor(base / scale));
   }
 
   function updateBlockLevel(block, level) {
@@ -762,11 +807,12 @@ export function createNetworkTransferController(deps, opts) {
     reservedByOutput.clear();
     for (const job of inflight) {
       if (!job || !job.outputKey || !job.itemTypeId) continue;
-      reserveOutputSlot(job.outputKey, job.itemTypeId, 1);
+      const amt = Math.max(1, job.amount | 0);
+      reserveOutputSlot(job.outputKey, job.itemTypeId, amt);
     }
   }
 
-  function spawnOrbStep(dim, from, to) {
+  function spawnOrbStep(dim, from, to, level, fromBlock, toBlock) {
     try {
       if (!FX || !FX.particleTransferItem) return false;
       const fxId = FX.particleTransferItem;
@@ -774,7 +820,9 @@ export function createNetworkTransferController(deps, opts) {
       if (!dir) return false;
 
       const molang = new MolangVariableMap();
-      const speed = 1.0;
+      const lifetime = getOrbLifetimeSeconds(level);
+      const speed = getOrbVisualSpeed(from, to, dir, level, lifetime);
+      const color = getOrbColor(level);
       if (typeof molang.setSpeedAndDirection === "function") {
         molang.setSpeedAndDirection("variable.chaos_move", speed, dir);
       }
@@ -782,6 +830,11 @@ export function createNetworkTransferController(deps, opts) {
       molang.setFloat("variable.chaos_move.direction_x", dir.x);
       molang.setFloat("variable.chaos_move.direction_y", dir.y);
       molang.setFloat("variable.chaos_move.direction_z", dir.z);
+      molang.setFloat("variable.chaos_color_r", color.r);
+      molang.setFloat("variable.chaos_color_g", color.g);
+      molang.setFloat("variable.chaos_color_b", color.b);
+      molang.setFloat("variable.chaos_color_a", color.a);
+      molang.setFloat("variable.chaos_lifetime", lifetime);
 
       const pos = {
         x: from.x + 0.5,
@@ -804,10 +857,51 @@ export function createNetworkTransferController(deps, opts) {
     return { x: dx / len, y: dy / len, z: dz / len };
   }
 
-  function dropItemAt(dim, loc, typeId) {
+  function getOrbLifetimeSeconds(level) {
+    const stepTicks = Math.max(1, getOrbStepTicks(Math.max(1, level | 0)));
+    return Math.max(0.05, stepTicks / 20);
+  }
+
+  function getOrbVisualSpeed(from, to, dir, level, lifetimeSeconds) {
+    // Keep particle motion visually in sync with step cadence.
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const dist = Math.max(0.01, Math.sqrt(dx * dx + dy * dy + dz * dz));
+    const life = Math.max(0.05, Number(lifetimeSeconds) || 0.05);
+    const baseSpeed = dist / life;
+    const minScale = Math.max(0.1, Number(cfg.orbVisualMinSpeedScale) || 0.6);
+    const maxScale = Math.max(minScale, Number(cfg.orbVisualMaxSpeedScale) || 1.0);
+    return Math.max(0.1, baseSpeed * Math.max(minScale, Math.min(maxScale, 1.0)));
+  }
+
+  function getOrbColor(level) {
+    const lvl = Math.min(cfg.maxLevel | 0, Math.max(1, level | 0));
+    const palette = [
+      { r: 0.2, g: 0.9, b: 1.0, a: 1.0 },  // L1 cyan
+      { r: 0.3, g: 1.0, b: 0.4, a: 1.0 },  // L2 green
+      { r: 1.0, g: 0.8, b: 0.2, a: 1.0 },  // L3 gold
+      { r: 1.0, g: 0.3, b: 0.9, a: 1.0 },  // L4 magenta
+      { r: 1.0, g: 0.95, b: 0.95, a: 1.0 }, // L5 bright
+    ];
+    return palette[lvl - 1] || palette[0];
+  }
+
+  function dropItemAt(dim, loc, typeId, amount) {
     try {
       const dropLoc = findDropLocation(dim, loc);
-      dim.spawnItem(new ItemStack(typeId, 1), dropLoc);
+      const amt = Math.max(1, amount | 0);
+      let remaining = amt;
+      let maxStack = 64;
+      try {
+        const probe = new ItemStack(typeId, 1);
+        maxStack = probe.maxAmount || 64;
+      } catch {}
+      while (remaining > 0) {
+        const n = Math.min(maxStack, remaining);
+        dim.spawnItem(new ItemStack(typeId, n), dropLoc);
+        remaining -= n;
+      }
     } catch {
       // ignore
     }
@@ -825,6 +919,8 @@ function sanitizeInflightEntry(entry) {
     if (!Number.isFinite(entry.stepIndex)) entry.stepIndex = 0;
     if (!Number.isFinite(entry.ticksUntilStep)) entry.ticksUntilStep = 1;
     if (!Number.isFinite(entry.stepTicks)) entry.stepTicks = entry.ticksUntilStep;
+    if (!Number.isFinite(entry.amount)) entry.amount = 1;
+    entry.amount = Math.max(1, entry.amount | 0);
     if (!entry.outputKey || typeof entry.outputKey !== "string") return null;
     if (!entry.startPos || !Number.isFinite(entry.startPos.x)) entry.startPos = null;
     return entry;
@@ -863,7 +959,7 @@ function validatePathStart(dim, path) {
 function isPathBlock(block) {
   if (!block) return false;
   const id = block.typeId;
-  return id === BEAM_ID || id === PRISM_ID || id === OUTPUT_ID;
+  return id === BEAM_ID || id === PRISM_ID || id === OUTPUT_ID || id === INPUT_ID;
 }
 
 function findDropLocation(dim, loc) {
@@ -1012,12 +1108,101 @@ function getInventoryContainer(block) {
   }
 }
 
+function getFilterContainer(block) {
+  try {
+    if (!block) return null;
+    const inv = block.getComponent("minecraft:inventory");
+    if (!inv) return null;
+    return inv.container || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function isFilterEmpty(container) {
+  try {
+    if (!container) return true;
+    const size = container.size;
+    for (let i = 0; i < size; i++) {
+      const it = container.getItem(i);
+      if (it && it.amount > 0) return false;
+    }
+    return true;
+  } catch (_) {
+    return true;
+  }
+}
+
+function getFilterSet(container) {
+  try {
+    if (!container) return null;
+    const size = container.size;
+    const set = new Set();
+    for (let i = 0; i < size; i++) {
+      const it = container.getItem(i);
+      if (!it || it.amount <= 0) continue;
+      set.add(it.typeId);
+    }
+    return set;
+  } catch (_) {
+    return null;
+  }
+}
+
+function filterAllows(container, typeId) {
+  if (!container || !typeId) return true;
+  if (isFilterEmpty(container)) return true;
+  const set = getFilterSet(container);
+  if (!set || set.size === 0) return true;
+  return set.has(typeId);
+}
+
+function filterOutputsByWhitelist(options, typeId, resolveBlockInfo) {
+  try {
+    if (!options || options.length === 0) return [];
+    if (typeof resolveBlockInfo !== "function") return options;
+    const filtered = [];
+    for (const opt of options) {
+      if (!opt || !opt.outputKey) continue;
+      const outInfo = resolveBlockInfo(opt.outputKey);
+      if (!outInfo || !outInfo.block || outInfo.block.typeId !== OUTPUT_ID) continue;
+      const filter = getFilterContainer(outInfo.block);
+      if (!filterAllows(filter, typeId)) continue;
+      filtered.push(opt);
+    }
+    return filtered;
+  } catch (_) {
+    return [];
+  }
+}
+
 function findFirstNonEmptySlot(container) {
   try {
     const size = container.size;
     for (let i = 0; i < size; i++) {
       const it = container.getItem(i);
       if (it && it.amount > 0) return { slot: i, stack: it };
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function findFirstMatchingSlot(container, filterContainer) {
+  try {
+    if (!filterContainer || isFilterEmpty(filterContainer)) {
+      return findFirstNonEmptySlot(container);
+    }
+
+    const allowed = getFilterSet(filterContainer);
+    if (!allowed || allowed.size === 0) return findFirstNonEmptySlot(container);
+
+    const size = container.size;
+    for (let i = 0; i < size; i++) {
+      const it = container.getItem(i);
+      if (!it || it.amount <= 0) continue;
+      if (allowed.has(it.typeId)) return { slot: i, stack: it };
     }
     return null;
   } catch (_) {
@@ -1099,9 +1284,19 @@ function canInsertOne(container, typeId) {
 
 function canInsertOneWithReservations(outputKey, container, typeId) {
   try {
+    const capacity = getInsertCapacityWithReservations(outputKey, container, typeId, null);
+    return capacity >= 1;
+  } catch (_) {
+    return false;
+  }
+}
+
+function getInsertCapacityWithReservations(outputKey, container, typeId, stack) {
+  try {
     const size = container.size;
     let stackRoom = 0;
     let emptySlots = 0;
+    const maxStack = Math.max(1, stack?.maxAmount || 64);
 
     for (let i = 0; i < size; i++) {
       const it = container.getItem(i);
@@ -1110,15 +1305,15 @@ function canInsertOneWithReservations(outputKey, container, typeId) {
         continue;
       }
       if (it.typeId !== typeId) continue;
-      const max = it.maxAmount || 64;
+      const max = it.maxAmount || maxStack;
       if (it.amount < max) stackRoom += (max - it.amount);
     }
 
     const reservedTotal = getReservedForOutput(outputKey).total;
-    const capacity = stackRoom + emptySlots;
-    return (capacity - reservedTotal) >= 1;
+    const capacity = stackRoom + (emptySlots * maxStack);
+    return Math.max(0, capacity - reservedTotal);
   } catch (_) {
-    return false;
+    return 0;
   }
 }
 
@@ -1186,6 +1381,49 @@ function tryInsertOne(container, oneStack) {
     }
 
     return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+function tryInsertAmount(container, typeId, amount) {
+  try {
+    if (!container || !typeId) return false;
+    let remaining = Math.max(1, amount | 0);
+    if (remaining <= 0) return false;
+
+    const probe = new ItemStack(typeId, 1);
+    const maxStack = probe.maxAmount || 64;
+    const size = container.size;
+
+    for (let i = 0; i < size && remaining > 0; i++) {
+      const it = container.getItem(i);
+      if (!it) continue;
+      if (it.typeId !== typeId) continue;
+      const max = it.maxAmount || maxStack;
+      if (it.amount >= max) continue;
+
+      const add = Math.min(max - it.amount, remaining);
+      const next = (typeof it.clone === "function") ? it.clone() : it;
+      next.amount = it.amount + add;
+
+      try {
+        container.setItem(i, next);
+        remaining -= add;
+      } catch (_) {}
+    }
+
+    for (let j = 0; j < size && remaining > 0; j++) {
+      const it2 = container.getItem(j);
+      if (it2) continue;
+      const add = Math.min(maxStack, remaining);
+      try {
+        container.setItem(j, new ItemStack(typeId, add));
+        remaining -= add;
+      } catch (_) {}
+    }
+
+    return remaining <= 0;
   } catch (_) {
     return false;
   }

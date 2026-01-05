@@ -246,6 +246,67 @@ function enqueueAdjacentPrisms(dim, loc) {
   }
 }
 
+function enqueueBeamsInLine(dim, loc) {
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+  for (const d of dirs) {
+    for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+      const x = loc.x + d.dx * i;
+      const y = loc.y + d.dy * i;
+      const z = loc.z + d.dz * i;
+      const b = dim.getBlock({ x, y, z });
+      if (!b) break;
+      const id = b.typeId;
+      if (id === BEAM_ID) {
+        enqueueBeamValidation(key(dim.id, x, y, z));
+        continue;
+      }
+      if (id === OUTPUT_ID) continue;
+      if (id === PRISM_ID) break;
+      if (id === "minecraft:air") break;
+      break;
+    }
+  }
+}
+
+function clearBeamsFromBreak(dim, loc) {
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+  for (const d of dirs) {
+    for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+      const x = loc.x + d.dx * i;
+      const y = loc.y + d.dy * i;
+      const z = loc.z + d.dz * i;
+      const b = dim.getBlock({ x, y, z });
+      if (!b) break;
+      const id = b.typeId;
+      if (id === BEAM_ID) {
+        b.setType("minecraft:air");
+        enqueueAdjacentBeams(dim, { x, y, z });
+        enqueueAdjacentPrisms(dim, { x, y, z });
+        continue;
+      }
+      if (id === "minecraft:air") break;
+      if (id === OUTPUT_ID) break;
+      if (id === INPUT_ID) break;
+      if (id === PRISM_ID) break;
+      break;
+    }
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Beam placement helpers
 // -----------------------------------------------------------------------------
@@ -269,26 +330,34 @@ function removeRecordedBeams(entry) {
     if (!dim) return;
 
     const recorded = Array.isArray(entry?.beams) ? entry.beams : [];
-    for (const bk of recorded) {
-      const p = parseKey(bk);
-      if (!p) continue;
-      if (p.dimId !== entry.dimId) continue;
-      const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
-      if (b?.typeId === BEAM_ID) b.setType("minecraft:air");
-    }
+      for (const bk of recorded) {
+        const p = parseKey(bk);
+        if (!p) continue;
+        if (p.dimId !== entry.dimId) continue;
+        const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
+        if (b?.typeId === BEAM_ID) {
+          b.setType("minecraft:air");
+          enqueueAdjacentBeams(dim, p);
+          enqueueAdjacentPrisms(dim, p);
+        }
+      }
 
     // legacy cleanup (rays.blocks)
     const rays = Array.isArray(entry?.rays) ? entry.rays : [];
     for (const r of rays) {
       const blocks = Array.isArray(r?.blocks) ? r.blocks : [];
-      for (const bk of blocks) {
-        const p = parseKey(bk);
-        if (!p) continue;
-        if (p.dimId !== entry.dimId) continue;
-        const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
-        if (b?.typeId === BEAM_ID) b.setType("minecraft:air");
+        for (const bk of blocks) {
+          const p = parseKey(bk);
+          if (!p) continue;
+          if (p.dimId !== entry.dimId) continue;
+          const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
+          if (b?.typeId === BEAM_ID) {
+            b.setType("minecraft:air");
+            enqueueAdjacentBeams(dim, p);
+            enqueueAdjacentPrisms(dim, p);
+          }
+        }
       }
-    }
   } catch {
     // ignore
   }
@@ -371,6 +440,8 @@ function rebuildInputBeams(entry) {
 
   const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
   if (!ib || ib.typeId !== INPUT_ID) return;
+
+  removeRecordedBeams(entry);
 
   const dirs = [
     { dx: 1, dy: 0, dz: 0 },
@@ -624,16 +695,23 @@ const FACE_OFFSETS = {
   East: { x: 1, y: 0, z: 0 },
 };
 
-function handleBlockChanged(dim, loc) {
+function handleBlockChanged(dim, loc, prevId, nextId) {
   if (!dim || !loc) return;
 
   bumpNetworkStamp();
   enqueueAdjacentBeams(dim, loc);
-  enqueueAdjacentPrisms(dim, loc);
 
   const self = dim.getBlock(loc);
-  if (self?.typeId === PRISM_ID) {
+  const selfId = nextId || self?.typeId;
+  const beamChanged = (prevId === BEAM_ID || selfId === BEAM_ID);
+  if (beamChanged) enqueueAdjacentPrisms(dim, loc);
+
+  if (selfId === PRISM_ID || prevId === PRISM_ID) {
     enqueueRelayForRescan(key(dim.id, loc.x, loc.y, loc.z));
+  }
+  if (prevId === PRISM_ID) {
+    enqueueBeamsInLine(dim, loc);
+    clearBeamsFromBreak(dim, loc);
   }
 
   const dirs = [
@@ -706,7 +784,7 @@ export function startBeamSimV0() {
       const b = ev?.block;
       if (!b) return;
       scheduleEmitAt(b.dimension, b.location, 0);
-      handleBlockChanged(b.dimension, b.location);
+      handleBlockChanged(b.dimension, b.location, null, b.typeId);
     } catch {
       // ignore
     }
@@ -718,7 +796,7 @@ export function startBeamSimV0() {
         const b = ev?.block;
         if (!b) return;
         scheduleEmitAt(b.dimension, b.location, 0);
-        handleBlockChanged(b.dimension, b.location);
+        handleBlockChanged(b.dimension, b.location, null, b.typeId);
       } catch {
         // ignore
       }
@@ -733,7 +811,7 @@ export function startBeamSimV0() {
         const b = ev?.block;
         if (!b) return;
         scheduleEmitAt(b.dimension, b.location, 0);
-        handleBlockChanged(b.dimension, b.location);
+        handleBlockChanged(b.dimension, b.location, null, b.typeId);
       } catch {
         // ignore
       }
@@ -782,7 +860,7 @@ export function startBeamSimV0() {
         }
       }
 
-      handleBlockChanged(dim, loc);
+      handleBlockChanged(dim, loc, brokenId, "minecraft:air");
     } catch {
       // ignore
     }
@@ -809,6 +887,7 @@ export function startBeamSimV0() {
       if (b?.typeId === BEAM_ID) {
         b.setType("minecraft:air");
         enqueueAdjacentBeams(dim, loc);
+        enqueueAdjacentPrisms(dim, loc);
       }
     }
 

@@ -52,6 +52,28 @@ function applyBeamMotion(m, dir, dist, speed) {
   }
 }
 
+function getBlockLevel(block) {
+  try {
+    const level = block?.permutation?.getState("chaos:level");
+    if (Number.isFinite(level)) return level | 0;
+  } catch {
+    // ignore
+  }
+  return 1;
+}
+
+function getOrbColor(level) {
+  const lvl = Math.min(5, Math.max(1, level | 0));
+  const palette = [
+    { r: 0.2, g: 0.9, b: 1.0, a: 1.0 },  // L1 cyan
+    { r: 0.3, g: 1.0, b: 0.4, a: 1.0 },  // L2 green
+    { r: 1.0, g: 0.8, b: 0.2, a: 1.0 },  // L3 gold
+    { r: 1.0, g: 0.3, b: 0.9, a: 1.0 },  // L4 magenta
+    { r: 1.0, g: 0.95, b: 0.95, a: 1.0 }, // L5 bright
+  ];
+  return palette[lvl - 1] || palette[0];
+}
+
 // Must match transfer_orb.json lifetime (seconds)
 const ORB_LIFETIME_SECONDS = 1.0;
 
@@ -156,6 +178,14 @@ export const FX = {
 
       const m = new MolangVariableMap();
       m.setSpeedAndDirection("variable.chaos_move", speed, { x: dx, y: dy, z: dz });
+      m.setFloat("variable.chaos_lifetime", ORB_LIFETIME_SECONDS);
+
+      const level = Math.max(getBlockLevel(fromBlock), getBlockLevel(toBlock));
+      const color = getOrbColor(level);
+      m.setFloat("variable.chaos_color_r", color.r);
+      m.setFloat("variable.chaos_color_g", color.g);
+      m.setFloat("variable.chaos_color_b", color.b);
+      m.setFloat("variable.chaos_color_a", color.a);
       return m;
     } catch {
       return null;

@@ -14,6 +14,7 @@ export function makeTransferMolang(dir) {
   //
   // Tune speed to taste; start obvious so you can SEE it move.
   m.setSpeedAndDirection("variable.chaos_move", 3.0, dir);
+  m.setFloat("variable.chaos_lifetime", 1.0);
 
   return m;
 }

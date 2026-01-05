@@ -22,12 +22,14 @@ const TICK_INTERVAL = 10;              // interval ticks (we budget inside)
 const REBUILD_CACHE_EVERY_TICKS = 20; // refresh flattened link list sometimes
 const COUNTS_CACHE_TICKS = 20;
 const MAX_LOOK_DISTANCE = 16;
+const ACTIONBAR_TICKS = 2;
 
 // ---------- Internal state ----------
 let _tick = 0;
 let _cacheSig = "";
 let _flatLinks = []; // [{ dimId, inPos:{x,y,z}, outPos:{x,y,z} }]
 const _rrIndexByPlayer = new Map(); // playerId -> cursor
+const _lastActionBarByPlayer = new Map(); // playerId -> tick
 let _countsTick = -9999;
 let _inputCounts = {};
 let _outputCounts = {};
@@ -128,6 +130,10 @@ function getTargetBlock(player) {
 }
 
 function showWandStats(player) {
+  const last = _lastActionBarByPlayer.get(player.id) ?? -9999;
+  if ((_tick - last) < ACTIONBAR_TICKS) return;
+  _lastActionBarByPlayer.set(player.id, _tick);
+
   const block = getTargetBlock(player);
   if (!block) return;
 

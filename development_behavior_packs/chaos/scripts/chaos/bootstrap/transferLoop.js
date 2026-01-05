@@ -20,7 +20,10 @@ export function startTransferLoop(ctx) {
     transferStarted = true;
 
     try {
-      const pathfinder = createTransferPathfinder({ world, getNetworkStamp }, { cacheTicks: 10 });
+      const pathfinder = createTransferPathfinder(
+        { world, getNetworkStamp },
+        { cacheTicks: 10, cacheTicksWithStamp: 60, maxVisitedPerSearch: 200 }
+      );
       const controller = createNetworkTransferController(
         {
           world,

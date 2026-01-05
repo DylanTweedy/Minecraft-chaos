@@ -5,10 +5,18 @@
     "input_node_top":    { "textures": "textures/blocks/input_node_top" },
     "input_node_bottom": { "textures": "textures/blocks/input_node_bottom" },
     "input_node_side":   { "textures": "textures/blocks/input_node_side" },
+    "input_node_side2":  { "textures": "textures/blocks/input_node_side2" },
+    "input_node_side3":  { "textures": "textures/blocks/input_node_side3" },
+    "input_node_side4":  { "textures": "textures/blocks/input_node_side4" },
+    "input_node_side5":  { "textures": "textures/blocks/input_node_side5" },
 
     "output_node_top":    { "textures": "textures/blocks/output_node_top" },
     "output_node_bottom": { "textures": "textures/blocks/output_node_bottom" },
     "output_node_side":   { "textures": "textures/blocks/output_node_side" },
+    "output_node_side2":  { "textures": "textures/blocks/output_node_side2" },
+    "output_node_side3":  { "textures": "textures/blocks/output_node_side3" },
+    "output_node_side4":  { "textures": "textures/blocks/output_node_side4" },
+    "output_node_side5":  { "textures": "textures/blocks/output_node_side5" },
 
     "crucible_top":    { "textures": "textures/blocks/crucible_top" },
     "crucible_bottom": { "textures": "textures/blocks/crucible_bottom" },

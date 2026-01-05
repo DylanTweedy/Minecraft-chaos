@@ -50,23 +50,58 @@
       },
       {
         "condition": "q.block_state('chaos:level') == 1",
-        "components": { "minecraft:light_emission": 2 }
+        "components": {
+          "minecraft:light_emission": 2,
+          "minecraft:material_instances": {
+            "*":    { "texture": "input_node_side",   "render_method": "opaque" },
+            "up":   { "texture": "input_node_top",    "render_method": "opaque" },
+            "down": { "texture": "input_node_bottom", "render_method": "opaque" }
+          }
+        }
       },
       {
         "condition": "q.block_state('chaos:level') == 2",
-        "components": { "minecraft:light_emission": 4 }
+        "components": {
+          "minecraft:light_emission": 4,
+          "minecraft:material_instances": {
+            "*":    { "texture": "input_node_side2",  "render_method": "opaque" },
+            "up":   { "texture": "input_node_top",    "render_method": "opaque" },
+            "down": { "texture": "input_node_bottom", "render_method": "opaque" }
+          }
+        }
       },
       {
         "condition": "q.block_state('chaos:level') == 3",
-        "components": { "minecraft:light_emission": 6 }
+        "components": {
+          "minecraft:light_emission": 6,
+          "minecraft:material_instances": {
+            "*":    { "texture": "input_node_side3",  "render_method": "opaque" },
+            "up":   { "texture": "input_node_top",    "render_method": "opaque" },
+            "down": { "texture": "input_node_bottom", "render_method": "opaque" }
+          }
+        }
       },
       {
         "condition": "q.block_state('chaos:level') == 4",
-        "components": { "minecraft:light_emission": 9 }
+        "components": {
+          "minecraft:light_emission": 9,
+          "minecraft:material_instances": {
+            "*":    { "texture": "input_node_side4",  "render_method": "opaque" },
+            "up":   { "texture": "input_node_top",    "render_method": "opaque" },
+            "down": { "texture": "input_node_bottom", "render_method": "opaque" }
+          }
+        }
       },
       {
         "condition": "q.block_state('chaos:level') == 5",
-        "components": { "minecraft:light_emission": 12 }
+        "components": {
+          "minecraft:light_emission": 12,
+          "minecraft:material_instances": {
+            "*":    { "texture": "input_node_side5",  "render_method": "opaque" },
+            "up":   { "texture": "input_node_top",    "render_method": "opaque" },
+            "down": { "texture": "input_node_bottom", "render_method": "opaque" }
+          }
+        }
       }
     ]
   }
