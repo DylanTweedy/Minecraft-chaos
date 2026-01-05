@@ -17,6 +17,7 @@ const DEFAULTS = {
   perInputIntervalTicks: 10,
   cacheTicks: 10,
   orbStepTicks: 20,
+  maxOutputOptions: 6,
 };
 
 function mergeCfg(defaults, opts) {
@@ -107,7 +108,13 @@ function getNodeType(id) {
   return null;
 }
 
-function scanEdgeFromNode(dim, loc, dir) {
+function allowAdjacentNode(curType, nodeType) {
+  if (curType === "prism" || nodeType === "prism") return true;
+  if (nodeType === "output") return true;
+  return false;
+}
+
+function scanEdgeFromNode(dim, loc, dir, curNodeType) {
   const path = [];
   for (let i = 1; i <= MAX_BEAM_LEN; i++) {
     const x = loc.x + dir.dx * i;
@@ -124,7 +131,7 @@ function scanEdgeFromNode(dim, loc, dir) {
 
     const nodeType = getNodeType(id);
     if (nodeType) {
-      if (path.length === 0) return null;
+      if (path.length === 0 && !allowAdjacentNode(curNodeType, nodeType)) return null;
       return {
         nodeType,
         nodePos: { x, y, z },
@@ -165,24 +172,24 @@ export function createTransferPathfinder(deps, opts) {
     if (cached) {
       const okTick = (nowTick - cached.tick) <= cfg.cacheTicks;
       const okStamp = (stamp == null || stamp === cached.stamp);
-      if (okTick && okStamp) return cached.path;
+      if (okTick && okStamp) return cached.outputs;
     }
 
     const parsed = parseKey(inputKey);
     if (!parsed) {
-      cache.set(inputKey, { tick: nowTick, stamp, path: null });
+      cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
       return null;
     }
 
     const dim = world.getDimension(parsed.dimId);
     if (!dim) {
-      cache.set(inputKey, { tick: nowTick, stamp, path: null });
+      cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
       return null;
     }
 
     const startBlock = dim.getBlock({ x: parsed.x, y: parsed.y, z: parsed.z });
     if (!startBlock || startBlock.typeId !== INPUT_ID) {
-      cache.set(inputKey, { tick: nowTick, stamp, path: null });
+      cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
       return null;
     }
 
@@ -196,17 +203,16 @@ export function createTransferPathfinder(deps, opts) {
     visited.add(key(parsed.dimId, parsed.x, parsed.y, parsed.z));
 
     const dirs = makeDirs();
+    const outputs = [];
     while (queue.length > 0) {
       const cur = queue.shift();
       if (!cur) continue;
 
       for (const d of dirs) {
-        const edge = scanEdgeFromNode(dim, cur.nodePos, d);
+        const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
         if (!edge) continue;
 
-        if (cur.nodeType === "input" && edge.nodeType === "input") continue;
-        if (cur.nodeType === "prism" && edge.nodeType === "input") continue;
-        if (cur.nodeType === "output") continue;
+        if (edge.nodeType === "input") continue;
 
         const nextKey = key(parsed.dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
         if (visited.has(nextKey)) continue;
@@ -214,14 +220,21 @@ export function createTransferPathfinder(deps, opts) {
         const nextPath = cur.path.concat(edge.path, [edge.nodePos]);
 
         if (edge.nodeType === "output") {
-          const result = {
+          outputs.push({
             dimId: parsed.dimId,
             outputKey: nextKey,
             outputPos: edge.nodePos,
             path: nextPath,
-          };
-          cache.set(inputKey, { tick: nowTick, stamp, path: result });
-          return result;
+          });
+          if (outputs.length >= cfg.maxOutputOptions) {
+            visited.add(nextKey);
+            queue.push({
+              nodePos: edge.nodePos,
+              nodeType: edge.nodeType,
+              path: nextPath,
+            });
+            break;
+          }
         }
 
         visited.add(nextKey);
@@ -231,9 +244,15 @@ export function createTransferPathfinder(deps, opts) {
           path: nextPath,
         });
       }
+      if (outputs.length >= cfg.maxOutputOptions) break;
     }
 
-    cache.set(inputKey, { tick: nowTick, stamp, path: null });
+    if (outputs.length > 0) {
+      cache.set(inputKey, { tick: nowTick, stamp, outputs });
+      return outputs;
+    }
+
+    cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
     return null;
   }
 
@@ -366,9 +385,12 @@ export function createNetworkTransferController(deps, opts) {
     const inStack = pull.stack;
     if (!inStack || inStack.amount <= 0) return false;
 
-    const pathInfo = (typeof findPathForInput === "function")
+    const options = (typeof findPathForInput === "function")
       ? findPathForInput(inputKey, nowTick)
       : null;
+    if (!options || !Array.isArray(options) || options.length === 0) return false;
+
+    let pathInfo = pickWeightedRandom(options);
     if (!pathInfo || !Array.isArray(pathInfo.path) || pathInfo.path.length === 0) return false;
     if (pathInfo.path.length > MAX_STEPS) return false;
 
@@ -377,11 +399,12 @@ export function createNetworkTransferController(deps, opts) {
 
     if (!validatePathStart(dim, pathInfo.path)) {
       if (typeof invalidateInput === "function") invalidateInput(inputKey);
-      const fresh = findPathForInput ? findPathForInput(inputKey, nowTick) : null;
-      if (!fresh || !Array.isArray(fresh.path) || fresh.path.length === 0) return false;
-      if (!validatePathStart(dim, fresh.path)) return false;
-      pathInfo.path = fresh.path;
-      pathInfo.outputKey = fresh.outputKey;
+      const freshOptions = findPathForInput ? findPathForInput(inputKey, nowTick) : null;
+      if (!freshOptions || !Array.isArray(freshOptions) || freshOptions.length === 0) return false;
+      const freshPick = pickWeightedRandom(freshOptions);
+      if (!freshPick || !Array.isArray(freshPick.path) || freshPick.path.length === 0) return false;
+      if (!validatePathStart(dim, freshPick.path)) return false;
+      pathInfo = freshPick;
     }
     if (pathInfo.path.length > MAX_STEPS) return false;
 
@@ -601,6 +624,26 @@ function findDropLocation(dim, loc) {
     }
   }
   return { x: loc.x + 0.5, y: loc.y + 0.5, z: loc.z + 0.5 };
+}
+
+function pickWeightedRandom(outputs) {
+  if (!outputs || outputs.length === 0) return null;
+  if (outputs.length === 1) return outputs[0];
+
+  let total = 0;
+  const weights = outputs.map((o) => {
+    const len = Array.isArray(o.path) ? o.path.length : 1;
+    const w = 1 / Math.max(1, len);
+    total += w;
+    return w;
+  });
+
+  let r = Math.random() * total;
+  for (let i = 0; i < outputs.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return outputs[i];
+  }
+  return outputs[outputs.length - 1];
 }
 
 function getAttachedInventoryContainer(nodeBlock, dimension) {
