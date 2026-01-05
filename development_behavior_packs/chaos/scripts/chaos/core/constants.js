@@ -23,6 +23,13 @@ export const PARTICLE_SELECT_INPUT = "minecraft:basic_flame_particle";
 export const PARTICLE_PAIR_SUCCESS = "chaos:block_burst_pop";
 export const PARTICLE_BEAM = "chaos:link_beam";
 
+// Upgraded beam visuals
+export const PARTICLE_BEAM_CORE = "chaos:link_beam_core";
+export const PARTICLE_BEAM_HAZE = "chaos:link_beam_haze";
+export const PARTICLE_BEAM_SPIRAL = "chaos:link_beam_spiral";
+export const PARTICLE_BEAM_INPUT_CHARGE = "chaos:link_input_charge";
+export const PARTICLE_BEAM_OUTPUT_BURST = "chaos:link_output_burst";
+
 // Unpair visuals
 export const PARTICLE_UNPAIR_SUCCESS = "chaos:block_burst_puff";
 export const PARTICLE_UNPAIR_BEAM = "chaos:link_beam";

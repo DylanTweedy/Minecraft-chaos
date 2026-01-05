@@ -1,0 +1,42 @@
+{
+  "format_version": "1.10.0",
+  "particle_effect": {
+    "description": {
+      "identifier": "chaos:link_beam_haze",
+      "basic_render_parameters": {
+        "material": "particles_alpha",
+        "texture": "textures/particle/beam"
+      }
+    },
+    "components": {
+      "minecraft:emitter_lifetime_once": {},
+      "minecraft:emitter_rate_instant": { "num_particles": 1 },
+      "minecraft:particle_lifetime_expression": {
+        "max_lifetime": "variable.chaos_dist / math.max(0.1, variable.chaos_move.speed * (0.4 + variable.particle_random_0 * 0.5))"
+      },
+      "minecraft:particle_appearance_billboard": {
+        "size": [0.26, 0.26],
+        "facing_camera_mode": "rotate_xyz"
+      },
+      "minecraft:particle_appearance_tinting": {
+        "color": [
+          "variable.chaos_color_r * 0.6",
+          "variable.chaos_color_g * 0.75",
+          "variable.chaos_color_b * 0.9",
+          "variable.chaos_color_a * 0.45"
+        ]
+      },
+      "minecraft:emitter_shape_point": {
+        "direction": [
+          "variable.chaos_move.direction_x",
+          "variable.chaos_move.direction_y",
+          "variable.chaos_move.direction_z"
+        ]
+      },
+      "minecraft:particle_initial_speed": "variable.chaos_move.speed * (0.4 + variable.particle_random_0 * 0.5)",
+      "minecraft:particle_motion_dynamic": {
+        "linear_acceleration": [0, 0, 0]
+      }
+    }
+  }
+}

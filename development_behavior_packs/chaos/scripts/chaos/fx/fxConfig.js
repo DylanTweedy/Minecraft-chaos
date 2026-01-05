@@ -8,6 +8,11 @@ import {
   PARTICLE_SELECT_INPUT,
   PARTICLE_PAIR_SUCCESS,
   PARTICLE_BEAM,
+  PARTICLE_BEAM_CORE,
+  PARTICLE_BEAM_HAZE,
+  PARTICLE_BEAM_SPIRAL,
+  PARTICLE_BEAM_INPUT_CHARGE,
+  PARTICLE_BEAM_OUTPUT_BURST,
   PARTICLE_UNPAIR_SUCCESS,
   PARTICLE_UNPAIR_BEAM,
 } from "../core/constants.js";
@@ -36,6 +41,11 @@ export const FX = {
   particleSelect: PARTICLE_SELECT_INPUT,
   particleSuccess: PARTICLE_PAIR_SUCCESS,
   particleBeam: PARTICLE_BEAM,
+  particleBeamCore: PARTICLE_BEAM_CORE,
+  particleBeamHaze: PARTICLE_BEAM_HAZE,
+  particleBeamSpiral: PARTICLE_BEAM_SPIRAL,
+  particleBeamInputCharge: PARTICLE_BEAM_INPUT_CHARGE,
+  particleBeamOutputBurst: PARTICLE_BEAM_OUTPUT_BURST,
 
   particleUnpair: PARTICLE_UNPAIR_SUCCESS,
   particleBeamUnpair: PARTICLE_UNPAIR_BEAM,
@@ -53,6 +63,29 @@ export const FX = {
   successBurstRadius: 0.6,
   unpairBurstCount: 10,
   unpairBurstRadius: 0.6,
+
+  // Beam FX budgets (per-player unless otherwise noted)
+  maxParticlesPerTick: 80,
+  linksPerTickBudget: 24,
+  fxQueueEnabled: true,
+  fxQueueMaxPerTick: 100,
+
+  // Link vision culling
+  linkVisionDistance: 32,
+
+  // Beam rendering density
+  beamStep: 0.6,
+  spiralStep: 1.2,
+
+  // Motion/shape tuning
+  jitterMagnitude: 0.03,
+  spiralRadiusMin: 0.05,
+  spiralRadiusMax: 0.18,
+  pulsePeriodTicks: 20,
+  beamFlowLifetimeSeconds: 0.9,
+
+  // Debug: set true to spawn a test core particle near players holding the wand
+  debugSpawnBeamParticles: false,
 
   // Signature supports extra args (fx.js will pass them):
   // makeMolang(dir, fromBlock, toBlock, itemTypeId)

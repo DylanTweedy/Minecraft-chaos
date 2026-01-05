@@ -39,6 +39,7 @@ export function makeVisionFx() {
     particleUnpair: null,
     particleBeam: FX.particleBeam,
     particleBeamUnpair: FX.particleBeam,
+    beamFxScale: 1.0,
     beamMolang: () => makeBeamMolang(BEAM_COLORS.vision),
   });
 }
@@ -53,6 +54,7 @@ export function makeUnpairFx() {
     particleUnpair: FX.particleUnpair,
     particleBeam: null,
     particleBeamUnpair: FX.particleBeamUnpair,
+    beamFxScale: 0.5,
     beamMolangUnpair: () => makeBeamMolang(BEAM_COLORS.unlink),
   });
 }
@@ -60,12 +62,14 @@ export function makeUnpairFx() {
 export function makeLinkFx() {
   return cloneFx(FX, {
     particleSuccess: FX.particleSuccess,
+    beamFxScale: 0.5,
     beamMolang: () => makeBeamMolang(BEAM_COLORS.link),
   });
 }
 
 export function makeTransferFx() {
   return cloneFx(FX, {
+    beamFxScale: 0.4,
     transferBeamMolang: () => makeBeamMolang(BEAM_COLORS.transfer),
   });
 }
@@ -79,6 +83,7 @@ export function makeBeamFx(overrides) {
     particleUnpair: null,
     particleBeam: FX.particleBeam,
     particleBeamUnpair: FX.particleBeam,
+    beamFxScale: 0.5,
     ...(overrides || {}),
   });
 }

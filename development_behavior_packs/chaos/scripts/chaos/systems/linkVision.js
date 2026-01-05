@@ -3,6 +3,7 @@ import { world, system } from "@minecraft/server";
 
 import { getPairsMap } from "../features/links/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
+import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 
 const WAND_ID = "chaos:wand";
@@ -10,8 +11,6 @@ const WAND_ID = "chaos:wand";
 // ---------- Perf knobs ----------
 const TICK_INTERVAL = 2;              // interval ticks (we budget inside)
 const REBUILD_CACHE_EVERY_TICKS = 20; // refresh flattened link list sometimes
-const MAX_DISTANCE = 48;              // show links near player
-const BEAMS_PER_PLAYER_PER_TICK = 1;  // budget per wand-holder per tick
 
 // ---------- Internal state ----------
 let _tick = 0;
@@ -92,7 +91,6 @@ function rebuildFlatLinks() {
       const outParsed = parseKey(outKey);
       if (!outParsed) continue;
 
-      // Vision matches your “same-dimension enforcement”
       if (outParsed.dimId !== inParsed.dimId) continue;
 
       next.push({
@@ -113,19 +111,24 @@ function rebuildFlatLinks() {
 }
 
 export function startLinkVision() {
-  // Silent FX config:
-  // - no sound
-  // - no endpoint "success" particles
-  // - beam particle only
   const visionFx = makeVisionFx();
 
   system.runInterval(() => {
     _tick++;
 
     rebuildFlatLinks();
+    if (FX.debugSpawnBeamParticles && (_tick % 20) === 0) {
+      for (const player of world.getAllPlayers()) {
+        if (!isHoldingWand(player)) continue;
+        const loc = { x: player.location.x, y: player.location.y + 1.2, z: player.location.z };
+        try { player.dimension.spawnParticle(FX.particleBeamCore, loc); } catch {}
+      }
+    }
     if (_flatLinks.length === 0) return;
 
-    const maxDistSq = MAX_DISTANCE * MAX_DISTANCE;
+    const maxDist = Number(FX.linkVisionDistance) || 32;
+    const maxDistSq = maxDist * maxDist;
+    const perTick = Math.max(1, Number(FX.linksPerTickBudget) || 24);
 
     for (const player of world.getAllPlayers()) {
       if (!isHoldingWand(player)) continue;
@@ -134,14 +137,12 @@ export function startLinkVision() {
       const pLoc = player.location;
 
       let cursor = _rrIndexByPlayer.get(player.id) ?? 0;
-
       let beams = 0;
 
-      // bounded attempts so we never spin forever skipping far links
-      const maxAttempts = Math.min(_flatLinks.length, BEAMS_PER_PLAYER_PER_TICK * 8);
+      const maxAttempts = Math.min(_flatLinks.length, perTick * 8);
       let attempts = 0;
 
-      while (beams < BEAMS_PER_PLAYER_PER_TICK && attempts < maxAttempts) {
+      while (beams < perTick && attempts < maxAttempts) {
         attempts++;
 
         if (cursor >= _flatLinks.length) cursor = 0;
@@ -150,19 +151,18 @@ export function startLinkVision() {
 
         if (link.dimId !== dimId) continue;
 
-        // Near either endpoint (local “reveal network” feel)
         const near =
           distSq(pLoc, link.inPos) <= maxDistSq ||
           distSq(pLoc, link.outPos) <= maxDistSq;
 
         if (!near) continue;
 
-        // ✅ Uses fx.js internal drawBeam WITHOUT importing it
         fxPairSuccess(player, link.inPos, link.outPos, visionFx);
         beams++;
       }
 
       _rrIndexByPlayer.set(player.id, cursor);
+
     }
   }, TICK_INTERVAL);
 }

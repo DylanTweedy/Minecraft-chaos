@@ -31,11 +31,11 @@
       },
       {
         "condition": "q.block_state('minecraft:block_face') == 'north'",
-        "components": { "minecraft:transformation": { "rotation": [90, 0, 0] } }
+        "components": { "minecraft:transformation": { "rotation": [-90, 0, 0] } }
       },
       {
         "condition": "q.block_state('minecraft:block_face') == 'south'",
-        "components": { "minecraft:transformation": { "rotation": [-90, 0, 0] } }
+        "components": { "minecraft:transformation": { "rotation": [90, 0, 0] } }
       },
       {
         "condition": "q.block_state('minecraft:block_face') == 'east'",
