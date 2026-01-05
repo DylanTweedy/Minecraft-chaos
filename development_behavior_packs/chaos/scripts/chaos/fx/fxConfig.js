@@ -108,6 +108,7 @@ export const FX = {
   // Beam rendering density
   beamStep: 0.9,
   spiralStep: 1.8,
+  beamCoreDelayTicks: 2,
 
   // Motion/shape tuning
   jitterMagnitude: 0.03,

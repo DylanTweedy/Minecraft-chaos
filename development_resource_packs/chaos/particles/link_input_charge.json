@@ -4,18 +4,18 @@
     "description": {
       "identifier": "chaos:link_input_charge",
       "basic_render_parameters": {
-        "material": "particles_additive",
+        "material": "particles_alpha",
         "texture": "textures/particle/charge"
       }
     },
     "components": {
       "minecraft:emitter_initialization": {
-        "creation_expression": "variable.chaos_dist = math.max(0.01, variable.chaos_dist); variable.chaos_speed = math.max(0.1, variable.chaos_speed);"
+        "creation_expression": "variable.chaos_dist = math.max(0.01, variable.chaos_dist); variable.chaos_speed = math.max(0.1, variable.chaos_speed); variable.chaos_lifetime = math.max(0.2, variable.chaos_lifetime);"
       },
       "minecraft:emitter_lifetime_once": {},
       "minecraft:emitter_rate_instant": { "num_particles": 1 },
       "minecraft:particle_lifetime_expression": {
-        "max_lifetime": "variable.chaos_dist / math.max(0.1, variable.chaos_speed)"
+        "max_lifetime": "variable.chaos_lifetime"
       },
 
       "minecraft:particle_appearance_billboard": {
@@ -35,7 +35,7 @@
           "variable.chaos_dir_z"
         ]
       },
-      "minecraft:particle_initial_speed": "variable.chaos_speed * (0.6 + variable.particle_random_0 * 0.4)",
+      "minecraft:particle_initial_speed": 0.0,
       "minecraft:particle_motion_dynamic": {
         "linear_acceleration": [0, 0, 0]
       }

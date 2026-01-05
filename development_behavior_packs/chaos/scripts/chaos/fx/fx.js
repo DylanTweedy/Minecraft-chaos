@@ -45,13 +45,26 @@ export function drainFxQueue(maxPerTickOverride) {
     ? (maxPerTickOverride | 0)
     : _fxQueueMaxPerTick;
   if (cap <= 0 || _fxQueue.length === 0) return;
-  const count = Math.min(cap, _fxQueue.length);
-  for (let i = 0; i < count; i++) {
+  const next = [];
+  let spawned = 0;
+  for (let i = 0; i < _fxQueue.length; i++) {
     const item = _fxQueue[i];
-    const molang = resolveMolang(item.molang);
-    rawSpawnParticle(item.dimension, item.particleId, item.location, molang);
+    const delay = item.delayTicks | 0;
+    if (delay > 0) {
+      item.delayTicks = delay - 1;
+      next.push(item);
+      continue;
+    }
+    if (spawned < cap) {
+      const molang = resolveMolang(item.molang);
+      rawSpawnParticle(item.dimension, item.particleId, item.location, molang);
+      spawned++;
+    } else {
+      next.push(item);
+    }
   }
-  _fxQueue.splice(0, count);
+  _fxQueue.length = 0;
+  for (let i = 0; i < next.length; i++) _fxQueue.push(next[i]);
 }
 
 function rawSpawnParticle(dimension, particleId, location, molang) {
@@ -71,10 +84,11 @@ function rawSpawnParticle(dimension, particleId, location, molang) {
   }
 }
 
-function safeSpawnParticle(dimension, particleId, location, molang) {
+function safeSpawnParticle(dimension, particleId, location, molang, delayTicks) {
   if (_fxQueueEnabled) {
     if (_fxQueue.length >= _fxQueueMaxQueued) return;
-    _fxQueue.push({ dimension, particleId, location, molang });
+    const delay = Math.max(0, delayTicks | 0);
+    _fxQueue.push({ dimension, particleId, location, molang, delayTicks: delay });
     return;
   }
   const resolved = resolveMolang(molang);
@@ -85,6 +99,32 @@ function resolveMolang(molang) {
     try { return molang(); } catch { return null; }
   }
   return molang ?? null;
+}
+
+function applyBeamMotionMolang(molang, dir, dist, speed) {
+  try {
+    if (!molang || !dir) return molang ?? null;
+    const distSafe = Math.max(0.01, Number(dist) || 0);
+    const speedSafe = Math.max(0.1, Number(speed) || 0);
+    if (typeof molang.setSpeedAndDirection === "function") {
+      molang.setSpeedAndDirection("variable.chaos_move", speedSafe, { x: dir.x, y: dir.y, z: dir.z });
+    }
+    if (typeof molang.setFloat === "function") {
+      molang.setFloat("variable.chaos_dist", distSafe);
+      molang.setFloat("variable.chaos_speed", speedSafe);
+      molang.setFloat("variable.chaos_lifetime", distSafe / Math.max(0.05, speedSafe));
+      molang.setFloat("variable.chaos_move.speed", speedSafe);
+      molang.setFloat("variable.chaos_move.direction_x", dir.x);
+      molang.setFloat("variable.chaos_move.direction_y", dir.y);
+      molang.setFloat("variable.chaos_move.direction_z", dir.z);
+      molang.setFloat("variable.chaos_dir_x", dir.x);
+      molang.setFloat("variable.chaos_dir_y", dir.y);
+      molang.setFloat("variable.chaos_dir_z", dir.z);
+    }
+    return molang;
+  } catch {
+    return molang ?? null;
+  }
 }
 
 function normalizeVec(v) {
@@ -189,18 +229,20 @@ function randomPointOnFace(origin, dir, radius) {
   return { x: origin.x + rx, y: origin.y + ry, z: origin.z + rz };
 }
 
-function spawnParticlesAtPoint(dimension, pos, particleId, molang, count, jitterMag, faceDir, faceRadius, immediate) {
+function spawnParticlesAtPoint(dimension, pos, particleId, molang, count, jitterMag, faceDir, faceRadius, immediate, delayStep) {
   try {
     if (!dimension || !pos || !particleId) return;
     const n = Math.max(1, count | 0);
     const jitter = Math.max(0, Number(jitterMag) || 0);
+    const step = Math.max(0, delayStep | 0);
     for (let i = 0; i < n; i++) {
       let p = faceDir ? randomPointOnFace(pos, faceDir, faceRadius) : pos;
       if (jitter > 0) p = jitterVec(p, jitter);
-      if (immediate) {
+      const delay = step > 0 ? (i * step) : 0;
+      if (immediate && delay <= 0) {
         rawSpawnParticle(dimension, particleId, p, resolveMolang(molang));
       } else {
-        safeSpawnParticle(dimension, particleId, p, molang);
+        safeSpawnParticle(dimension, particleId, p, molang, delay);
       }
     }
   } catch {
@@ -340,12 +382,35 @@ export function createBeam(dimension, from, to, fx, opts) {
     const distSafe = Math.max(0.01, dist);
     const speedSafe = Math.max(0.1, speed);
 
+    const beamMotionMolang = applyBeamMotionMolang(beamMolang, dir, distSafe, speedSafe);
     const makeBeamMolang = (typeof fx?.makeBeamMolang === "function")
-      ? (() => fx.makeBeamMolang({ x: dir.x, y: dir.y, z: dir.z }, distSafe, speedSafe))
-      : beamMolang;
+      ? (() => applyBeamMotionMolang(
+        fx.makeBeamMolang({ x: dir.x, y: dir.y, z: dir.z }, distSafe, speedSafe),
+        dir,
+        distSafe,
+        speedSafe
+      ) ?? beamMotionMolang)
+      : (() => beamMotionMolang);
+    const makeCoreMolang = () => {
+      const scale = 0.75 + Math.random() * 0.5;
+      return applyBeamMotionMolang(resolveMolang(makeBeamMolang), dir, distSafe, speedSafe * scale) ?? beamMotionMolang;
+    };
+    const makeHazeMolang = () => {
+      const scale = 0.75 + Math.random() * 0.5;
+      return applyBeamMotionMolang(resolveMolang(makeBeamMolang), dir, distSafe, speedSafe * scale) ?? beamMotionMolang;
+    };
+    const makeSpiralMolang = () => {
+      const scale = 0.75 + Math.random() * 0.5;
+      return applyBeamMotionMolang(resolveMolang(makeBeamMolang), dir, spiralDist, speedSafe * scale) ?? beamMotionMolang;
+    };
+    const makeChargeMolang = () => {
+      const scale = 0.75 + Math.random() * 0.5;
+      return applyBeamMotionMolang(resolveMolang(makeBeamMolang), dir, distSafe, speedSafe * scale) ?? beamMotionMolang;
+    };
 
     const scale = Math.max(0, Number(opts?.scale ?? fx?.beamFxScale) || 1);
     const maxParticles = Math.max(6, Math.floor((fx?.maxParticlesPerTick ?? 160) * scale));
+    const coreDelayStep = Math.max(0, Number(opts?.coreDelayTicks ?? fx?.beamCoreDelayTicks) || 0);
 
     const baseStep = Number(opts?.beamStep ?? fx?.beamStep) || 0.35;
     const baseSpiralStep = Number(opts?.spiralStep ?? fx?.spiralStep) || Math.max(baseStep * 2, 0.7);
@@ -396,6 +461,7 @@ export function createBeam(dimension, from, to, fx, opts) {
       y: from.y + dir.y * 0.5,
       z: from.z + dir.z * 0.5,
     };
+    const spiralDist = Math.max(0.01, distSafe - (endpointOffset + 0.5));
 
     const coreParticle = opts?.particleCore ?? fx?.particleBeamCore ?? fx?.particleBeam;
     const hazeParticle = opts?.particleHaze ?? fx?.particleBeamHaze;
@@ -404,38 +470,20 @@ export function createBeam(dimension, from, to, fx, opts) {
     const startHazeCount = Math.max(0, Math.min(5, Math.floor(hazeBudget * 0.35)));
 
     if (coreParticle) {
-      spawnParticlesAtPoint(dimension, faceOrigin, coreParticle, makeBeamMolang, startCoreCount, jitter * 0.5, dir, faceRadius, true);
+      spawnParticlesAtPoint(dimension, faceOrigin, coreParticle, makeCoreMolang, startCoreCount, jitter * 0.5, dir, faceRadius, false, coreDelayStep);
     }
     if (hazeParticle && startHazeCount > 0) {
-      spawnParticlesAtPoint(dimension, faceOrigin, hazeParticle, makeBeamMolang, startHazeCount, jitter, dir, faceRadius, true);
+      spawnParticlesAtPoint(dimension, faceOrigin, hazeParticle, makeHazeMolang, startHazeCount, jitter, dir, faceRadius, true);
     }
 
     if (spiralBudget > 0) {
-      const dirSign = (dx + dy + dz) >= 0 ? 1 : -1;
-      const phaseBase = Number.isFinite(tickNow)
-        ? (Number(opts?.phaseSpeed ?? 0.25) * tickNow)
-        : (Math.random() * Math.PI * 2);
-      const twist = (Number(opts?.spiralTwist ?? (Math.PI * 6)) * dirSign);
-
-      const spiralCount = Math.max(1, Math.min(4, Math.floor(spiralBudget / 2)));
-      const spiralBudgetEach = Math.max(1, Math.floor(spiralBudget / spiralCount));
-      for (let i = 0; i < spiralCount; i++) {
-        const start = randomPointOnFace(faceOrigin, dir, faceRadius);
-        spawnSpiralAroundBeamFx(dimension, start, to, fx, {
-          molang: makeBeamMolang,
-          step: spiralStep,
-          jitter,
-          maxParticles: spiralBudgetEach,
-          phaseBase: phaseBase + i * 0.6,
-          twist,
-          immediate: true,
-        });
-      }
+      const spiralCount = Math.max(1, Math.min(6, Math.floor(spiralBudget * 0.35)));
+      spawnParticlesAtPoint(dimension, faceOrigin, fx?.particleBeamSpiral, makeSpiralMolang, spiralCount, jitter, dir, faceRadius, true);
     }
 
     if (inputCount > 0 || outputCount > 0) {
       spawnBeamEndpointsFx(dimension, endpointIn, endpointOut, fx, {
-        molang: beamMolang,
+        molang: makeChargeMolang,
         inputCount,
         outputCount,
         inputRadius: opts?.inputRadius ?? 0.12,
@@ -446,7 +494,7 @@ export function createBeam(dimension, from, to, fx, opts) {
     const legacyParticle = opts?.legacyParticle;
     if (legacyParticle) {
       const legacyStep = opts?.legacyStep ?? fx?.beamStep;
-      drawBeamParticles(dimension, from, to, legacyParticle, beamMolang, legacyStep);
+      drawBeamParticles(dimension, from, to, legacyParticle, beamMotionMolang, legacyStep);
     }
   } catch {
     // ignore
