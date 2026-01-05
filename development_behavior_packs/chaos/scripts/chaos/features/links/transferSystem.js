@@ -32,9 +32,11 @@ const DEFAULTS = {
   orbVisualMinSpeedScale: 1.0,
   orbVisualMaxSpeedScale: 1.0,
   orbStepLevelBoost: 0.75,
+  maxQueuedInsertsPerTick: 6,
+  maxFullChecksPerTick: 6,
 };
 
-const reservedByOutput = new Map();
+const reservedByContainer = new Map();
 
 function mergeCfg(defaults, opts) {
   const cfg = {};
@@ -47,6 +49,16 @@ function mergeCfg(defaults, opts) {
 
 function key(dimId, x, y, z) {
   return `${dimId}|${x},${y},${z}`;
+}
+
+function getContainerKey(block) {
+  try {
+    if (!block) return null;
+    const loc = block.location;
+    return key(block.dimension.id, loc.x, loc.y, loc.z);
+  } catch {
+    return null;
+  }
 }
 
 function parseKey(k) {
@@ -63,6 +75,20 @@ function parseKey(k) {
     const z = Number(parts[2]);
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
     return { dimId, x: x | 0, y: y | 0, z: z | 0 };
+  } catch {
+    return null;
+  }
+}
+
+function resolveBlockInfoStatic(world, blockKey) {
+  try {
+    const pos = parseKey(blockKey);
+    if (!pos) return null;
+    const dim = world.getDimension(pos.dimId);
+    if (!dim) return null;
+    const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
+    if (!block) return null;
+    return { dim, block, pos };
   } catch {
     return null;
   }
@@ -373,6 +399,9 @@ export function createNetworkTransferController(deps, opts) {
   const prismCounts = new Map();
   let prismLevelsDirty = false;
   let lastPrismLevelsSaveTick = 0;
+  const queueByContainer = new Map();
+  const fullContainers = new Set();
+  let fullCursor = 0;
 
   function getSpeed(block) {
     try {
@@ -479,9 +508,135 @@ export function createNetworkTransferController(deps, opts) {
     lastPrismLevelsSaveTick = nowTick;
   }
 
+  function enqueuePendingForContainer(containerKey, itemTypeId, amount, outputKey) {
+    if (!containerKey || !itemTypeId || amount <= 0) return;
+    let queue = queueByContainer.get(containerKey);
+    if (!queue) {
+      queue = [];
+      queueByContainer.set(containerKey, queue);
+    }
+    queue.push({ itemTypeId, amount, outputKey });
+    fullContainers.add(containerKey);
+  }
+
+  function resolveContainerInfo(containerKey) {
+    const pos = parseKey(containerKey);
+    if (!pos) return null;
+    const dim = world.getDimension(pos.dimId);
+    if (!dim) return null;
+    const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
+    if (!block) return null;
+    const container = getInventoryContainer(block);
+    if (!container) return null;
+    return { dim, block, container, pos };
+  }
+
+  function getContainerCapacityWithReservations(containerKey, container) {
+    try {
+      if (!containerKey || !container) return 0;
+      const size = container.size;
+      let stackRoom = 0;
+      let emptySlots = 0;
+
+      for (let i = 0; i < size; i++) {
+        const it = container.getItem(i);
+        if (!it) {
+          emptySlots++;
+          continue;
+        }
+        const max = it.maxAmount || 64;
+        if (it.amount < max) stackRoom += (max - it.amount);
+      }
+
+      const reservedTotal = getReservedForContainer(containerKey).total;
+      const capacity = stackRoom + (emptySlots * 64);
+      return Math.max(0, capacity - reservedTotal);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function tickOutputQueues() {
+    let budget = Math.max(0, cfg.maxQueuedInsertsPerTick | 0);
+    if (budget <= 0 || queueByContainer.size === 0) return;
+
+    for (const [containerKey, queue] of queueByContainer) {
+      if (budget <= 0) break;
+      if (!queue || queue.length === 0) {
+        queueByContainer.delete(containerKey);
+        fullContainers.delete(containerKey);
+        continue;
+      }
+
+      const info = resolveContainerInfo(containerKey);
+      if (!info || !info.container) {
+        while (queue.length > 0) {
+          const job = queue.shift();
+          const outInfo = job?.outputKey ? resolveBlockInfo(job.outputKey) : null;
+          if (outInfo?.dim && outInfo?.block) {
+            dropItemAt(outInfo.dim, outInfo.block.location, job.itemTypeId, job.amount);
+          } else if (info?.dim) {
+            dropItemAt(info.dim, info.pos, job.itemTypeId, job.amount);
+          }
+          releaseContainerSlot(containerKey, job.itemTypeId, job.amount);
+        }
+        queueByContainer.delete(containerKey);
+        fullContainers.delete(containerKey);
+        continue;
+      }
+
+      const job = queue[0];
+      if (!job) {
+        queue.shift();
+        continue;
+      }
+
+      if (tryInsertAmount(info.container, job.itemTypeId, job.amount)) {
+        queue.shift();
+        releaseContainerSlot(containerKey, job.itemTypeId, job.amount);
+        const outInfo = job.outputKey ? resolveBlockInfo(job.outputKey) : null;
+        if (outInfo?.block && outInfo.block.typeId === OUTPUT_ID) {
+          noteOutputTransfer(job.outputKey, outInfo.block);
+        }
+        budget--;
+        if (queue.length === 0) {
+          queueByContainer.delete(containerKey);
+          fullContainers.delete(containerKey);
+        }
+      } else {
+        fullContainers.add(containerKey);
+        budget--;
+      }
+    }
+  }
+
+  function tickFullContainers() {
+    const total = fullContainers.size;
+    if (total === 0) return;
+    let budget = Math.max(0, cfg.maxFullChecksPerTick | 0);
+    if (budget <= 0) return;
+
+    const keys = Array.from(fullContainers);
+    while (budget-- > 0 && keys.length > 0) {
+      if (fullCursor >= keys.length) fullCursor = 0;
+      const containerKey = keys[fullCursor++];
+      if (queueByContainer.has(containerKey)) continue;
+
+      const info = resolveContainerInfo(containerKey);
+      if (!info || !info.container) {
+        fullContainers.delete(containerKey);
+        continue;
+      }
+      const capacity = getContainerCapacityWithReservations(containerKey, info.container);
+      if (capacity > 0) fullContainers.delete(containerKey);
+    }
+  }
+
   function onTick() {
     nowTick++;
 
+    tickOutputQueues();
+    tickFullContainers();
     tickInFlight();
 
     const map = loadBeamsMap(world);
@@ -560,40 +715,83 @@ export function createNetworkTransferController(deps, opts) {
     const filteredOptions = filterOutputsByWhitelist(options, inStack.typeId, resolveBlockInfo);
     if (!filteredOptions || filteredOptions.length === 0) return false;
 
-    let pathInfo = pickWeightedRandom(filteredOptions);
-    if (!pathInfo || !Array.isArray(pathInfo.path) || pathInfo.path.length === 0) return false;
-    if (pathInfo.path.length > MAX_STEPS) return false;
-
     const dim = inputInfo.dim;
     if (!dim) return false;
 
+    const previewLevel = getNextInputLevel(inputKey);
+    let pathInfo = null;
+    let outInfo = null;
+    let outBlock = null;
+    let outContainerInfo = null;
+    let containerKey = null;
+    let transferAmount = 0;
+
+    const candidates = filteredOptions.slice();
+    while (candidates.length > 0) {
+      const pick = pickWeightedRandom(candidates);
+      if (!pick || !Array.isArray(pick.path) || pick.path.length === 0) break;
+      if (pick.path.length > MAX_STEPS) {
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+
+      if (!validatePathStart(dim, pick.path)) {
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+
+      const info = resolveBlockInfo(pick.outputKey);
+      if (!info || !info.block || info.block.typeId !== OUTPUT_ID) {
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+
+      const cInfo = getAttachedInventoryInfo(info.block, info.dim);
+      if (!cInfo || !cInfo.container || !cInfo.block) {
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+
+      const cKey = getContainerKey(cInfo.block);
+      if (!cKey) {
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+
+      if (fullContainers.has(cKey)) {
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+
+      const desiredAmount = getTransferAmount(previewLevel, inStack);
+      const capacity = getInsertCapacityWithReservations(cKey, cInfo.container, inStack.typeId, inStack);
+      const amount = Math.min(desiredAmount, inStack.amount, capacity);
+      if (amount <= 0) {
+        if (getContainerCapacityWithReservations(cKey, cInfo.container) <= 0) {
+          fullContainers.add(cKey);
+        }
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+
+      pathInfo = pick;
+      outInfo = info;
+      outBlock = info.block;
+      outContainerInfo = cInfo;
+      containerKey = cKey;
+      transferAmount = amount;
+      break;
+    }
+
+    if (!pathInfo || !outInfo || !outBlock || !outContainerInfo || !containerKey) {
+      if (typeof invalidateInput === "function") invalidateInput(inputKey);
+      return false;
+    }
+
     if (!validatePathStart(dim, pathInfo.path)) {
       if (typeof invalidateInput === "function") invalidateInput(inputKey);
-      const freshOptions = findPathForInput ? findPathForInput(inputKey, nowTick) : null;
-      if (!freshOptions || !Array.isArray(freshOptions) || freshOptions.length === 0) return false;
-      const freshFiltered = filterOutputsByWhitelist(freshOptions, inStack.typeId, resolveBlockInfo);
-      if (!freshFiltered || freshFiltered.length === 0) return false;
-      const freshPick = pickWeightedRandom(freshFiltered);
-      if (!freshPick || !Array.isArray(freshPick.path) || freshPick.path.length === 0) return false;
-      if (!validatePathStart(dim, freshPick.path)) return false;
-      pathInfo = freshPick;
+      return false;
     }
-    if (pathInfo.path.length > MAX_STEPS) return false;
-
-    const outInfo = resolveBlockInfo(pathInfo.outputKey);
-    if (!outInfo) return false;
-
-    const outBlock = outInfo.block;
-    if (!outBlock || outBlock.typeId !== OUTPUT_ID) return false;
-
-    const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
-    if (!outContainer) return false;
-
-    const previewLevel = getNextInputLevel(inputKey);
-    const desiredAmount = getTransferAmount(previewLevel, inStack);
-    const capacity = getInsertCapacityWithReservations(pathInfo.outputKey, outContainer, inStack.typeId, inStack);
-    const transferAmount = Math.min(desiredAmount, inStack.amount, capacity);
-    if (transferAmount <= 0) return false;
 
     const firstStep = pathInfo.path[0];
     const firstBlock = inDim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
@@ -614,10 +812,11 @@ export function createNetworkTransferController(deps, opts) {
       stepTicks: getOrbStepTicks(level),
       ticksUntilStep: getOrbStepTicks(level),
       outputKey: pathInfo.outputKey,
+      containerKey: containerKey,
       startPos: { x: inputInfo.pos.x, y: inputInfo.pos.y, z: inputInfo.pos.z },
       level: level,
     });
-    reserveOutputSlot(pathInfo.outputKey, inStack.typeId, transferAmount);
+    reserveContainerSlot(containerKey, inStack.typeId, transferAmount);
     inflightDirty = true;
 
     return true;
@@ -649,7 +848,7 @@ export function createNetworkTransferController(deps, opts) {
       if (job.stepIndex < job.path.length - 1) {
         if (!isPathBlock(curBlock)) {
           dropItemAt(dim, cur, job.itemTypeId, job.amount);
-          releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
+          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
           inflight.splice(i, 1);
           inflightDirty = true;
           continue;
@@ -659,7 +858,7 @@ export function createNetworkTransferController(deps, opts) {
       if (nextIdx < job.path.length - 1) {
         if (!isPathBlock(nextBlock)) {
           dropItemAt(dim, cur, job.itemTypeId, job.amount);
-          releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
+          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
           inflight.splice(i, 1);
           inflightDirty = true;
           continue;
@@ -680,6 +879,14 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function finalizeJob(job) {
+    if (!job.containerKey) {
+      const dim = world.getDimension(job.dimId);
+      if (dim) {
+        const fallback = job.path[job.path.length - 1] || job.startPos;
+        if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
+      }
+      return;
+    }
     const outInfo = resolveBlockInfo(job.outputKey);
     if (!outInfo) {
       const dim = world.getDimension(job.dimId);
@@ -687,26 +894,31 @@ export function createNetworkTransferController(deps, opts) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
         if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
       }
-      releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
+      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       return;
     }
 
     const outBlock = outInfo.block;
     if (!outBlock || outBlock.typeId !== OUTPUT_ID) {
       dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId, job.amount);
-      releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
+      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       return;
     }
 
-    const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
-    if (outContainer && tryInsertAmount(outContainer, job.itemTypeId, job.amount)) {
-      releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
+    const outContainerInfo = getAttachedInventoryInfo(outBlock, outInfo.dim);
+    if (!outContainerInfo || !outContainerInfo.container || !outContainerInfo.block) {
+      dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
+      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+      return;
+    }
+
+    if (tryInsertAmount(outContainerInfo.container, job.itemTypeId, job.amount)) {
+      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       noteOutputTransfer(job.outputKey, outBlock);
       return;
     }
 
-    dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
-    releaseOutputSlot(job.outputKey, job.itemTypeId, job.amount);
+    enqueuePendingForContainer(job.containerKey, job.itemTypeId, job.amount, job.outputKey);
   }
 
   function noteTransferAndGetLevel(inputKey, block) {
@@ -804,11 +1016,11 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function rebuildReservationsFromInflight() {
-    reservedByOutput.clear();
+    reservedByContainer.clear();
     for (const job of inflight) {
-      if (!job || !job.outputKey || !job.itemTypeId) continue;
+      if (!job || !job.containerKey || !job.itemTypeId) continue;
       const amt = Math.max(1, job.amount | 0);
-      reserveOutputSlot(job.outputKey, job.itemTypeId, amt);
+      reserveContainerSlot(job.containerKey, job.itemTypeId, amt);
     }
   }
 
@@ -921,6 +1133,7 @@ function sanitizeInflightEntry(entry) {
     if (!Number.isFinite(entry.stepTicks)) entry.stepTicks = entry.ticksUntilStep;
     if (!Number.isFinite(entry.amount)) entry.amount = 1;
     entry.amount = Math.max(1, entry.amount | 0);
+    if (typeof entry.containerKey !== "string") entry.containerKey = null;
     if (!entry.outputKey || typeof entry.outputKey !== "string") return null;
     if (!entry.startPos || !Number.isFinite(entry.startPos.x)) entry.startPos = null;
     return entry;
@@ -938,6 +1151,13 @@ function loadInflightStateFromWorld(world, inflight, cfg) {
     if (clean.path.length > MAX_STEPS) continue;
     if (clean.ticksUntilStep < 1) clean.ticksUntilStep = cfg.orbStepTicks;
     if (clean.stepTicks < 1) clean.stepTicks = cfg.orbStepTicks;
+    if (!clean.containerKey && clean.outputKey) {
+      const outInfo = resolveBlockInfoStatic(world, clean.outputKey);
+      if (outInfo?.block) {
+        const cInfo = getAttachedInventoryInfo(outInfo.block, outInfo.dim);
+        if (cInfo?.block) clean.containerKey = getContainerKey(cInfo.block);
+      }
+    }
     inflight.push(clean);
   }
 }
@@ -1000,12 +1220,17 @@ function pickWeightedRandom(outputs) {
 }
 
 function getAttachedInventoryContainer(nodeBlock, dimension) {
+  const info = getAttachedInventoryInfo(nodeBlock, dimension);
+  return info ? info.container : null;
+}
+
+function getAttachedInventoryInfo(nodeBlock, dimension) {
   try {
     const attachedDir = getAttachedDirectionFromStates(nodeBlock);
     if (attachedDir) {
       const adj = getNeighborBlock(nodeBlock, dimension, attachedDir);
       const c = getInventoryContainer(adj);
-      if (c) return c;
+      if (c) return { container: c, block: adj };
     }
 
     const dirs = ["north", "south", "east", "west", "up", "down"];
@@ -1013,7 +1238,7 @@ function getAttachedInventoryContainer(nodeBlock, dimension) {
     for (const d of dirs) {
       const adj = getNeighborBlock(nodeBlock, dimension, d);
       const c = getInventoryContainer(adj);
-      if (c) hits.push(c);
+      if (c) hits.push({ container: c, block: adj });
       if (hits.length > 1) break;
     }
     if (hits.length === 1) return hits[0];
@@ -1282,16 +1507,16 @@ function canInsertOne(container, typeId) {
   }
 }
 
-function canInsertOneWithReservations(outputKey, container, typeId) {
+function canInsertOneWithReservations(containerKey, container, typeId) {
   try {
-    const capacity = getInsertCapacityWithReservations(outputKey, container, typeId, null);
+    const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, null);
     return capacity >= 1;
   } catch (_) {
     return false;
   }
 }
 
-function getInsertCapacityWithReservations(outputKey, container, typeId, stack) {
+function getInsertCapacityWithReservations(containerKey, container, typeId, stack) {
   try {
     const size = container.size;
     let stackRoom = 0;
@@ -1309,7 +1534,7 @@ function getInsertCapacityWithReservations(outputKey, container, typeId, stack) 
       if (it.amount < max) stackRoom += (max - it.amount);
     }
 
-    const reservedTotal = getReservedForOutput(outputKey).total;
+    const reservedTotal = getReservedForContainer(containerKey).total;
     const capacity = stackRoom + (emptySlots * maxStack);
     return Math.max(0, capacity - reservedTotal);
   } catch (_) {
@@ -1317,34 +1542,34 @@ function getInsertCapacityWithReservations(outputKey, container, typeId, stack) 
   }
 }
 
-function getReservedForOutput(outputKey) {
-  const entry = reservedByOutput.get(outputKey);
+function getReservedForContainer(containerKey) {
+  const entry = reservedByContainer.get(containerKey);
   if (!entry) return { total: 0, byType: new Map() };
   return entry;
 }
 
-function reserveOutputSlot(outputKey, typeId, count) {
-  if (!outputKey || !typeId || count <= 0) return;
-  let entry = reservedByOutput.get(outputKey);
+function reserveContainerSlot(containerKey, typeId, count) {
+  if (!containerKey || !typeId || count <= 0) return;
+  let entry = reservedByContainer.get(containerKey);
   if (!entry) {
     entry = { total: 0, byType: new Map() };
-    reservedByOutput.set(outputKey, entry);
+    reservedByContainer.set(containerKey, entry);
   }
   entry.total += count;
   const prev = entry.byType.get(typeId) || 0;
   entry.byType.set(typeId, prev + count);
 }
 
-function releaseOutputSlot(outputKey, typeId, count) {
-  if (!outputKey || !typeId || count <= 0) return;
-  const entry = reservedByOutput.get(outputKey);
+function releaseContainerSlot(containerKey, typeId, count) {
+  if (!containerKey || !typeId || count <= 0) return;
+  const entry = reservedByContainer.get(containerKey);
   if (!entry) return;
   entry.total = Math.max(0, entry.total - count);
   const prev = entry.byType.get(typeId) || 0;
   const next = Math.max(0, prev - count);
   if (next === 0) entry.byType.delete(typeId);
   else entry.byType.set(typeId, next);
-  if (entry.total <= 0 && entry.byType.size === 0) reservedByOutput.delete(outputKey);
+  if (entry.total <= 0 && entry.byType.size === 0) reservedByContainer.delete(containerKey);
 }
 
 function tryInsertOne(container, oneStack) {

@@ -29,6 +29,10 @@
     "prism_top":    { "textures": "textures/blocks/prism_top" },
     "prism_bottom": { "textures": "textures/blocks/prism_bottom" },
     "prism_side":   { "textures": "textures/blocks/prism_side" },
+    "prism_side2":  { "textures": "textures/blocks/prism_side2" },
+    "prism_side3":  { "textures": "textures/blocks/prism_side3" },
+    "prism_side4":  { "textures": "textures/blocks/prism_side4" },
+    "prism_side5":  { "textures": "textures/blocks/prism_side5" },
 
     "chaos_beam": { "textures": "textures/blocks/chaos_beam" }
   }
