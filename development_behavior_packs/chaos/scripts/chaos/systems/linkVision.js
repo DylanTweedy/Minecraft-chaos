@@ -1,5 +1,5 @@
 // scripts/chaos/linkVision.js
-import { world, system } from "@minecraft/server";
+import { world, system, MolangVariableMap } from "@minecraft/server";
 
 import { getPairsMap } from "../features/links/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
@@ -121,7 +121,40 @@ export function startLinkVision() {
       for (const player of world.getAllPlayers()) {
         if (!isHoldingWand(player)) continue;
         const loc = { x: player.location.x, y: player.location.y + 1.2, z: player.location.z };
-        try { player.dimension.spawnParticle(FX.particleBeamCore, loc); } catch {}
+        const molang = new MolangVariableMap();
+        molang.setFloat("variable.chaos_color_r", 0.2);
+        molang.setFloat("variable.chaos_color_g", 0.8);
+        molang.setFloat("variable.chaos_color_b", 1.0);
+        molang.setFloat("variable.chaos_color_a", 1.0);
+        molang.setSpeedAndDirection("variable.chaos_move", 2.0, { x: 1, y: 0, z: 0 });
+        // Also set explicit scalar/vector fields in case speed/direction aren't exposed via setSpeedAndDirection.
+        molang.setFloat("variable.chaos_move.speed", 2.0);
+        molang.setFloat("variable.chaos_move.direction_x", 1.0);
+        molang.setFloat("variable.chaos_move.direction_y", 0.0);
+        molang.setFloat("variable.chaos_move.direction_z", 0.0);
+        molang.setFloat("variable.chaos_dist", 4.0);
+        molang.setFloat("variable.chaos_speed", 2.0);
+        molang.setFloat("variable.chaos_lifetime", 2.0);
+        molang.setFloat("variable.chaos_dir_x", 1.0);
+        molang.setFloat("variable.chaos_dir_y", 0.0);
+        molang.setFloat("variable.chaos_dir_z", 0.0);
+        const samples = [
+          { id: FX.particleBeamCore, off: { x: 0.0, y: 0.0, z: 0.0 } },
+          { id: FX.particleBeamHaze, off: { x: 0.4, y: 0.0, z: 0.0 } },
+          { id: FX.particleBeamSpiral, off: { x: -0.4, y: 0.0, z: 0.0 } },
+          { id: FX.particleBeamInputCharge, off: { x: 0.0, y: 0.0, z: 0.4 } },
+          { id: FX.particleBeamOutputBurst, off: { x: 0.0, y: 0.0, z: -0.4 } },
+        ];
+        for (const s of samples) {
+          if (!s.id) continue;
+          try {
+            player.dimension.spawnParticle(s.id, {
+              x: loc.x + s.off.x,
+              y: loc.y + s.off.y,
+              z: loc.z + s.off.z,
+            }, molang);
+          } catch {}
+        }
       }
     }
     if (_flatLinks.length === 0) return;

@@ -30,11 +30,14 @@ function looksLikeMolangVariableMap(molang) {
 const _fxQueue = [];
 let _fxQueueEnabled = false;
 let _fxQueueMaxPerTick = 100;
+let _fxQueueMaxQueued = 2000;
 
-export function configureFxQueue(enabled, maxPerTick) {
+export function configureFxQueue(enabled, maxPerTick, maxQueued) {
   _fxQueueEnabled = !!enabled;
   const cap = Number(maxPerTick);
   if (Number.isFinite(cap) && cap > 0) _fxQueueMaxPerTick = cap | 0;
+  const maxQ = Number(maxQueued);
+  if (Number.isFinite(maxQ) && maxQ > 0) _fxQueueMaxQueued = maxQ | 0;
 }
 
 export function drainFxQueue(maxPerTickOverride) {
@@ -45,7 +48,8 @@ export function drainFxQueue(maxPerTickOverride) {
   const count = Math.min(cap, _fxQueue.length);
   for (let i = 0; i < count; i++) {
     const item = _fxQueue[i];
-    rawSpawnParticle(item.dimension, item.particleId, item.location, item.molang);
+    const molang = resolveMolang(item.molang);
+    rawSpawnParticle(item.dimension, item.particleId, item.location, molang);
   }
   _fxQueue.splice(0, count);
 }
@@ -53,12 +57,15 @@ export function drainFxQueue(maxPerTickOverride) {
 function rawSpawnParticle(dimension, particleId, location, molang) {
   try {
     if (!dimension || !particleId || !location) return;
-
-    if (looksLikeMolangVariableMap(molang)) {
-      dimension.spawnParticle(particleId, location, molang);
-    } else {
-      dimension.spawnParticle(particleId, location);
+    if (molang) {
+      try {
+        dimension.spawnParticle(particleId, location, molang);
+        return;
+      } catch {
+        // fall through to spawn without molang
+      }
     }
+    dimension.spawnParticle(particleId, location);
   } catch {
     // ignore
   }
@@ -66,10 +73,12 @@ function rawSpawnParticle(dimension, particleId, location, molang) {
 
 function safeSpawnParticle(dimension, particleId, location, molang) {
   if (_fxQueueEnabled) {
+    if (_fxQueue.length >= _fxQueueMaxQueued) return;
     _fxQueue.push({ dimension, particleId, location, molang });
     return;
   }
-  rawSpawnParticle(dimension, particleId, location, molang);
+  const resolved = resolveMolang(molang);
+  rawSpawnParticle(dimension, particleId, location, resolved);
 }
 function resolveMolang(molang) {
   if (typeof molang === "function") {
@@ -180,7 +189,7 @@ function randomPointOnFace(origin, dir, radius) {
   return { x: origin.x + rx, y: origin.y + ry, z: origin.z + rz };
 }
 
-function spawnParticlesAtPoint(dimension, pos, particleId, molang, count, jitterMag, faceDir, faceRadius) {
+function spawnParticlesAtPoint(dimension, pos, particleId, molang, count, jitterMag, faceDir, faceRadius, immediate) {
   try {
     if (!dimension || !pos || !particleId) return;
     const n = Math.max(1, count | 0);
@@ -188,7 +197,11 @@ function spawnParticlesAtPoint(dimension, pos, particleId, molang, count, jitter
     for (let i = 0; i < n; i++) {
       let p = faceDir ? randomPointOnFace(pos, faceDir, faceRadius) : pos;
       if (jitter > 0) p = jitterVec(p, jitter);
-      safeSpawnParticle(dimension, particleId, p, molang);
+      if (immediate) {
+        rawSpawnParticle(dimension, particleId, p, resolveMolang(molang));
+      } else {
+        safeSpawnParticle(dimension, particleId, p, molang);
+      }
     }
   } catch {
     // ignore
@@ -276,7 +289,11 @@ function spawnSpiralAroundBeamFx(dimension, a, b, fx, opts) {
       };
       if (jitter > 0) pos = jitterVec(pos, jitter);
 
-      safeSpawnParticle(dimension, particleId, pos, molang);
+      if (opts?.immediate) {
+        rawSpawnParticle(dimension, particleId, pos, resolveMolang(molang));
+      } else {
+        safeSpawnParticle(dimension, particleId, pos, molang);
+      }
     }
   } catch {
     // ignore
@@ -320,18 +337,12 @@ export function createBeam(dimension, from, to, fx, opts) {
     let speed = dist / Math.max(0.05, flowLifetime);
     if (speed < 0.6) speed = 0.6;
     if (speed > 12.0) speed = 12.0;
+    const distSafe = Math.max(0.01, dist);
+    const speedSafe = Math.max(0.1, speed);
 
-    if (beamMolang && typeof beamMolang.setSpeedAndDirection === "function") {
-      beamMolang.setSpeedAndDirection("variable.chaos_move", speed, {
-        x: dir.x,
-        y: dir.y,
-        z: dir.z,
-      });
-      if (typeof beamMolang.setFloat === "function") {
-        beamMolang.setFloat("variable.chaos_dist", dist);
-        beamMolang.setFloat("variable.chaos_speed", speed);
-      }
-    }
+    const makeBeamMolang = (typeof fx?.makeBeamMolang === "function")
+      ? (() => fx.makeBeamMolang({ x: dir.x, y: dir.y, z: dir.z }, distSafe, speedSafe))
+      : beamMolang;
 
     const scale = Math.max(0, Number(opts?.scale ?? fx?.beamFxScale) || 1);
     const maxParticles = Math.max(6, Math.floor((fx?.maxParticlesPerTick ?? 160) * scale));
@@ -349,14 +360,11 @@ export function createBeam(dimension, from, to, fx, opts) {
     const step = baseStep / densityScale;
     const spiralStep = baseSpiralStep / densityScale;
 
-    let inputCount = opts?.inputCount ?? 2;
-    let outputCount = opts?.outputCount ?? 3;
-    if (opts?.endpoints === false) {
-      inputCount = 0;
-      outputCount = 0;
-    }
+    const endpointsEnabled = opts?.endpoints === true;
+    let inputCount = endpointsEnabled ? (opts?.inputCount ?? 2) : 0;
+    let outputCount = endpointsEnabled ? (opts?.outputCount ?? 3) : 0;
 
-    const endBudget = Math.max(0, Math.floor(maxParticles * 0.2));
+    const endBudget = endpointsEnabled ? Math.max(0, Math.floor(maxParticles * 0.2)) : 0;
     if (endBudget <= 1) {
       inputCount = 0;
       outputCount = 0;
@@ -382,37 +390,25 @@ export function createBeam(dimension, from, to, fx, opts) {
       z: to.z - dir.z * endpointOffset,
     };
 
-    const burstCount = Math.max(1, Math.floor((Math.random() * 0.6 + 0.4) * (coreBudget / 2)));
-    const hazeBurstCount = Math.max(1, Math.floor((Math.random() * 0.6 + 0.4) * (hazeBudget / 2)));
+    const faceRadius = opts?.faceRadius ?? 0.35;
+    const faceOrigin = {
+      x: from.x + dir.x * 0.5,
+      y: from.y + dir.y * 0.5,
+      z: from.z + dir.z * 0.5,
+    };
 
-    spawnLayeredBeamFx(dimension, from, to, fx, {
-      molang: beamMolang,
-      step,
-      hazeStep: step * 1.6,
-      jitter,
-      particleCore: opts?.particleCore,
-      particleHaze: null,
-      maxParticles: Math.max(2, burstCount),
-      startOnlyCore: true,
-      startOnlyHaze: false,
-      faceDir: dir,
-      faceRadius: opts?.faceRadius ?? 0.35,
-    });
+    const coreParticle = opts?.particleCore ?? fx?.particleBeamCore ?? fx?.particleBeam;
+    const hazeParticle = opts?.particleHaze ?? fx?.particleBeamHaze;
 
-    spawnLayeredBeamFx(dimension, from, to, fx, {
-      molang: beamMolang,
-      step,
-      hazeStep: step * 1.6,
-      jitter,
-      particleCore: null,
-      particleHaze: opts?.particleHaze,
-      maxParticles: 0,
-      maxHazeParticles: Math.max(2, hazeBurstCount),
-      startOnlyCore: false,
-      startOnlyHaze: true,
-      faceDir: dir,
-      faceRadius: opts?.faceRadius ?? 0.35,
-    });
+    const startCoreCount = Math.max(1, Math.min(6, Math.floor(coreBudget * 0.35)));
+    const startHazeCount = Math.max(0, Math.min(5, Math.floor(hazeBudget * 0.35)));
+
+    if (coreParticle) {
+      spawnParticlesAtPoint(dimension, faceOrigin, coreParticle, makeBeamMolang, startCoreCount, jitter * 0.5, dir, faceRadius, true);
+    }
+    if (hazeParticle && startHazeCount > 0) {
+      spawnParticlesAtPoint(dimension, faceOrigin, hazeParticle, makeBeamMolang, startHazeCount, jitter, dir, faceRadius, true);
+    }
 
     if (spiralBudget > 0) {
       const dirSign = (dx + dy + dz) >= 0 ? 1 : -1;
@@ -421,20 +417,19 @@ export function createBeam(dimension, from, to, fx, opts) {
         : (Math.random() * Math.PI * 2);
       const twist = (Number(opts?.spiralTwist ?? (Math.PI * 6)) * dirSign);
 
-      const spiralCount = Math.max(1, Math.min(6, spiralBudget));
-      const spiralChance = Math.max(0, Math.min(1, Number(opts?.spiralBurstChance ?? 0.7)));
-      if (Math.random() <= spiralChance) {
-        for (let i = 0; i < spiralCount; i++) {
-          const start = randomPointOnFace(from, dir, opts?.faceRadius ?? 0.35);
-          spawnSpiralAroundBeamFx(dimension, start, to, fx, {
-            molang: beamMolang,
-            step: spiralStep,
-            jitter,
-            maxParticles: 1,
-            phaseBase: phaseBase + i * 0.6,
-            twist,
-          });
-        }
+      const spiralCount = Math.max(1, Math.min(4, Math.floor(spiralBudget / 2)));
+      const spiralBudgetEach = Math.max(1, Math.floor(spiralBudget / spiralCount));
+      for (let i = 0; i < spiralCount; i++) {
+        const start = randomPointOnFace(faceOrigin, dir, faceRadius);
+        spawnSpiralAroundBeamFx(dimension, start, to, fx, {
+          molang: makeBeamMolang,
+          step: spiralStep,
+          jitter,
+          maxParticles: spiralBudgetEach,
+          phaseBase: phaseBase + i * 0.6,
+          twist,
+          immediate: true,
+        });
       }
     }
 
@@ -561,6 +556,7 @@ export function fxPairSuccess(player, fromPos, toPos, fx) {
 
     createBeam(dim, a, b, fx, {
       molang: beamMolang,
+      endpoints: true,
       legacyParticle: (beamParticle && fx?.particleBeamCore !== beamParticle) ? beamParticle : null,
     });
 
@@ -606,7 +602,7 @@ export function fxTransferItem(fromBlock, toBlock, itemTypeId, fx) {
       beamStep: transferStep,
       particleCore: fx && fx.particleBeamCore,
       particleHaze: fx && fx.particleBeamHaze,
-      endpoints: false,
+      endpoints: true,
       legacyParticle: fx && fx.particleTransferBeam,
       scale: (fx?.beamFxScale ?? 1) * 0.8,
     });

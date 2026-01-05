@@ -5,8 +5,9 @@ import { startBeamSimV0 } from "../features/links/beamSim.js";
 import { startFxQueue } from "../systems/fxQueue.js";
 
 export function startSystems() {
-  startLinkVision();
-  startCleanupOnBreak();
-  startBeamSimV0();
-  startFxQueue();
+  // Start FX queue first so spawns don't stall if later systems throw.
+  try { startFxQueue(); } catch {}
+  try { startLinkVision(); } catch {}
+  try { startCleanupOnBreak(); } catch {}
+  try { startBeamSimV0(); } catch {}
 }

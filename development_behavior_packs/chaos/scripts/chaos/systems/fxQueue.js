@@ -4,10 +4,14 @@ import { configureFxQueue, drainFxQueue } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 
 export function startFxQueue() {
-  configureFxQueue(!!FX.fxQueueEnabled, FX.fxQueueMaxPerTick ?? FX.maxParticlesPerTick);
+  try {
+    configureFxQueue(!!FX.fxQueueEnabled, FX.fxQueueMaxPerTick ?? FX.maxParticlesPerTick, FX.fxQueueMaxQueued);
+  } catch {}
   system.runInterval(() => {
-    configureFxQueue(!!FX.fxQueueEnabled, FX.fxQueueMaxPerTick ?? FX.maxParticlesPerTick);
-    if (!FX.fxQueueEnabled) return;
-    drainFxQueue(FX.fxQueueMaxPerTick ?? FX.maxParticlesPerTick);
+    try {
+      configureFxQueue(!!FX.fxQueueEnabled, FX.fxQueueMaxPerTick ?? FX.maxParticlesPerTick, FX.fxQueueMaxQueued);
+      if (!FX.fxQueueEnabled) return;
+      drainFxQueue(FX.fxQueueMaxPerTick ?? FX.maxParticlesPerTick);
+    } catch {}
   }, 1);
 }

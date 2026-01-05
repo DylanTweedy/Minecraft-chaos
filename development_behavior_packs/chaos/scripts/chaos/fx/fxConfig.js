@@ -26,6 +26,32 @@ function makeColorMolang(r, g, b, a) {
   return m;
 }
 
+function applyBeamMotion(m, dir, dist, speed) {
+  if (!m) return;
+  const d = (dir && typeof dir.x === "number") ? dir : { x: 0, y: 0, z: 0 };
+  const distSafe = Math.max(0.01, Number(dist) || 0);
+  const speedSafe = Math.max(0.1, Number(speed) || 0);
+  try {
+    if (typeof m.setSpeedAndDirection === "function") {
+      m.setSpeedAndDirection("variable.chaos_move", speedSafe, { x: d.x, y: d.y, z: d.z });
+    }
+    if (typeof m.setFloat === "function") {
+      m.setFloat("variable.chaos_dist", distSafe);
+      m.setFloat("variable.chaos_speed", speedSafe);
+      m.setFloat("variable.chaos_lifetime", distSafe / Math.max(0.05, speedSafe));
+      m.setFloat("variable.chaos_move.speed", speedSafe);
+      m.setFloat("variable.chaos_move.direction_x", d.x);
+      m.setFloat("variable.chaos_move.direction_y", d.y);
+      m.setFloat("variable.chaos_move.direction_z", d.z);
+      m.setFloat("variable.chaos_dir_x", d.x);
+      m.setFloat("variable.chaos_dir_y", d.y);
+      m.setFloat("variable.chaos_dir_z", d.z);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // Must match transfer_orb.json lifetime (seconds)
 const ORB_LIFETIME_SECONDS = 1.0;
 
@@ -57,6 +83,11 @@ export const FX = {
   beamMolang: () => makeColorMolang(0.2, 0.8, 1.0, 1.0),        // link (cyan)
   beamMolangUnpair: () => makeColorMolang(1.0, 0.35, 0.2, 1.0), // unlink (red-orange)
   transferBeamMolang: () => makeColorMolang(1.0, 0.85, 0.2, 1.0), // transfer (gold)
+  makeBeamMolang: (dir, dist, speed) => {
+    const m = makeColorMolang(0.2, 0.8, 1.0, 1.0);
+    applyBeamMotion(m, dir, dist, speed);
+    return m;
+  },
 
   // Endpoint burst tuning
   successBurstCount: 10,
@@ -69,13 +100,14 @@ export const FX = {
   linksPerTickBudget: 24,
   fxQueueEnabled: true,
   fxQueueMaxPerTick: 100,
+  fxQueueMaxQueued: 1000,
 
   // Link vision culling
   linkVisionDistance: 32,
 
   // Beam rendering density
-  beamStep: 0.6,
-  spiralStep: 1.2,
+  beamStep: 0.9,
+  spiralStep: 1.8,
 
   // Motion/shape tuning
   jitterMagnitude: 0.03,
@@ -85,7 +117,7 @@ export const FX = {
   beamFlowLifetimeSeconds: 0.9,
 
   // Debug: set true to spawn a test core particle near players holding the wand
-  debugSpawnBeamParticles: false,
+  debugSpawnBeamParticles: true,
 
   // Signature supports extra args (fx.js will pass them):
   // makeMolang(dir, fromBlock, toBlock, itemTypeId)

@@ -41,6 +41,27 @@ export function makeVisionFx() {
     particleBeamUnpair: FX.particleBeam,
     beamFxScale: 1.0,
     beamMolang: () => makeBeamMolang(BEAM_COLORS.vision),
+    makeBeamMolang: (dir, dist, speed) => {
+      const m = makeBeamMolang(BEAM_COLORS.vision);
+      try {
+        if (typeof m.setSpeedAndDirection === "function") {
+          m.setSpeedAndDirection("variable.chaos_move", speed, dir);
+        }
+        if (typeof m.setFloat === "function") {
+          m.setFloat("variable.chaos_dist", dist);
+          m.setFloat("variable.chaos_speed", speed);
+          m.setFloat("variable.chaos_lifetime", dist / Math.max(0.05, speed));
+          m.setFloat("variable.chaos_move.speed", speed);
+          m.setFloat("variable.chaos_move.direction_x", dir.x);
+          m.setFloat("variable.chaos_move.direction_y", dir.y);
+          m.setFloat("variable.chaos_move.direction_z", dir.z);
+          m.setFloat("variable.chaos_dir_x", dir.x);
+          m.setFloat("variable.chaos_dir_y", dir.y);
+          m.setFloat("variable.chaos_dir_z", dir.z);
+        }
+      } catch {}
+      return m;
+    },
   });
 }
 
@@ -56,6 +77,27 @@ export function makeUnpairFx() {
     particleBeamUnpair: FX.particleBeamUnpair,
     beamFxScale: 0.5,
     beamMolangUnpair: () => makeBeamMolang(BEAM_COLORS.unlink),
+    makeBeamMolang: (dir, dist, speed) => {
+      const m = makeBeamMolang(BEAM_COLORS.unlink);
+      try {
+        if (typeof m.setSpeedAndDirection === "function") {
+          m.setSpeedAndDirection("variable.chaos_move", speed, dir);
+        }
+        if (typeof m.setFloat === "function") {
+          m.setFloat("variable.chaos_dist", dist);
+          m.setFloat("variable.chaos_speed", speed);
+          m.setFloat("variable.chaos_lifetime", dist / Math.max(0.05, speed));
+          m.setFloat("variable.chaos_move.speed", speed);
+          m.setFloat("variable.chaos_move.direction_x", dir.x);
+          m.setFloat("variable.chaos_move.direction_y", dir.y);
+          m.setFloat("variable.chaos_move.direction_z", dir.z);
+          m.setFloat("variable.chaos_dir_x", dir.x);
+          m.setFloat("variable.chaos_dir_y", dir.y);
+          m.setFloat("variable.chaos_dir_z", dir.z);
+        }
+      } catch {}
+      return m;
+    },
   });
 }
 
@@ -64,6 +106,27 @@ export function makeLinkFx() {
     particleSuccess: FX.particleSuccess,
     beamFxScale: 0.5,
     beamMolang: () => makeBeamMolang(BEAM_COLORS.link),
+    makeBeamMolang: (dir, dist, speed) => {
+      const m = makeBeamMolang(BEAM_COLORS.link);
+      try {
+        if (typeof m.setSpeedAndDirection === "function") {
+          m.setSpeedAndDirection("variable.chaos_move", speed, dir);
+        }
+        if (typeof m.setFloat === "function") {
+          m.setFloat("variable.chaos_dist", dist);
+          m.setFloat("variable.chaos_speed", speed);
+          m.setFloat("variable.chaos_lifetime", dist / Math.max(0.05, speed));
+          m.setFloat("variable.chaos_move.speed", speed);
+          m.setFloat("variable.chaos_move.direction_x", dir.x);
+          m.setFloat("variable.chaos_move.direction_y", dir.y);
+          m.setFloat("variable.chaos_move.direction_z", dir.z);
+          m.setFloat("variable.chaos_dir_x", dir.x);
+          m.setFloat("variable.chaos_dir_y", dir.y);
+          m.setFloat("variable.chaos_dir_z", dir.z);
+        }
+      } catch {}
+      return m;
+    },
   });
 }
 
@@ -71,6 +134,27 @@ export function makeTransferFx() {
   return cloneFx(FX, {
     beamFxScale: 0.4,
     transferBeamMolang: () => makeBeamMolang(BEAM_COLORS.transfer),
+    makeBeamMolang: (dir, dist, speed) => {
+      const m = makeBeamMolang(BEAM_COLORS.transfer);
+      try {
+        if (typeof m.setSpeedAndDirection === "function") {
+          m.setSpeedAndDirection("variable.chaos_move", speed, dir);
+        }
+        if (typeof m.setFloat === "function") {
+          m.setFloat("variable.chaos_dist", dist);
+          m.setFloat("variable.chaos_speed", speed);
+          m.setFloat("variable.chaos_lifetime", dist / Math.max(0.05, speed));
+          m.setFloat("variable.chaos_move.speed", speed);
+          m.setFloat("variable.chaos_move.direction_x", dir.x);
+          m.setFloat("variable.chaos_move.direction_y", dir.y);
+          m.setFloat("variable.chaos_move.direction_z", dir.z);
+          m.setFloat("variable.chaos_dir_x", dir.x);
+          m.setFloat("variable.chaos_dir_y", dir.y);
+          m.setFloat("variable.chaos_dir_z", dir.z);
+        }
+      } catch {}
+      return m;
+    },
   });
 }
 

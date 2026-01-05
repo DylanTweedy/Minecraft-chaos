@@ -9,10 +9,13 @@
       }
     },
     "components": {
+      "minecraft:emitter_initialization": {
+        "creation_expression": "variable.chaos_move.speed = math.max(0.1, variable.chaos_move.speed);"
+      },
       "minecraft:emitter_lifetime_once": {},
       "minecraft:emitter_rate_instant": { "num_particles": 1 },
       "minecraft:particle_lifetime_expression": {
-        "max_lifetime": "variable.chaos_dist / math.max(0.1, variable.chaos_move.speed * (0.7 + variable.particle_random_0 * 0.6))"
+        "max_lifetime": 0.9
       },
       "minecraft:particle_appearance_billboard": {
         "size": [0.16, 0.16],
