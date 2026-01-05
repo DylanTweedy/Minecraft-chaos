@@ -4,6 +4,9 @@
     "description": {
       "identifier": "chaos:input_node",
       "menu_category": { "category": "construction" },
+      "states": {
+        "chaos:level": [1, 2, 3, 4, 5]
+      },
       "traits": {
         "minecraft:placement_position": {
           "enabled_states": ["minecraft:block_face"]
@@ -44,6 +47,26 @@
       {
         "condition": "q.block_state('minecraft:block_face') == 'west'",
         "components": { "minecraft:transformation": { "rotation": [0, 0, 90] } }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 1",
+        "components": { "minecraft:light_emission": 2 }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 2",
+        "components": { "minecraft:light_emission": 4 }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 3",
+        "components": { "minecraft:light_emission": 6 }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 4",
+        "components": { "minecraft:light_emission": 9 }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 5",
+        "components": { "minecraft:light_emission": 12 }
       }
     ]
   }

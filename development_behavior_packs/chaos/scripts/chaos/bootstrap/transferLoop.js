@@ -1,5 +1,6 @@
 // scripts/chaos/bootstrap/transferLoop.js
 import { createTransferPathfinder, createNetworkTransferController } from "../features/links/transferSystem.js";
+import { getNetworkStamp } from "../features/links/networkStamp.js";
 
 export function startTransferLoop(ctx) {
   const {
@@ -19,7 +20,7 @@ export function startTransferLoop(ctx) {
     transferStarted = true;
 
     try {
-      const pathfinder = createTransferPathfinder({ world }, { cacheTicks: 10 });
+      const pathfinder = createTransferPathfinder({ world, getNetworkStamp }, { cacheTicks: 10 });
       const controller = createNetworkTransferController(
         {
           world,

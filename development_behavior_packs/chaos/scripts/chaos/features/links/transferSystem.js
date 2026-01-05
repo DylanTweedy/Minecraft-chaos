@@ -10,6 +10,7 @@ const PRISM_ID = "chaos:prism";
 const BEAM_ID = "chaos:beam";
 const DP_BEAMS = "chaos:beams_v0_json";
 const DP_TRANSFERS = "chaos:transfers_v0_json";
+const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const MAX_STEPS = MAX_BEAM_LEN * 12;
 
 const DEFAULTS = {
@@ -18,7 +19,12 @@ const DEFAULTS = {
   cacheTicks: 10,
   orbStepTicks: 20,
   maxOutputOptions: 6,
+  levelStep: 50,
+  maxLevel: 5,
+  minOrbStepTicks: 4,
 };
+
+const reservedByOutput = new Map();
 
 function mergeCfg(defaults, opts) {
   const cfg = {};
@@ -96,6 +102,27 @@ function saveInflight(world, inflight) {
     const raw = safeJsonStringify(inflight);
     if (typeof raw !== "string") return;
     world.setDynamicProperty(DP_TRANSFERS, raw);
+  } catch {
+    // ignore
+  }
+}
+
+function loadInputLevels(world) {
+  try {
+    const raw = world.getDynamicProperty(DP_INPUT_LEVELS);
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function saveInputLevels(world, levels) {
+  try {
+    const raw = safeJsonStringify(levels);
+    if (typeof raw !== "string") return;
+    world.setDynamicProperty(DP_INPUT_LEVELS, raw);
   } catch {
     // ignore
   }
@@ -277,6 +304,9 @@ export function createNetworkTransferController(deps, opts) {
   const inflight = [];
   let inflightDirty = false;
   let lastSaveTick = 0;
+  const transferCounts = new Map();
+  let levelsDirty = false;
+  let lastLevelsSaveTick = 0;
 
   function getSpeed(block) {
     try {
@@ -294,6 +324,7 @@ export function createNetworkTransferController(deps, opts) {
   function start() {
     if (tickId !== null) return;
     loadInflightState();
+    loadLevelsState();
     tickId = system.runInterval(onTick, 1);
   }
 
@@ -305,6 +336,7 @@ export function createNetworkTransferController(deps, opts) {
 
   function loadInflightState() {
     loadInflightStateFromWorld(world, inflight, cfg);
+    rebuildReservationsFromInflight();
     inflightDirty = false;
     lastSaveTick = nowTick;
   }
@@ -314,6 +346,27 @@ export function createNetworkTransferController(deps, opts) {
     persistInflightStateToWorld(world, inflight);
     inflightDirty = false;
     lastSaveTick = nowTick;
+  }
+
+  function loadLevelsState() {
+    const raw = loadInputLevels(world);
+    transferCounts.clear();
+    for (const [k, v] of Object.entries(raw)) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) continue;
+      transferCounts.set(k, n | 0);
+    }
+    levelsDirty = false;
+    lastLevelsSaveTick = nowTick;
+  }
+
+  function persistLevelsIfNeeded() {
+    if (!levelsDirty && (nowTick - lastLevelsSaveTick) < 200) return;
+    const obj = {};
+    for (const [k, v] of transferCounts.entries()) obj[k] = v;
+    saveInputLevels(world, obj);
+    levelsDirty = false;
+    lastLevelsSaveTick = nowTick;
   }
 
   function onTick() {
@@ -351,6 +404,7 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     persistInflightIfNeeded();
+    persistLevelsIfNeeded();
   }
 
   function resolveBlockInfo(inputKey) {
@@ -417,7 +471,7 @@ export function createNetworkTransferController(deps, opts) {
     const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
     if (!outContainer) return false;
 
-    if (!canInsertOne(outContainer, inStack.typeId)) return false;
+    if (!canInsertOneWithReservations(pathInfo.outputKey, outContainer, inStack.typeId)) return false;
 
     if (!spawnOrbStep(inDim, inBlock.location, pathInfo.path[0])) return false;
 
@@ -426,15 +480,19 @@ export function createNetworkTransferController(deps, opts) {
 
     if (!decrementInputSlotSafe(inContainer, inSlot, current, 1)) return false;
 
+    const level = noteTransferAndGetLevel(inputKey, inBlock);
     inflight.push({
       dimId: inputInfo.pos.dimId,
       itemTypeId: inStack.typeId,
       path: pathInfo.path,
       stepIndex: 0,
-      ticksUntilStep: cfg.orbStepTicks,
+      stepTicks: getOrbStepTicks(level),
+      ticksUntilStep: getOrbStepTicks(level),
       outputKey: pathInfo.outputKey,
       startPos: { x: inputInfo.pos.x, y: inputInfo.pos.y, z: inputInfo.pos.z },
+      level: level,
     });
+    reserveOutputSlot(pathInfo.outputKey, inStack.typeId, 1);
     inflightDirty = true;
 
     return true;
@@ -465,6 +523,7 @@ export function createNetworkTransferController(deps, opts) {
         const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
         if (!isPathBlock(curBlock)) {
           dropItemAt(dim, cur, job.itemTypeId);
+          releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
           inflight.splice(i, 1);
           inflightDirty = true;
           continue;
@@ -475,6 +534,7 @@ export function createNetworkTransferController(deps, opts) {
         const nextBlock = dim.getBlock({ x: next.x, y: next.y, z: next.z });
         if (!isPathBlock(nextBlock)) {
           dropItemAt(dim, cur, job.itemTypeId);
+          releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
           inflight.splice(i, 1);
           inflightDirty = true;
           continue;
@@ -483,7 +543,7 @@ export function createNetworkTransferController(deps, opts) {
 
       spawnOrbStep(dim, cur, next);
       job.stepIndex = nextIdx;
-      job.ticksUntilStep = cfg.orbStepTicks;
+      job.ticksUntilStep = job.stepTicks || cfg.orbStepTicks;
       inflightDirty = true;
     }
   }
@@ -496,19 +556,68 @@ export function createNetworkTransferController(deps, opts) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
         if (fallback) dropItemAt(dim, fallback, job.itemTypeId);
       }
+      releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
       return;
     }
 
     const outBlock = outInfo.block;
     if (!outBlock || outBlock.typeId !== OUTPUT_ID) {
       dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId);
+      releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
       return;
     }
 
     const outContainer = getAttachedInventoryContainer(outBlock, outInfo.dim);
-    if (outContainer && tryInsertOne(outContainer, new ItemStack(job.itemTypeId, 1))) return;
+    if (outContainer && tryInsertOne(outContainer, new ItemStack(job.itemTypeId, 1))) {
+      releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+      return;
+    }
 
     dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId);
+    releaseOutputSlot(job.outputKey, job.itemTypeId, 1);
+  }
+
+  function noteTransferAndGetLevel(inputKey, block) {
+    const current = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
+    const next = current + 1;
+    transferCounts.set(inputKey, next);
+    levelsDirty = true;
+    const level = getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
+    updateBlockLevel(block, level);
+    return level;
+  }
+
+  function getLevelForCount(count, step, maxLevel) {
+    const base = Math.max(1, step | 0);
+    const lvl = 1 + Math.floor(Math.max(0, count) / base);
+    return Math.min(Math.max(1, lvl), Math.max(1, maxLevel | 0));
+  }
+
+  function getOrbStepTicks(level) {
+    const safeLevel = Math.max(1, level | 0);
+    const base = Math.max(1, cfg.orbStepTicks | 0);
+    const minTicks = Math.max(1, cfg.minOrbStepTicks | 0);
+    return Math.max(minTicks, Math.floor(base / safeLevel));
+  }
+
+  function updateBlockLevel(block, level) {
+    try {
+      if (!block || block.typeId !== INPUT_ID) return;
+      const perm = block.permutation;
+      if (!perm) return;
+      const next = perm.withState("chaos:level", level | 0);
+      block.setPermutation(next);
+    } catch {
+      // ignore
+    }
+  }
+
+  function rebuildReservationsFromInflight() {
+    reservedByOutput.clear();
+    for (const job of inflight) {
+      if (!job || !job.outputKey || !job.itemTypeId) continue;
+      reserveOutputSlot(job.outputKey, job.itemTypeId, 1);
+    }
   }
 
   function spawnOrbStep(dim, from, to) {
@@ -569,6 +678,7 @@ function sanitizeInflightEntry(entry) {
     if (!Array.isArray(entry.path) || entry.path.length === 0) return null;
     if (!Number.isFinite(entry.stepIndex)) entry.stepIndex = 0;
     if (!Number.isFinite(entry.ticksUntilStep)) entry.ticksUntilStep = 1;
+    if (!Number.isFinite(entry.stepTicks)) entry.stepTicks = entry.ticksUntilStep;
     if (!entry.outputKey || typeof entry.outputKey !== "string") return null;
     if (!entry.startPos || !Number.isFinite(entry.startPos.x)) entry.startPos = null;
     return entry;
@@ -585,6 +695,7 @@ function loadInflightStateFromWorld(world, inflight, cfg) {
     if (!clean) continue;
     if (clean.path.length > MAX_STEPS) continue;
     if (clean.ticksUntilStep < 1) clean.ticksUntilStep = cfg.orbStepTicks;
+    if (clean.stepTicks < 1) clean.stepTicks = cfg.orbStepTicks;
     inflight.push(clean);
   }
 }
@@ -838,6 +949,61 @@ function canInsertOne(container, typeId) {
   } catch (_) {
     return false;
   }
+}
+
+function canInsertOneWithReservations(outputKey, container, typeId) {
+  try {
+    const size = container.size;
+    let stackRoom = 0;
+    let emptySlots = 0;
+
+    for (let i = 0; i < size; i++) {
+      const it = container.getItem(i);
+      if (!it) {
+        emptySlots++;
+        continue;
+      }
+      if (it.typeId !== typeId) continue;
+      const max = it.maxAmount || 64;
+      if (it.amount < max) stackRoom += (max - it.amount);
+    }
+
+    const reservedTotal = getReservedForOutput(outputKey).total;
+    const capacity = stackRoom + emptySlots;
+    return (capacity - reservedTotal) >= 1;
+  } catch (_) {
+    return false;
+  }
+}
+
+function getReservedForOutput(outputKey) {
+  const entry = reservedByOutput.get(outputKey);
+  if (!entry) return { total: 0, byType: new Map() };
+  return entry;
+}
+
+function reserveOutputSlot(outputKey, typeId, count) {
+  if (!outputKey || !typeId || count <= 0) return;
+  let entry = reservedByOutput.get(outputKey);
+  if (!entry) {
+    entry = { total: 0, byType: new Map() };
+    reservedByOutput.set(outputKey, entry);
+  }
+  entry.total += count;
+  const prev = entry.byType.get(typeId) || 0;
+  entry.byType.set(typeId, prev + count);
+}
+
+function releaseOutputSlot(outputKey, typeId, count) {
+  if (!outputKey || !typeId || count <= 0) return;
+  const entry = reservedByOutput.get(outputKey);
+  if (!entry) return;
+  entry.total = Math.max(0, entry.total - count);
+  const prev = entry.byType.get(typeId) || 0;
+  const next = Math.max(0, prev - count);
+  if (next === 0) entry.byType.delete(typeId);
+  else entry.byType.set(typeId, next);
+  if (entry.total <= 0 && entry.byType.size === 0) reservedByOutput.delete(outputKey);
 }
 
 function tryInsertOne(container, oneStack) {

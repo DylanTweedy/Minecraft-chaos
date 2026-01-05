@@ -1,6 +1,7 @@
 // scripts/chaos/beamSim.js
 import { world, system, BlockPermutation } from "@minecraft/server";
 import { MAX_BEAM_LEN } from "./beamConfig.js";
+import { bumpNetworkStamp } from "./networkStamp.js";
 
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
@@ -135,7 +136,7 @@ function beamAxisMatchesDir(block, dx, dy, dz) {
   return axis === axisForDir(dx, dy, dz);
 }
 
-function prismHasBeamNeighbor(dim, loc) {
+function prismHasDirectSource(dim, loc) {
   const dirs = [
     { dx: 1, dy: 0, dz: 0 },
     { dx: -1, dy: 0, dz: 0 },
@@ -146,7 +147,28 @@ function prismHasBeamNeighbor(dim, loc) {
   ];
   for (const d of dirs) {
     const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
-    if (b?.typeId === BEAM_ID && beamAxisMatchesDir(b, d.dx, d.dy, d.dz)) return true;
+    if (!b) continue;
+    if (b.typeId === BEAM_ID && beamAxisMatchesDir(b, d.dx, d.dy, d.dz)) return true;
+    if (b.typeId === INPUT_ID || b.typeId === OUTPUT_ID) return true;
+  }
+  return false;
+}
+
+function prismHasRelaySource(dim, loc) {
+  if (prismHasDirectSource(dim, loc)) return true;
+
+  const dirs = [
+    { dx: 1, dy: 0, dz: 0 },
+    { dx: -1, dy: 0, dz: 0 },
+    { dx: 0, dy: 0, dz: 1 },
+    { dx: 0, dy: 0, dz: -1 },
+    { dx: 0, dy: 1, dz: 0 },
+    { dx: 0, dy: -1, dz: 0 },
+  ];
+  for (const d of dirs) {
+    const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
+    if (b?.typeId !== PRISM_ID) continue;
+    if (prismHasDirectSource(dim, b.location)) return true;
   }
   return false;
 }
@@ -390,7 +412,7 @@ function rebuildRelayBeams(entry, map) {
     return;
   }
 
-  if (!prismHasBeamNeighbor(dim, entry)) {
+  if (!prismHasRelaySource(dim, entry)) {
     removeRecordedBeams(entry);
     delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
     return;
@@ -496,7 +518,7 @@ function beamValidFromInput(dim, inputLoc, dx, dy, dz, beamDist) {
 }
 
 function beamValidFromPrism(dim, prismLoc, dx, dy, dz, beamDist) {
-  if (!prismHasBeamNeighbor(dim, prismLoc)) return false;
+  if (!prismHasRelaySource(dim, prismLoc)) return false;
 
   let farthestNode = 0;
   for (let i = 1; i <= MAX_BEAM_LEN; i++) {
@@ -605,6 +627,7 @@ const FACE_OFFSETS = {
 function handleBlockChanged(dim, loc) {
   if (!dim || !loc) return;
 
+  bumpNetworkStamp();
   enqueueAdjacentBeams(dim, loc);
   enqueueAdjacentPrisms(dim, loc);
 
