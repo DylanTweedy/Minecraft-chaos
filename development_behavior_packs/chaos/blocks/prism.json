@@ -1,0 +1,50 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:block": {
+    "description": {
+      "identifier": "chaos:prism",
+      "menu_category": { "category": "construction" },
+      "traits": {
+        "minecraft:placement_position": {
+          "enabled_states": ["minecraft:block_face"]
+        }
+      }
+    },
+
+    "components": {
+      "minecraft:geometry": "minecraft:geometry.full_block",
+      "minecraft:material_instances": {
+        "*":    { "texture": "prism_side",   "render_method": "opaque" },
+        "up":   { "texture": "prism_top",    "render_method": "opaque" },
+        "down": { "texture": "prism_bottom", "render_method": "opaque" }
+      }
+    },
+
+    "permutations": [
+      {
+        "condition": "q.block_state('minecraft:block_face') == 'down'",
+        "components": { "minecraft:transformation": { "rotation": [180, 0, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:block_face') == 'up'",
+        "components": { "minecraft:transformation": { "rotation": [0, 0, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:block_face') == 'north'",
+        "components": { "minecraft:transformation": { "rotation": [-90, 0, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:block_face') == 'south'",
+        "components": { "minecraft:transformation": { "rotation": [90, 0, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:block_face') == 'east'",
+        "components": { "minecraft:transformation": { "rotation": [0, 0, -90] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:block_face') == 'west'",
+        "components": { "minecraft:transformation": { "rotation": [0, 0, 90] } }
+      }
+    ]
+  }
+}

@@ -5,5 +5,14 @@
   },
   "chaos:output_node": {
     "sound": "amethyst_block"
+  },
+  "chaos:crucible": {
+    "sound": "amethyst_block"
+  },
+  "chaos:foundry": {
+    "sound": "amethyst_block"
+  },
+  "chaos:prism": {
+    "sound": "amethyst_block"
   }
 }

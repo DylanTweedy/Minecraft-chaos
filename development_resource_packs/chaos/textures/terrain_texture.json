@@ -10,6 +10,18 @@
     "output_node_bottom": { "textures": "textures/blocks/output_node_bottom" },
     "output_node_side":   { "textures": "textures/blocks/output_node_side" },
 
+    "crucible_top":    { "textures": "textures/blocks/crucible_top" },
+    "crucible_bottom": { "textures": "textures/blocks/crucible_bottom" },
+    "crucible_side":   { "textures": "textures/blocks/crucible_side" },
+
+    "foundry_top":    { "textures": "textures/blocks/foundry-top" },
+    "foundry_bottom": { "textures": "textures/blocks/foundry-bottom" },
+    "foundry_side":   { "textures": "textures/blocks/foundry-side" },
+
+    "prism_top":    { "textures": "textures/blocks/prism_top" },
+    "prism_bottom": { "textures": "textures/blocks/prism_bottom" },
+    "prism_side":   { "textures": "textures/blocks/prism_side" },
+
     "chaos_beam": { "textures": "textures/blocks/chaos_beam" }
   }
 }
