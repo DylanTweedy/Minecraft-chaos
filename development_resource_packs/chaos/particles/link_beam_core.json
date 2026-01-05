@@ -10,7 +10,7 @@
     },
     "components": {
       "minecraft:emitter_initialization": {
-        "creation_expression": "variable.chaos_speed = math.max(0.1, variable.chaos_speed); variable.chaos_lifetime = math.max(0.05, variable.chaos_lifetime); variable.chaos_move.speed = variable.chaos_speed;"
+        "creation_expression": "variable.chaos_speed = math.max(0.1, variable.chaos_speed); variable.chaos_lifetime = math.max(0.05, variable.chaos_lifetime); variable.chaos_move.speed = variable.chaos_speed; variable.chaos_size_scale = math.max(0.5, variable.chaos_size_scale); variable.chaos_alpha_scale = math.max(0.2, variable.chaos_alpha_scale);"
       },
       "minecraft:emitter_lifetime_once": {},
       "minecraft:emitter_rate_instant": { "num_particles": 1 },
@@ -18,7 +18,10 @@
         "max_lifetime": "variable.chaos_lifetime"
       },
       "minecraft:particle_appearance_billboard": {
-        "size": [0.16, 0.16],
+        "size": [
+          "math.lerp(0.15, 0.09, 0.5 + 0.5 * math.sin(variable.particle_age * 12)) * variable.chaos_size_scale",
+          "math.lerp(0.15, 0.09, 0.5 + 0.5 * math.sin(variable.particle_age * 12)) * variable.chaos_size_scale"
+        ],
         "facing_camera_mode": "rotate_xyz"
       },
       "minecraft:particle_appearance_tinting": {
@@ -26,7 +29,7 @@
           "variable.chaos_color_r",
           "variable.chaos_color_g",
           "variable.chaos_color_b",
-          "variable.chaos_color_a"
+          "variable.chaos_color_a * (0.6 + 0.4 * math.sin(variable.particle_age * 10)) * variable.chaos_alpha_scale"
         ]
       },
       "minecraft:emitter_shape_point": {

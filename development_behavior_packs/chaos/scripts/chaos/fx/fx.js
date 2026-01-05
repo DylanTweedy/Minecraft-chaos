@@ -393,7 +393,13 @@ export function createBeam(dimension, from, to, fx, opts) {
       : (() => beamMotionMolang);
     const makeCoreMolang = () => {
       const scale = 0.75 + Math.random() * 0.5;
-      return applyBeamMotionMolang(resolveMolang(makeBeamMolang), dir, distSafe, speedSafe * scale) ?? beamMotionMolang;
+      const m = applyBeamMotionMolang(resolveMolang(makeBeamMolang), dir, distSafe, speedSafe * scale) ?? beamMotionMolang;
+      if (m && typeof m.setFloat === "function") {
+        m.setFloat("variable.chaos_size_scale", 0.85 + Math.random() * 0.3);
+        m.setFloat("variable.chaos_alpha_scale", 0.6 + Math.random() * 0.4);
+        m.setFloat("variable.chaos_color_a", 0.4 + Math.random() * 0.3);
+      }
+      return m;
     };
     const makeHazeMolang = () => {
       const scale = 0.75 + Math.random() * 0.5;

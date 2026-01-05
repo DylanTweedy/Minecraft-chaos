@@ -39,7 +39,9 @@ export function makeVisionFx() {
     particleUnpair: null,
     particleBeam: FX.particleBeam,
     particleBeamUnpair: FX.particleBeam,
-    beamFxScale: 1.0,
+    particleBeamHaze: null,
+    particleBeamSpiral: null,
+    beamFxScale: 0.35,
     beamMolang: () => makeBeamMolang(BEAM_COLORS.vision),
     makeBeamMolang: (dir, dist, speed) => {
       const m = makeBeamMolang(BEAM_COLORS.vision);

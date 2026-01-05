@@ -97,7 +97,7 @@ export const FX = {
 
   // Beam FX budgets (per-player unless otherwise noted)
   maxParticlesPerTick: 80,
-  linksPerTickBudget: 24,
+  linksPerTickBudget: 12,
   fxQueueEnabled: true,
   fxQueueMaxPerTick: 100,
   fxQueueMaxQueued: 1000,

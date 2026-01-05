@@ -9,7 +9,7 @@ import { makeVisionFx } from "../fx/presets.js";
 const WAND_ID = "chaos:wand";
 
 // ---------- Perf knobs ----------
-const TICK_INTERVAL = 2;              // interval ticks (we budget inside)
+const TICK_INTERVAL = 10;              // interval ticks (we budget inside)
 const REBUILD_CACHE_EVERY_TICKS = 20; // refresh flattened link list sometimes
 
 // ---------- Internal state ----------
