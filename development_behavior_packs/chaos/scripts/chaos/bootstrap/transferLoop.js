@@ -22,7 +22,12 @@ export function startTransferLoop(ctx) {
     try {
       const pathfinder = createTransferPathfinder(
         { world, getNetworkStamp },
-        { cacheTicks: 10, cacheTicksWithStamp: 60, maxVisitedPerSearch: 200 }
+        {
+          cacheTicks: 30,
+          cacheTicksWithStamp: 120,
+          maxVisitedPerSearch: 120,
+          maxOutputOptions: 4,
+        }
       );
       const controller = createNetworkTransferController(
         {
@@ -30,12 +35,17 @@ export function startTransferLoop(ctx) {
           system,
           findPathForInput: pathfinder.findPathForInput,
           invalidateInput: pathfinder.invalidateInput,
+          getPathStats: pathfinder.getAndResetStats,
           FX: FX,
         },
         {
           maxTransfersPerTick: 4,
-          perInputIntervalTicks: 10,
+          perInputIntervalTicks: 20,
           orbStepTicks: 20,
+          debugTransferStatsActionBar: false,
+          maxInputsScannedPerTick: 12,
+          maxQueuedInsertsPerTick: 2,
+          maxFullChecksPerTick: 2,
         }
       );
       controller.start();

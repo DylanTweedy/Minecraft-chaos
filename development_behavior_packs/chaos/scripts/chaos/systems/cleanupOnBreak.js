@@ -18,8 +18,11 @@ const MAX_LEVEL = 5;
 const DROP_MATCH_TICKS = 20;
 const DROP_SCAN_RADIUS = 4.0;
 const DROP_SCAN_MAX_PER_TICK = 8;
+const INV_MATCH_TICKS = 60;
+const INV_SCAN_MAX_PER_TICK = 4;
 
 const pendingTierDrops = [];
+const pendingInventoryTags = [];
 
 // cap visuals so breaking a hub with 200 outputs doesn't nuke FPS
 const MAX_UNPAIR_FX_BEAMS = 12;
@@ -243,6 +246,44 @@ function addPendingDrop(dimId, loc, typeId, count) {
   });
 }
 
+function addPendingInventoryTag(playerId, typeId, count) {
+  if (!playerId || !typeId || count <= 0) return;
+  pendingInventoryTags.push({
+    playerId,
+    typeId,
+    count: Math.max(0, count | 0),
+    tick: system.currentTick || 0,
+  });
+}
+
+function getPlayerById(playerId) {
+  if (!playerId) return null;
+  for (const player of world.getAllPlayers()) {
+    if (player?.id === playerId) return player;
+  }
+  return null;
+}
+
+function tryApplyTierToInventory(player, typeId, count) {
+  try {
+    const inv = player?.getComponent("minecraft:inventory");
+    const container = inv?.container;
+    if (!container) return false;
+    const size = container.size;
+    for (let i = 0; i < size; i++) {
+      const it = container.getItem(i);
+      if (!it || it.typeId !== typeId) continue;
+      if (readCountFromItem(it) > 0) continue;
+      applyItemTierProps(it, count);
+      try { container.setItem(i, it); } catch { return false; }
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 function matchPendingDrop(entityLoc, dimId, typeId) {
   const now = system.currentTick || 0;
   for (let i = pendingTierDrops.length - 1; i >= 0; i--) {
@@ -306,6 +347,34 @@ function scanPendingDrops() {
       pendingTierDrops.splice(i, 1);
       budget--;
       break;
+    }
+  }
+}
+
+function scanPendingInventoryTags() {
+  const now = system.currentTick || 0;
+  let budget = INV_SCAN_MAX_PER_TICK;
+  if (budget <= 0 || pendingInventoryTags.length === 0) return;
+
+  for (let i = pendingInventoryTags.length - 1; i >= 0 && budget > 0; i--) {
+    const p = pendingInventoryTags[i];
+    if (!p) {
+      pendingInventoryTags.splice(i, 1);
+      continue;
+    }
+    if ((now - p.tick) > INV_MATCH_TICKS) {
+      pendingInventoryTags.splice(i, 1);
+      continue;
+    }
+
+    const player = getPlayerById(p.playerId);
+    if (!player) {
+      pendingInventoryTags.splice(i, 1);
+      continue;
+    }
+    if (tryApplyTierToInventory(player, p.typeId, p.count)) {
+      pendingInventoryTags.splice(i, 1);
+      budget--;
     }
   }
 }
@@ -406,6 +475,7 @@ export function startCleanupOnBreak() {
       const count = getCountForBreak(brokenId, key, ev.brokenBlockPermutation);
       clearCountForKey(brokenId, key);
       addPendingDrop(dimId, loc, brokenId, count);
+      if (player?.id) addPendingInventoryTag(player.id, brokenId, count);
     } catch {
       // ignore
     }
@@ -442,6 +512,7 @@ export function startCleanupOnBreak() {
   system.runInterval(() => {
     try {
       scanPendingDrops();
+      scanPendingInventoryTags();
     } catch {
       // ignore
     }

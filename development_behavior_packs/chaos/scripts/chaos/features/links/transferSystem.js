@@ -36,6 +36,13 @@ const DEFAULTS = {
   levelUpBurstCount: 8,
   levelUpBurstRadius: 0.35,
   orbLifetimeScale: 0.5,
+  maxInputsScannedPerTick: 24,
+  debugTransferStats: false,
+  debugTransferStatsIntervalTicks: 100,
+  debugTransferStatsActionBar: true,
+  backoffBaseTicks: 10,
+  backoffMaxTicks: 200,
+  backoffMaxLevel: 6,
 };
 
 const reservedByContainer = new Map();
@@ -269,6 +276,13 @@ export function createTransferPathfinder(deps, opts) {
 
   const cfg = mergeCfg(DEFAULTS, opts);
   const cache = new Map();
+  const stats = {
+    searches: 0,
+    visitedTotal: 0,
+    visitedMax: 0,
+    outputsTotal: 0,
+    outputsMax: 0,
+  };
 
   function invalidateInput(inputKey) {
     cache.delete(inputKey);
@@ -307,6 +321,7 @@ export function createTransferPathfinder(deps, opts) {
     const visited = new Set();
     let visitedCount = 0;
     const queue = [];
+    let qIndex = 0;
     queue.push({
       nodePos: { x: parsed.x, y: parsed.y, z: parsed.z },
       nodeType: "input",
@@ -317,9 +332,9 @@ export function createTransferPathfinder(deps, opts) {
 
     const dirs = makeDirs();
     const outputs = [];
-    while (queue.length > 0) {
+    while (qIndex < queue.length) {
       if (visitedCount >= cfg.maxVisitedPerSearch) break;
-      const cur = queue.shift();
+      const cur = queue[qIndex++];
       if (!cur) continue;
 
       for (const d of dirs) {
@@ -362,6 +377,12 @@ export function createTransferPathfinder(deps, opts) {
       if (outputs.length >= cfg.maxOutputOptions) break;
     }
 
+    stats.searches++;
+    stats.visitedTotal += visitedCount;
+    stats.visitedMax = Math.max(stats.visitedMax, visitedCount);
+    stats.outputsTotal += outputs.length;
+    stats.outputsMax = Math.max(stats.outputsMax, outputs.length);
+
     if (outputs.length > 0) {
       cache.set(inputKey, { tick: nowTick, stamp, outputs });
       return outputs;
@@ -371,7 +392,23 @@ export function createTransferPathfinder(deps, opts) {
     return null;
   }
 
-  return { findPathForInput, invalidateInput };
+  function getAndResetStats() {
+    const snapshot = {
+      searches: stats.searches,
+      visitedTotal: stats.visitedTotal,
+      visitedMax: stats.visitedMax,
+      outputsTotal: stats.outputsTotal,
+      outputsMax: stats.outputsMax,
+    };
+    stats.searches = 0;
+    stats.visitedTotal = 0;
+    stats.visitedMax = 0;
+    stats.outputsTotal = 0;
+    stats.outputsMax = 0;
+    return snapshot;
+  }
+
+  return { findPathForInput, invalidateInput, getAndResetStats };
 }
 
 export function createNetworkTransferController(deps, opts) {
@@ -381,6 +418,7 @@ export function createNetworkTransferController(deps, opts) {
   const getSpeedForInput = deps.getSpeedForInput;
   const findPathForInput = deps.findPathForInput;
   const invalidateInput = deps.invalidateInput;
+  const getPathStats = deps.getPathStats;
 
   const cfg = mergeCfg(DEFAULTS, opts);
 
@@ -405,6 +443,49 @@ export function createNetworkTransferController(deps, opts) {
   const fullContainers = new Set();
   let fullCursor = 0;
   let queueCursor = 0;
+  const inputBackoff = new Map();
+  const debugEnabled = !!(cfg.debugTransferStats || FX?.debugTransferStats);
+  const debugInterval = Math.max(20, Number(cfg.debugTransferStatsIntervalTicks || FX?.debugTransferStatsIntervalTicks) || 100);
+  const debugUseActionBar = (cfg.debugTransferStatsActionBar != null)
+    ? !!cfg.debugTransferStatsActionBar
+    : !!FX?.debugTransferStatsActionBar;
+  let lastDebugTick = 0;
+  const debugState = {
+    inputsScanned: 0,
+    transfersStarted: 0,
+    outputOptionsTotal: 0,
+    outputOptionsMax: 0,
+  };
+
+  function getBackoffTicks(level) {
+    const safeLevel = Math.max(0, level | 0);
+    const base = Math.max(0, cfg.backoffBaseTicks | 0);
+    if (safeLevel <= 0 || base <= 0) return 0;
+    const maxTicks = Math.max(base, cfg.backoffMaxTicks | 0);
+    const scaled = base * Math.pow(2, Math.max(0, safeLevel - 1));
+    return Math.min(maxTicks, Math.floor(scaled));
+  }
+
+  function bumpBackoff(inputKey) {
+    if (!inputKey) return 0;
+    const prev = inputBackoff.get(inputKey) || 0;
+    const maxLevel = Math.max(0, cfg.backoffMaxLevel | 0);
+    const next = Math.min(maxLevel, prev + 1);
+    inputBackoff.set(inputKey, next);
+    return next;
+  }
+
+  function clearBackoff(inputKey) {
+    if (!inputKey) return;
+    inputBackoff.delete(inputKey);
+  }
+
+  function resetDebugState() {
+    debugState.inputsScanned = 0;
+    debugState.transfersStarted = 0;
+    debugState.outputOptionsTotal = 0;
+    debugState.outputOptionsMax = 0;
+  }
 
   function getSpeed(block) {
     try {
@@ -654,8 +735,13 @@ export function createNetworkTransferController(deps, opts) {
     if (cursor >= inputKeys.length) cursor = 0;
     let scanned = 0;
     let budget = cfg.maxTransfersPerTick;
+    let transfersThisTick = 0;
+    const scanLimit = Math.min(
+      inputKeys.length,
+      Math.max(1, cfg.maxInputsScannedPerTick | 0)
+    );
 
-    while (budget > 0 && scanned < inputKeys.length) {
+    while (budget > 0 && scanned < scanLimit) {
       const inputKey = inputKeys[cursor];
       cursor = (cursor + 1) % inputKeys.length;
       scanned++;
@@ -663,7 +749,9 @@ export function createNetworkTransferController(deps, opts) {
       const allowedAt = nextAllowed.has(inputKey) ? nextAllowed.get(inputKey) : 0;
       if (nowTick < allowedAt) continue;
 
-      const didTransfer = attemptTransferOne(inputKey);
+      const result = attemptTransferOne(inputKey);
+      const didTransfer = !!result?.ok;
+      if (didTransfer) transfersThisTick++;
 
       const info = resolveBlockInfo(inputKey);
       let interval = cfg.perInputIntervalTicks;
@@ -671,15 +759,29 @@ export function createNetworkTransferController(deps, opts) {
         const s = getSpeed(info.block);
         interval = Math.max(1, (s && s.intervalTicks) ? s.intervalTicks : cfg.perInputIntervalTicks);
       }
+      if (!didTransfer) {
+        const reason = result?.reason;
+        if (reason === "full" || reason === "no_options") {
+          const level = bumpBackoff(inputKey);
+          interval += getBackoffTicks(level);
+        }
+      } else {
+        clearBackoff(inputKey);
+      }
       nextAllowed.set(inputKey, nowTick + interval);
 
       if (didTransfer) budget--;
+    }
+    if (debugEnabled) {
+      debugState.inputsScanned += scanned;
+      debugState.transfersStarted += transfersThisTick;
     }
 
     persistInflightIfNeeded();
     persistLevelsIfNeeded();
     persistOutputLevelsIfNeeded();
     persistPrismLevelsIfNeeded();
+    if (debugEnabled) postDebugStats(inputKeys.length);
   }
 
   function resolveBlockInfo(inputKey) {
@@ -696,35 +798,43 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
+  function makeResult(ok, reason) {
+    return { ok: !!ok, reason: reason || (ok ? "ok" : "fail") };
+  }
+
   function attemptTransferOne(inputKey) {
     const inputInfo = resolveBlockInfo(inputKey);
-    if (!inputInfo) return false;
+    if (!inputInfo) return makeResult(false, "no_input");
 
     const inDim = inputInfo.dim;
     const inBlock = inputInfo.block;
-    if (!inBlock || inBlock.typeId !== INPUT_ID) return false;
+    if (!inBlock || inBlock.typeId !== INPUT_ID) return makeResult(false, "no_input");
 
     const inContainer = getAttachedInventoryContainer(inBlock, inDim);
-    if (!inContainer) return false;
+    if (!inContainer) return makeResult(false, "no_container");
 
     const inputFilter = getFilterContainer(inBlock);
     const pull = findFirstMatchingSlot(inContainer, inputFilter);
-    if (!pull) return false;
+    if (!pull) return makeResult(false, "no_item");
 
     const inSlot = pull.slot;
     const inStack = pull.stack;
-    if (!inStack || inStack.amount <= 0) return false;
+    if (!inStack || inStack.amount <= 0) return makeResult(false, "no_item");
 
     const options = (typeof findPathForInput === "function")
       ? findPathForInput(inputKey, nowTick)
       : null;
-    if (!options || !Array.isArray(options) || options.length === 0) return false;
+    if (!options || !Array.isArray(options) || options.length === 0) return makeResult(false, "no_options");
 
     const filteredOptions = filterOutputsByWhitelist(options, inStack.typeId, resolveBlockInfo);
-    if (!filteredOptions || filteredOptions.length === 0) return false;
+    if (!filteredOptions || filteredOptions.length === 0) return makeResult(false, "no_options");
+    if (debugEnabled) {
+      debugState.outputOptionsTotal += filteredOptions.length;
+      debugState.outputOptionsMax = Math.max(debugState.outputOptionsMax, filteredOptions.length);
+    }
 
     const dim = inputInfo.dim;
-    if (!dim) return false;
+    if (!dim) return makeResult(false, "no_input");
 
     const previewLevel = getNextInputLevel(inputKey);
     let pathInfo = null;
@@ -733,6 +843,7 @@ export function createNetworkTransferController(deps, opts) {
     let outContainerInfo = null;
     let containerKey = null;
     let transferAmount = 0;
+    let sawFull = false;
 
     const candidates = filteredOptions.slice();
     while (candidates.length > 0) {
@@ -767,17 +878,19 @@ export function createNetworkTransferController(deps, opts) {
       }
 
       if (fullContainers.has(cKey)) {
+        sawFull = true;
         candidates.splice(candidates.indexOf(pick), 1);
         continue;
       }
 
-    const available = getTotalCountForType(inContainer, inStack.typeId);
-    const desiredAmount = getTransferAmount(previewLevel, inStack);
-    const capacity = getInsertCapacityWithReservations(cKey, cInfo.container, inStack.typeId, inStack);
-    const amount = Math.min(desiredAmount, available, capacity);
+      const available = getTotalCountForType(inContainer, inStack.typeId);
+      const desiredAmount = getTransferAmount(previewLevel, inStack);
+      const capacity = getInsertCapacityWithReservations(cKey, cInfo.container, inStack.typeId, inStack);
+      const amount = Math.min(desiredAmount, available, capacity);
       if (amount <= 0) {
         if (getContainerCapacityWithReservations(cKey, cInfo.container) <= 0) {
           fullContainers.add(cKey);
+          sawFull = true;
         }
         candidates.splice(candidates.indexOf(pick), 1);
         continue;
@@ -794,22 +907,24 @@ export function createNetworkTransferController(deps, opts) {
 
     if (!pathInfo || !outInfo || !outBlock || !outContainerInfo || !containerKey) {
       if (typeof invalidateInput === "function") invalidateInput(inputKey);
-      return false;
+      return makeResult(false, sawFull ? "full" : "no_options");
     }
 
     if (!validatePathStart(dim, pathInfo.path)) {
       if (typeof invalidateInput === "function") invalidateInput(inputKey);
-      return false;
+      return makeResult(false, "no_options");
     }
 
     const firstStep = pathInfo.path[0];
     const firstBlock = inDim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
-    if (!spawnOrbStep(inDim, inBlock.location, firstStep, previewLevel, inBlock, firstBlock)) return false;
+    if (!spawnOrbStep(inDim, inBlock.location, firstStep, previewLevel, inBlock, firstBlock)) {
+      return makeResult(false, "no_spawn");
+    }
 
     const current = inContainer.getItem(inSlot);
-    if (!current || current.typeId !== inStack.typeId || current.amount <= 0) return false;
+    if (!current || current.typeId !== inStack.typeId || current.amount <= 0) return makeResult(false, "no_item");
 
-    if (!decrementInputSlotsForType(inContainer, inStack.typeId, transferAmount)) return false;
+    if (!decrementInputSlotsForType(inContainer, inStack.typeId, transferAmount)) return makeResult(false, "no_item");
 
     const level = noteTransferAndGetLevel(inputKey, inBlock);
     inflight.push({
@@ -828,7 +943,7 @@ export function createNetworkTransferController(deps, opts) {
     reserveContainerSlot(containerKey, inStack.typeId, transferAmount);
     inflightDirty = true;
 
-    return true;
+    return makeResult(true, "ok");
   }
 
   function tickInFlight() {
@@ -885,6 +1000,52 @@ export function createNetworkTransferController(deps, opts) {
       job.ticksUntilStep = job.stepTicks || cfg.orbStepTicks;
       inflightDirty = true;
     }
+  }
+
+  function postDebugStats(inputCount) {
+    if ((nowTick - lastDebugTick) < debugInterval) return;
+    lastDebugTick = nowTick;
+
+    const pathStats = (typeof getPathStats === "function") ? getPathStats() : null;
+
+    let queuedContainers = 0;
+    let queuedEntries = 0;
+    let queuedItems = 0;
+    let queuedMax = 0;
+    for (const queue of queueByContainer.values()) {
+      if (!queue) continue;
+      queuedContainers++;
+      queuedEntries += queue.length;
+      queuedMax = Math.max(queuedMax, queue.length);
+      for (const job of queue) {
+        queuedItems += Math.max(0, job?.amount | 0);
+      }
+    }
+
+    const bfsLabel = pathStats
+      ? ` bfs=${pathStats.searches}:${pathStats.visitedTotal}/${pathStats.visitedMax} out=${pathStats.outputsTotal}/${pathStats.outputsMax}`
+      : "";
+
+    const msg =
+      `Chaos Transfer | inputs=${inputCount} scanned=${debugState.inputsScanned} ` +
+      `xfer=${debugState.transfersStarted} inflight=${inflight.length} ` +
+      `qC=${queuedContainers} qE=${queuedEntries} qI=${queuedItems} qMax=${queuedMax} ` +
+      `full=${fullContainers.size} opts=${debugState.outputOptionsTotal}/${debugState.outputOptionsMax}` +
+      bfsLabel;
+
+    for (const player of world.getAllPlayers()) {
+      try {
+        if (debugUseActionBar && player?.onScreenDisplay?.setActionBar) {
+          player.onScreenDisplay.setActionBar(msg);
+        } else if (typeof player.sendMessage === "function") {
+          player.sendMessage(msg);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    resetDebugState();
   }
 
   function finalizeJob(job) {

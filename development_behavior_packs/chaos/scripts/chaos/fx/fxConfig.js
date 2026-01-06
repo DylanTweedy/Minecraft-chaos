@@ -141,6 +141,10 @@ export const FX = {
 
   // Debug: set true to spawn a test core particle near players holding the wand
   debugSpawnBeamParticles: true,
+  // Debug: transfer stats in action bar/chat
+  debugTransferStats: true,
+  debugTransferStatsIntervalTicks: 100,
+  debugTransferStatsActionBar: false,
 
   // Signature supports extra args (fx.js will pass them):
   // makeMolang(dir, fromBlock, toBlock, itemTypeId)

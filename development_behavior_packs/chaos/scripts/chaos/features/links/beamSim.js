@@ -710,6 +710,14 @@ function handleBlockChanged(dim, loc, prevId, nextId) {
     enqueueRelayForRescan(key(dim.id, loc.x, loc.y, loc.z));
   }
   if (prevId === PRISM_ID) {
+    const map = loadBeamsMap();
+    const prismKey = key(dim.id, loc.x, loc.y, loc.z);
+    const entry = map[prismKey];
+    if (entry) {
+      removeRecordedBeams(entry);
+      delete map[prismKey];
+      saveBeamsMap(map);
+    }
     enqueueBeamsInLine(dim, loc);
     clearBeamsFromBreak(dim, loc);
   }
