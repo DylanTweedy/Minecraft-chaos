@@ -5,6 +5,7 @@ import { ItemStack, MolangVariableMap } from "@minecraft/server";
 import { MAX_BEAM_LEN } from "./beamConfig.js";
 import { getFilterSetForBlock } from "./filters.js";
 import { tryGenerateFluxOnTransfer, tryRefineFluxInTransfer, getFluxTier } from "../../flux.js";
+import { queueFxParticle } from "../../fx/fx.js";
 
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
@@ -36,6 +37,7 @@ const DEFAULTS = {
   minOrbStepTicks: 1,
   orbVisualMinSpeedScale: 1.0,
   orbVisualMaxSpeedScale: 1.0,
+  maxOrbFxPerTick: 160,
   maxQueuedInsertsPerTick: 4,
   maxFullChecksPerTick: 4,
   levelUpBurstCount: 8,
@@ -48,6 +50,7 @@ const DEFAULTS = {
   backoffMaxTicks: 200,
   backoffMaxLevel: 6,
   maxFluxFxInFlight: 24,
+  inflightSaveIntervalTicks: 40,
 };
 
 const reservedByContainer = new Map();
@@ -281,6 +284,8 @@ export function createTransferPathfinder(deps, opts) {
 
   const cfg = mergeCfg(DEFAULTS, opts);
   const cache = new Map();
+  const edgeCache = new Map();
+  let edgeCacheStamp = null;
   const stats = {
     searches: 0,
     visitedTotal: 0,
@@ -335,17 +340,31 @@ export function createTransferPathfinder(deps, opts) {
     visited.add(key(parsed.dimId, parsed.x, parsed.y, parsed.z));
     visitedCount++;
 
-    const dirs = makeDirs();
     const outputs = [];
     while (qIndex < queue.length) {
       if (visitedCount >= cfg.maxVisitedPerSearch) break;
       const cur = queue[qIndex++];
       if (!cur) continue;
+      if (stamp !== edgeCacheStamp) {
+        edgeCache.clear();
+        edgeCacheStamp = stamp;
+      }
 
-      for (const d of dirs) {
-        const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
-        if (!edge) continue;
+      const curKey = key(parsed.dimId, cur.nodePos.x, cur.nodePos.y, cur.nodePos.z);
+      const edgeKey = `${curKey}|${cur.nodeType}`;
+      let edges = edgeCache.get(edgeKey);
+      if (!edges) {
+        edges = [];
+        const dirs = makeDirs();
+        for (const d of dirs) {
+          const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
+          if (edge) edges.push(edge);
+        }
+        edgeCache.set(edgeKey, edges);
+      }
 
+      for (const edge of edges) {
+        
         const nextKey = key(parsed.dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
         if (visited.has(nextKey)) continue;
 
@@ -424,6 +443,7 @@ export function createNetworkTransferController(deps, opts) {
   const findPathForInput = deps.findPathForInput;
   const invalidateInput = deps.invalidateInput;
   const getPathStats = deps.getPathStats;
+  const getNetworkStamp = deps.getNetworkStamp;
 
   const cfg = mergeCfg(DEFAULTS, opts);
 
@@ -435,6 +455,7 @@ export function createNetworkTransferController(deps, opts) {
   const inflight = [];
   const fluxFxInflight = [];
   let inflightDirty = false;
+  let inflightStepDirty = false;
   let lastSaveTick = 0;
   const transferCounts = new Map();
   let levelsDirty = false;
@@ -458,7 +479,35 @@ export function createNetworkTransferController(deps, opts) {
     transfersStarted: 0,
     outputOptionsTotal: 0,
     outputOptionsMax: 0,
+    orbSpawns: 0,
+    orbFxSkipped: 0,
+    fluxFxSpawns: 0,
+    inputMapReloads: 0,
+    blockLookups: 0,
+    containerLookups: 0,
+    inventoryScans: 0,
+    dpSaves: 0,
+    fluxGenChecks: 0,
+    fluxGenHits: 0,
+    fluxRefineCalls: 0,
+    fluxRefined: 0,
+    fluxMutated: 0,
+    msQueues: 0,
+    msInflight: 0,
+    msFluxFx: 0,
+    msScan: 0,
+    msPersist: 0,
+    msTotal: 0,
   };
+  let cachedInputKeys = null;
+  let cachedInputsStamp = null;
+  let orbFxBudgetUsed = 0;
+  const blockCache = new Map();
+  const containerInfoCache = new Map();
+  const insertCapacityCache = new Map();
+  const totalCapacityCache = new Map();
+  const totalCountCache = new Map();
+  const dimCache = new Map();
 
   function getBackoffTicks(level) {
     const safeLevel = Math.max(0, level | 0);
@@ -488,6 +537,127 @@ export function createNetworkTransferController(deps, opts) {
     debugState.transfersStarted = 0;
     debugState.outputOptionsTotal = 0;
     debugState.outputOptionsMax = 0;
+    debugState.orbSpawns = 0;
+    debugState.orbFxSkipped = 0;
+    debugState.fluxFxSpawns = 0;
+    debugState.inputMapReloads = 0;
+    debugState.blockLookups = 0;
+    debugState.containerLookups = 0;
+    debugState.inventoryScans = 0;
+    debugState.dpSaves = 0;
+    debugState.fluxGenChecks = 0;
+    debugState.fluxGenHits = 0;
+    debugState.fluxRefineCalls = 0;
+    debugState.fluxRefined = 0;
+    debugState.fluxMutated = 0;
+    debugState.msQueues = 0;
+    debugState.msInflight = 0;
+    debugState.msFluxFx = 0;
+    debugState.msScan = 0;
+    debugState.msPersist = 0;
+    debugState.msTotal = 0;
+  }
+
+  function resetTickCaches() {
+    blockCache.clear();
+    containerInfoCache.clear();
+    insertCapacityCache.clear();
+    totalCapacityCache.clear();
+    totalCountCache.clear();
+    dimCache.clear();
+  }
+
+  function getDimensionCached(dimId) {
+    if (!dimId) return null;
+    if (dimCache.has(dimId)) return dimCache.get(dimId);
+    const dim = world.getDimension(dimId);
+    dimCache.set(dimId, dim || null);
+    return dim || null;
+  }
+
+  function resolveBlockInfoCached(blockKey) {
+    try {
+      if (!blockKey) return null;
+      if (blockCache.has(blockKey)) return blockCache.get(blockKey);
+      const pos = parseKey(blockKey);
+      if (!pos) {
+        blockCache.set(blockKey, null);
+        return null;
+      }
+      const dim = getDimensionCached(pos.dimId);
+      if (!dim) {
+        blockCache.set(blockKey, null);
+        return null;
+      }
+      const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
+      if (!block) {
+        blockCache.set(blockKey, null);
+        return null;
+      }
+      const info = { dim, block, pos };
+      blockCache.set(blockKey, info);
+      if (debugEnabled) debugState.blockLookups++;
+      return info;
+    } catch {
+      return null;
+    }
+  }
+
+  function getBlockCached(dimId, pos) {
+    try {
+      if (!dimId || !pos) return null;
+      const blockKey = key(dimId, pos.x, pos.y, pos.z);
+      const info = resolveBlockInfoCached(blockKey);
+      return info?.block || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveContainerInfoCached(containerKey) {
+    if (!containerKey) return null;
+    if (containerInfoCache.has(containerKey)) return containerInfoCache.get(containerKey);
+    const info = resolveBlockInfoCached(containerKey);
+    if (!info || !info.block) {
+      containerInfoCache.set(containerKey, null);
+      return null;
+    }
+    const container = getInventoryContainer(info.block);
+    if (!container) {
+      containerInfoCache.set(containerKey, null);
+      return null;
+    }
+    const result = { dim: info.dim, block: info.block, container, pos: info.pos };
+    containerInfoCache.set(containerKey, result);
+    if (debugEnabled) debugState.containerLookups++;
+    return result;
+  }
+
+  function getTotalCountForTypeCached(containerKey, container, typeId) {
+    const keyId = `${containerKey}|${typeId}`;
+    if (totalCountCache.has(keyId)) return totalCountCache.get(keyId);
+    if (debugEnabled) debugState.inventoryScans++;
+    const total = getTotalCountForType(container, typeId);
+    totalCountCache.set(keyId, total);
+    return total;
+  }
+
+  function getInsertCapacityCached(containerKey, container, typeId, stack) {
+    const maxStack = Math.max(1, stack?.maxAmount || 64);
+    const keyId = `${containerKey}|${typeId}|${maxStack}`;
+    if (insertCapacityCache.has(keyId)) return insertCapacityCache.get(keyId);
+    if (debugEnabled) debugState.inventoryScans++;
+    const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack);
+    insertCapacityCache.set(keyId, capacity);
+    return capacity;
+  }
+
+  function getContainerCapacityCached(containerKey, container) {
+    if (totalCapacityCache.has(containerKey)) return totalCapacityCache.get(containerKey);
+    if (debugEnabled) debugState.inventoryScans++;
+    const capacity = getContainerCapacityWithReservations(containerKey, container);
+    totalCapacityCache.set(containerKey, capacity);
+    return capacity;
   }
 
   function getSpeed(block) {
@@ -526,9 +696,21 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function persistInflightIfNeeded() {
-    if (!inflightDirty && (inflight.length === 0 || (nowTick - lastSaveTick) < 10)) return;
+    if (!inflightDirty && !inflightStepDirty) return;
+    if (inflightDirty && inflight.length === 0) {
+      persistInflightStateToWorld(world, inflight);
+      if (debugEnabled) debugState.dpSaves++;
+      inflightDirty = false;
+      inflightStepDirty = false;
+      lastSaveTick = nowTick;
+      return;
+    }
+    const interval = Math.max(1, cfg.inflightSaveIntervalTicks | 0);
+    if ((nowTick - lastSaveTick) < interval) return;
     persistInflightStateToWorld(world, inflight);
+    if (debugEnabled) debugState.dpSaves++;
     inflightDirty = false;
+    inflightStepDirty = false;
     lastSaveTick = nowTick;
   }
 
@@ -549,6 +731,7 @@ export function createNetworkTransferController(deps, opts) {
     const obj = {};
     for (const [k, v] of transferCounts.entries()) obj[k] = v;
     saveInputLevels(world, obj);
+    if (debugEnabled) debugState.dpSaves++;
     levelsDirty = false;
     lastLevelsSaveTick = nowTick;
   }
@@ -570,6 +753,7 @@ export function createNetworkTransferController(deps, opts) {
     const obj = {};
     for (const [k, v] of outputCounts.entries()) obj[k] = v;
     saveOutputLevels(world, obj);
+    if (debugEnabled) debugState.dpSaves++;
     outputLevelsDirty = false;
     lastOutputLevelsSaveTick = nowTick;
   }
@@ -591,6 +775,7 @@ export function createNetworkTransferController(deps, opts) {
     const obj = {};
     for (const [k, v] of prismCounts.entries()) obj[k] = v;
     savePrismLevels(world, obj);
+    if (debugEnabled) debugState.dpSaves++;
     prismLevelsDirty = false;
     lastPrismLevelsSaveTick = nowTick;
   }
@@ -607,15 +792,7 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function resolveContainerInfo(containerKey) {
-    const pos = parseKey(containerKey);
-    if (!pos) return null;
-    const dim = world.getDimension(pos.dimId);
-    if (!dim) return null;
-    const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
-    if (!block) return null;
-    const container = getInventoryContainer(block);
-    if (!container) return null;
-    return { dim, block, container, pos };
+    return resolveContainerInfoCached(containerKey);
   }
 
   function getContainerCapacityWithReservations(containerKey, container) {
@@ -719,21 +896,40 @@ export function createNetworkTransferController(deps, opts) {
         fullContainers.delete(containerKey);
         continue;
       }
-      const capacity = getContainerCapacityWithReservations(containerKey, info.container);
+      const capacity = getContainerCapacityCached(containerKey, info.container);
       if (capacity > 0) fullContainers.delete(containerKey);
     }
   }
 
   function onTick() {
     nowTick++;
+    resetTickCaches();
+    orbFxBudgetUsed = 0;
 
-    tickOutputQueues();
-    tickFullContainers();
-    tickInFlight();
-    tickFluxFxInFlight();
+    const tickStart = debugEnabled ? Date.now() : 0;
 
-    const map = loadBeamsMap(world);
-    const inputKeys = Object.keys(map);
+    if (debugEnabled) {
+      const t0 = Date.now();
+      tickOutputQueues();
+      tickFullContainers();
+      debugState.msQueues += (Date.now() - t0);
+
+      const t1 = Date.now();
+      tickInFlight();
+      debugState.msInflight += (Date.now() - t1);
+
+      const t2 = Date.now();
+      tickFluxFxInFlight();
+      debugState.msFluxFx += (Date.now() - t2);
+    } else {
+      tickOutputQueues();
+      tickFullContainers();
+      tickInFlight();
+      tickFluxFxInFlight();
+    }
+
+    const scanStart = debugEnabled ? Date.now() : 0;
+    const inputKeys = getInputKeys();
     if (inputKeys.length === 0) return;
 
     if (cursor >= inputKeys.length) cursor = 0;
@@ -779,27 +975,46 @@ export function createNetworkTransferController(deps, opts) {
     if (debugEnabled) {
       debugState.inputsScanned += scanned;
       debugState.transfersStarted += transfersThisTick;
+      debugState.msScan += (Date.now() - scanStart);
     }
 
-    persistInflightIfNeeded();
-    persistLevelsIfNeeded();
-    persistOutputLevelsIfNeeded();
-    persistPrismLevelsIfNeeded();
+    if (debugEnabled) {
+      const t3 = Date.now();
+      persistInflightIfNeeded();
+      persistLevelsIfNeeded();
+      persistOutputLevelsIfNeeded();
+      persistPrismLevelsIfNeeded();
+      debugState.msPersist += (Date.now() - t3);
+      debugState.msTotal += (Date.now() - tickStart);
+    } else {
+      persistInflightIfNeeded();
+      persistLevelsIfNeeded();
+      persistOutputLevelsIfNeeded();
+      persistPrismLevelsIfNeeded();
+    }
     if (debugEnabled) postDebugStats(inputKeys.length);
   }
 
-  function resolveBlockInfo(inputKey) {
+  function getInputKeys() {
     try {
-      const pos = parseKey(inputKey);
-      if (!pos) return null;
-      const dim = world.getDimension(pos.dimId);
-      if (!dim) return null;
-      const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
-      if (!block) return null;
-      return { dim, block, pos };
+      if (typeof getNetworkStamp === "function") {
+        const stamp = getNetworkStamp();
+        if (cachedInputKeys && cachedInputsStamp === stamp) return cachedInputKeys;
+        const map = loadBeamsMap(world);
+        cachedInputKeys = Object.keys(map || {});
+        cachedInputsStamp = stamp;
+        if (debugEnabled) debugState.inputMapReloads++;
+        return cachedInputKeys;
+      }
     } catch {
-      return null;
+      // ignore
     }
+    const map = loadBeamsMap(world);
+    return Object.keys(map || {});
+  }
+
+  function resolveBlockInfo(inputKey) {
+    return resolveBlockInfoCached(inputKey);
   }
 
   function makeResult(ok, reason) {
@@ -862,6 +1077,7 @@ export function createNetworkTransferController(deps, opts) {
     let sawFull = false;
 
     const candidates = filteredOptions.slice();
+    const available = getTotalCountForTypeCached(inContainerKey, inContainer, inStack.typeId);
     while (candidates.length > 0) {
       const pick = pickWeightedRandom(candidates);
       if (!pick || !Array.isArray(pick.path) || pick.path.length === 0) break;
@@ -903,12 +1119,11 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      const available = getTotalCountForType(inContainer, inStack.typeId);
       const desiredAmount = getTransferAmount(previewLevel, inStack);
-      const capacity = getInsertCapacityWithReservations(cKey, cInfo.container, inStack.typeId, inStack);
+      const capacity = getInsertCapacityCached(cKey, cInfo.container, inStack.typeId, inStack);
       const amount = Math.min(desiredAmount, available, capacity);
       if (amount <= 0) {
-        if (getContainerCapacityWithReservations(cKey, cInfo.container) <= 0) {
+        if (getContainerCapacityCached(cKey, cInfo.container) <= 0) {
           fullContainers.add(cKey);
           sawFull = true;
         }
@@ -936,13 +1151,13 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     const firstStep = pathInfo.path[0];
-    const firstBlock = inDim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
+    const firstBlock = getBlockCached(inputInfo.pos.dimId, firstStep) || inDim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
     const nodePath = buildNodePathSegments(inDim, pathInfo.path, inputInfo.pos);
     const travelPath = nodePath?.points || pathInfo.path;
     const segmentLengths = nodePath?.lengths || null;
     if (travelPath.length >= 2) {
       const firstEnd = travelPath[1];
-      const firstEndBlock = inDim.getBlock({ x: firstEnd.x, y: firstEnd.y, z: firstEnd.z });
+      const firstEndBlock = getBlockCached(inputInfo.pos.dimId, firstEnd) || inDim.getBlock({ x: firstEnd.x, y: firstEnd.y, z: firstEnd.z });
       const firstLen = segmentLengths ? segmentLengths[0] : 1;
       if (!spawnOrbStep(inDim, travelPath[0], firstEnd, previewLevel, inBlock, firstEndBlock, inStack.typeId, firstLen)) {
         return makeResult(false, "no_spawn");
@@ -999,11 +1214,11 @@ export function createNetworkTransferController(deps, opts) {
 
       const cur = job.path[job.stepIndex];
       const next = job.path[nextIdx];
-      const dim = world.getDimension(job.dimId);
+      const dim = getDimensionCached(job.dimId);
       if (!dim) continue;
 
-      const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-      const nextBlock = dim.getBlock({ x: next.x, y: next.y, z: next.z });
+      const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+      const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
       if (job.stepIndex < job.path.length - 1) {
         if (!isPathBlock(curBlock)) {
           dropItemAt(dim, cur, job.itemTypeId, job.amount);
@@ -1035,7 +1250,7 @@ export function createNetworkTransferController(deps, opts) {
       job.stepIndex = nextIdx;
       const nextLen = job.segmentLengths?.[job.stepIndex] || 1;
       job.ticksUntilStep = (job.stepTicks || cfg.orbStepTicks) * Math.max(1, nextLen | 0);
-      inflightDirty = true;
+      inflightStepDirty = true;
     }
   }
 
@@ -1053,7 +1268,7 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      const dim = world.getDimension(job.dimId);
+      const dim = getDimensionCached(job.dimId);
       if (!dim) {
         fluxFxInflight.splice(i, 1);
         continue;
@@ -1061,10 +1276,12 @@ export function createNetworkTransferController(deps, opts) {
 
       const cur = job.path[job.stepIndex];
       const next = job.path[nextIdx];
-      const curBlock = dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-      const nextBlock = dim.getBlock({ x: next.x, y: next.y, z: next.z });
+      const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+      const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
       const segLen = job.segmentLengths?.[job.stepIndex] || 1;
-      spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen);
+      if (spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen) && debugEnabled) {
+        debugState.fluxFxSpawns++;
+      }
       job.stepIndex = nextIdx;
       const nextLen = job.segmentLengths?.[job.stepIndex] || 1;
       job.ticksUntilStep = (job.stepTicks || cfg.orbStepTicks) * Math.max(1, nextLen | 0);
@@ -1073,7 +1290,7 @@ export function createNetworkTransferController(deps, opts) {
 
   function finalizeFluxFxJob(job) {
     try {
-      const dim = world.getDimension(job.dimId);
+      const dim = getDimensionCached(job.dimId);
       if (!dim) return;
 
       if (job.containerKey) {
@@ -1119,6 +1336,11 @@ export function createNetworkTransferController(deps, opts) {
       `Chaos Transfer | inputs=${inputCount} scanned=${debugState.inputsScanned} ` +
       `xfer=${debugState.transfersStarted} inflight=${inflight.length} ` +
       `fluxFx=${fluxFxInflight.length}/${cfg.maxFluxFxInFlight | 0} ` +
+      `orbFx=${debugState.orbSpawns} orbFxSkip=${debugState.orbFxSkipped} fluxFxSp=${debugState.fluxFxSpawns} ` +
+      `mapReloads=${debugState.inputMapReloads} ` +
+      `fluxGen=${debugState.fluxGenHits}/${debugState.fluxGenChecks} refine=${debugState.fluxRefined}/${debugState.fluxMutated}/${debugState.fluxRefineCalls} ` +
+      `blk=${debugState.blockLookups} cont=${debugState.containerLookups} inv=${debugState.inventoryScans} dp=${debugState.dpSaves} ` +
+      `msQ=${debugState.msQueues} msIn=${debugState.msInflight} msFx=${debugState.msFluxFx} msScan=${debugState.msScan} msSave=${debugState.msPersist} msTot=${debugState.msTotal} ` +
       `qC=${queuedContainers} qE=${queuedEntries} qI=${queuedItems} qMax=${queuedMax} ` +
       `full=${fullContainers.size} opts=${debugState.outputOptionsTotal}/${debugState.outputOptionsMax}` +
       bfsLabel;
@@ -1138,7 +1360,7 @@ export function createNetworkTransferController(deps, opts) {
 
   function finalizeJob(job) {
     if (!job.containerKey) {
-      const dim = world.getDimension(job.dimId);
+      const dim = getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
         if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
@@ -1147,7 +1369,7 @@ export function createNetworkTransferController(deps, opts) {
     }
     const outInfo = resolveBlockInfo(job.outputKey);
     if (!outInfo) {
-      const dim = world.getDimension(job.dimId);
+      const dim = getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
         if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
@@ -1173,12 +1395,17 @@ export function createNetworkTransferController(deps, opts) {
     let itemsToInsert = [{ typeId: job.itemTypeId, amount: job.amount }];
     if (job.prismKey) {
       const prismInfo = resolveBlockInfo(job.prismKey);
+      if (debugEnabled) debugState.fluxRefineCalls++;
       const refined = tryRefineFluxInTransfer({
         prismBlock: prismInfo?.block,
         itemTypeId: job.itemTypeId,
         amount: job.amount,
         FX: FX,
       });
+      if (debugEnabled && refined) {
+        debugState.fluxRefined += Math.max(0, refined.refined | 0);
+        debugState.fluxMutated += Math.max(0, refined.mutated | 0);
+      }
       if (refined?.items?.length) itemsToInsert = refined.items;
     }
 
@@ -1193,17 +1420,25 @@ export function createNetworkTransferController(deps, opts) {
     if (allInserted) {
       releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       noteOutputTransfer(job.outputKey, outBlock);
-      tryGenerateFluxOnTransfer({
+      if (debugEnabled) debugState.fluxGenChecks++;
+      const fluxGenerated = tryGenerateFluxOnTransfer({
         outputBlock: outBlock,
         destinationInventory: outContainerInfo.container,
         inputBlock: job.startPos ? outInfo.dim.getBlock(job.startPos) : null,
         path: job.path,
         getAttachedInventoryInfo,
+        getBlockAt: (pos, dim) => {
+          if (!pos) return null;
+          const dimId = dim?.id || job.dimId;
+          return getBlockCached(dimId, pos);
+        },
         scheduleFluxTransferFx: enqueueFluxTransferFx,
+        scheduleFluxTransferFxPositions: enqueueFluxTransferFxPositions,
         getContainerKey,
         transferLevel: job.level,
         FX: FX,
       });
+      if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
       return;
     }
   }
@@ -1365,12 +1600,21 @@ export function createNetworkTransferController(deps, opts) {
           fxId = FX.particleFluxOrbByTier[idx] || fxId;
         }
       }
+      const maxOrbFx = Math.max(0, cfg.maxOrbFxPerTick | 0);
+      if (maxOrbFx > 0 && orbFxBudgetUsed >= maxOrbFx) {
+        if (debugEnabled) debugState.orbFxSkipped++;
+        return true;
+      }
+      if (maxOrbFx > 0) orbFxBudgetUsed++;
       const dir = normalizeDir(from, to);
       if (!dir) return false;
 
       const molang = new MolangVariableMap();
       const steps = Math.max(1, lengthSteps | 0);
-      const lifetime = getOrbLifetimeSeconds(level) * steps;
+      const baseLifetime = getOrbLifetimeSeconds(level) * steps;
+      const stepTicks = getOrbStepTicks(level);
+      const minLifetime = (stepTicks * steps) / 20;
+      const lifetime = Math.max(baseLifetime, minLifetime * 0.9);
       const speed = getOrbVisualSpeed(from, to, dir, level, lifetime);
       const color = getOrbColor(level);
       if (typeof molang.setSpeedAndDirection === "function") {
@@ -1391,7 +1635,8 @@ export function createNetworkTransferController(deps, opts) {
         y: from.y + 0.5,
         z: from.z + 0.5,
       };
-      dim.spawnParticle(fxId, pos, molang);
+      queueFxParticle(dim, fxId, pos, molang);
+      if (debugEnabled) debugState.orbSpawns++;
       return true;
     } catch {
       return false;
@@ -1419,7 +1664,46 @@ export function createNetworkTransferController(deps, opts) {
       if (path.length < 2) return;
 
       const lvl = Math.max(1, level | 0);
-      const segments = buildFluxFxSegments(world.getDimension(dimId), path);
+      const segments = buildFluxFxSegments(getDimensionCached(dimId), path);
+      if (!segments || segments.points.length < 2) return;
+      fluxFxInflight.push({
+        dimId,
+        itemTypeId,
+        amount: Math.max(1, insertInfo?.amount | 0),
+        containerKey: insertInfo?.containerKey || null,
+        dropPos: insertInfo?.dropPos || null,
+        path: segments.points,
+        segmentLengths: segments.lengths,
+        stepIndex: 0,
+        stepTicks: getOrbStepTicks(lvl),
+        ticksUntilStep: getOrbStepTicks(lvl) * Math.max(1, segments.lengths[0] | 0),
+        level: lvl,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  function enqueueFluxTransferFxPositions(pathPositions, startIndex, endIndex, itemTypeId, level, insertInfo) {
+    try {
+      if (!Array.isArray(pathPositions) || pathPositions.length < 2) return;
+      if (fluxFxInflight.length >= Math.max(1, cfg.maxFluxFxInFlight | 0)) return;
+      const s = Math.max(0, startIndex | 0);
+      const e = Math.max(0, endIndex | 0);
+      if (s <= e) return;
+      const dimId = insertInfo?.dimId || pathPositions[s]?.dimId || null;
+      if (!dimId) return;
+
+      const path = [];
+      for (let i = s; i >= e; i--) {
+        const p = pathPositions[i];
+        if (!p) continue;
+        path.push({ x: p.x, y: p.y, z: p.z });
+      }
+      if (path.length < 2) return;
+
+      const lvl = Math.max(1, level | 0);
+      const segments = buildFluxFxSegments(getDimensionCached(dimId), path);
       if (!segments || segments.points.length < 2) return;
       fluxFxInflight.push({
         dimId,
@@ -1453,7 +1737,7 @@ export function createNetworkTransferController(deps, opts) {
         const ox = (Math.random() * 2 - 1) * radius;
         const oy = (Math.random() * 2 - 1) * radius;
         const oz = (Math.random() * 2 - 1) * radius;
-        dim.spawnParticle(particleId, {
+        queueFxParticle(dim, particleId, {
           x: base.x + 0.5 + ox,
           y: base.y + 0.6 + oy,
           z: base.z + 0.5 + oz,

@@ -105,6 +105,10 @@ function safeSpawnParticle(dimension, particleId, location, molang, delayTicks) 
   const resolved = resolveMolang(molang);
   rawSpawnParticle(dimension, particleId, location, resolved);
 }
+
+export function queueFxParticle(dimension, particleId, location, molang, delayTicks) {
+  safeSpawnParticle(dimension, particleId, location, molang, delayTicks);
+}
 function resolveMolang(molang) {
   if (typeof molang === "function") {
     try { return molang(); } catch { return null; }

@@ -158,9 +158,49 @@ function findFluxTargetFromPath(fullPath, outputBlock, getAttachedInventoryInfo,
       ? getAttachedInventoryInfo(block, dim)
       : null;
     const inv = info?.container || getBlockInventory(block);
-    if (inv) return { block, inventory: inv };
+    if (inv) return { block, inventory: inv, index: i };
   }
   return null;
+}
+
+function findFluxTargetFromPathPositions(pathPositions, outputBlock, getAttachedInventoryInfo, dim, getBlockAt) {
+  if (!Array.isArray(pathPositions) || pathPositions.length === 0) return null;
+  if (!outputBlock || !dim) return null;
+
+  const outLoc = outputBlock.location;
+  let outputIndex = -1;
+  for (let i = pathPositions.length - 1; i >= 0; i--) {
+    const p = pathPositions[i];
+    if (!p) continue;
+    if (p.x === outLoc.x && p.y === outLoc.y && p.z === outLoc.z) {
+      outputIndex = i;
+      break;
+    }
+  }
+  if (outputIndex < 0) outputIndex = pathPositions.length - 1;
+
+  for (let i = outputIndex - 1; i >= 0; i--) {
+    const p = pathPositions[i];
+    if (!p) continue;
+    let block = null;
+    if (typeof getBlockAt === "function") {
+      try {
+        block = getBlockAt(p, dim);
+      } catch {
+        block = null;
+      }
+    }
+    if (!block) block = dim.getBlock(p);
+    if (!block) continue;
+
+    const info = (typeof getAttachedInventoryInfo === "function")
+      ? getAttachedInventoryInfo(block, dim)
+      : null;
+    const inv = info?.container || getBlockInventory(block);
+    if (inv) return { block, inventory: inv, index: i, outputIndex };
+  }
+
+  return { block: null, inventory: null, index: -1, outputIndex };
 }
 
 export function depositFluxIntoInventory(container, itemStack) {
@@ -192,36 +232,71 @@ export function tryGenerateFluxOnTransfer(ctx) {
     const dim = outputBlock.dimension;
 
     const path = Array.isArray(ctx?.path) ? ctx.path : [];
-    const pathBlocks = [];
-    for (const p of path) {
-      const b = dim?.getBlock?.({ x: p.x, y: p.y, z: p.z });
-      if (b) pathBlocks.push(b);
-    }
     const inputBlock = ctx?.inputBlock;
-    const fullPath = inputBlock ? [inputBlock, ...pathBlocks] : pathBlocks;
+    const getBlockAt = ctx?.getBlockAt;
+    const scheduleFxBlocks = (typeof ctx?.scheduleFluxTransferFx === "function");
+    const scheduleFxPositions = (typeof ctx?.scheduleFluxTransferFxPositions === "function");
 
-    const target = findFluxTargetFromPath(fullPath, outputBlock, ctx?.getAttachedInventoryInfo, dim);
-    const targetBlock = target?.block || null;
-    const targetIndex = findPathIndex(fullPath, targetBlock);
-    const outputIndex = findPathIndex(fullPath, outputBlock);
+    let target = null;
+    let targetBlock = null;
+    let targetIndex = -1;
+    let outputIndex = -1;
 
-    const scheduleFx = (typeof ctx?.scheduleFluxTransferFx === "function");
+    if (path.length > 0) {
+      target = findFluxTargetFromPathPositions(path, outputBlock, ctx?.getAttachedInventoryInfo, dim, getBlockAt);
+      targetBlock = target?.block || null;
+      targetIndex = target?.index ?? -1;
+      outputIndex = target?.outputIndex ?? -1;
+    }
+
+    const canSchedule = target?.inventory && outputIndex >= 0 && targetIndex >= 0 && outputIndex > targetIndex;
     let scheduled = false;
-    if (scheduleFx && outputIndex >= 0 && targetIndex >= 0 && outputIndex > targetIndex && target?.inventory) {
+    if (scheduleFxPositions && canSchedule) {
       const containerKey = (typeof ctx?.getContainerKey === "function")
         ? ctx.getContainerKey(targetBlock)
         : null;
-      ctx.scheduleFluxTransferFx(fullPath, outputIndex, targetIndex, fluxStack.typeId, ctx?.transferLevel, {
+      ctx.scheduleFluxTransferFxPositions(path, outputIndex, targetIndex, fluxStack.typeId, ctx?.transferLevel, {
+        containerKey,
+        amount: fluxStack.amount,
+        dropPos: targetBlock?.location || outputBlock.location,
+        dimId: dim?.id,
+      });
+      scheduled = true;
+    } else if (scheduleFxBlocks && canSchedule) {
+      const pathBlocks = [];
+      const start = inputBlock ? [inputBlock] : [];
+      for (const p of path) {
+        const b = dim?.getBlock?.({ x: p.x, y: p.y, z: p.z });
+        if (b) pathBlocks.push(b);
+      }
+      const fullPath = start.length > 0 ? start.concat(pathBlocks) : pathBlocks;
+      const containerKey = (typeof ctx?.getContainerKey === "function")
+        ? ctx.getContainerKey(targetBlock)
+        : null;
+      const outIdx = inputBlock ? outputIndex + 1 : outputIndex;
+      const tgtIdx = inputBlock ? targetIndex + 1 : targetIndex;
+      ctx.scheduleFluxTransferFx(fullPath, outIdx, tgtIdx, fluxStack.typeId, ctx?.transferLevel, {
         containerKey,
         amount: fluxStack.amount,
         dropPos: targetBlock?.location || outputBlock.location,
       });
       scheduled = true;
-    } else if (outputIndex >= 0 && targetIndex >= 0 && outputIndex > targetIndex) {
-      for (let i = outputIndex; i > targetIndex; i--) {
-        const fromBlock = fullPath[i];
-        const toBlock = fullPath[i - 1];
-        if (fromBlock && toBlock) fxFluxOrbStep(fromBlock, toBlock, ctx?.FX, fluxTier);
+    } else if (outputIndex >= 0 && targetIndex >= 0 && outputIndex > targetIndex && targetBlock) {
+      let prevBlock = outputBlock;
+      for (let i = outputIndex - 1; i >= targetIndex; i--) {
+        const p = path[i];
+        if (!p) continue;
+        let nextBlock = null;
+        if (typeof getBlockAt === "function") {
+          try {
+            nextBlock = getBlockAt(p, dim);
+          } catch {
+            nextBlock = null;
+          }
+        }
+        if (!nextBlock) nextBlock = dim.getBlock(p);
+        if (prevBlock && nextBlock) fxFluxOrbStep(prevBlock, nextBlock, ctx?.FX, fluxTier);
+        prevBlock = nextBlock || prevBlock;
       }
     } else if (targetBlock && outputBlock) {
       fxFluxOrbStep(outputBlock, targetBlock, ctx?.FX, fluxTier);
@@ -259,23 +334,26 @@ export function tryRefineFluxInTransfer(ctx) {
     const results = new Map();
 
     const checks = Math.max(1, Math.min(amount, MAX_REFINE_CHECKS_PER_TRANSFER));
-    for (let i = 0; i < amount; i++) {
+    for (let i = 0; i < checks; i++) {
       let outType = typeId;
-      if (i < checks) {
-        const curTier = getFluxTier(outType);
-        if (curTier > 0 && curTier < 5 && Math.random() < refineChance) {
-          refined++;
-          outType = getFluxTypeForTier(curTier + 1);
-          if (!refinedTypeId) refinedTypeId = outType;
-          if (Math.random() < mutationChance) {
-            mutated++;
-            outType = pickWeightedExotic();
-            if (!mutatedTypeId) mutatedTypeId = outType;
-          }
+      const curTier = getFluxTier(outType);
+      if (curTier > 0 && curTier < 5 && Math.random() < refineChance) {
+        refined++;
+        outType = getFluxTypeForTier(curTier + 1);
+        if (!refinedTypeId) refinedTypeId = outType;
+        if (Math.random() < mutationChance) {
+          mutated++;
+          outType = pickWeightedExotic();
+          if (!mutatedTypeId) mutatedTypeId = outType;
         }
       }
       const prev = results.get(outType) || 0;
       results.set(outType, prev + 1);
+    }
+    const remaining = amount - checks;
+    if (remaining > 0) {
+      const prev = results.get(typeId) || 0;
+      results.set(typeId, prev + remaining);
     }
 
     if (refined > 0) fxFluxRefine(prismBlock, ctx?.FX, refinedTypeId);
