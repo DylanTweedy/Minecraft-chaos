@@ -142,7 +142,7 @@ export const FX = {
   // Debug: set true to spawn a test core particle near players holding the wand
   debugSpawnBeamParticles: true,
   // Debug: transfer stats in action bar/chat
-  debugTransferStats: true,
+  debugTransferStats: false,
   debugTransferStatsIntervalTicks: 100,
   debugTransferStatsActionBar: false,
 

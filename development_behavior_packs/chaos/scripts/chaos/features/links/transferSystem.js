@@ -3,6 +3,7 @@
 
 import { ItemStack, MolangVariableMap } from "@minecraft/server";
 import { MAX_BEAM_LEN } from "./beamConfig.js";
+import { getFilterSetForBlock } from "./filters.js";
 
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
@@ -14,6 +15,9 @@ const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
 const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
 const MAX_STEPS = MAX_BEAM_LEN * 12;
+const PATH_WEIGHT_MAX_LEN = 6;
+const PATH_WEIGHT_RANDOM_MIN = 0.4;
+const PATH_WEIGHT_RANDOM_MAX = 1.6;
 
 const DEFAULTS = {
   maxTransfersPerTick: 4,
@@ -802,6 +806,16 @@ export function createNetworkTransferController(deps, opts) {
     return { ok: !!ok, reason: reason || (ok ? "ok" : "fail") };
   }
 
+  function getFilterForBlock(block) {
+    try {
+      const c = getFilterContainer(block);
+      if (c) return c;
+      return getFilterSetForBlock(world, block);
+    } catch {
+      return null;
+    }
+  }
+
   function attemptTransferOne(inputKey) {
     const inputInfo = resolveBlockInfo(inputKey);
     if (!inputInfo) return makeResult(false, "no_input");
@@ -810,10 +824,12 @@ export function createNetworkTransferController(deps, opts) {
     const inBlock = inputInfo.block;
     if (!inBlock || inBlock.typeId !== INPUT_ID) return makeResult(false, "no_input");
 
-    const inContainer = getAttachedInventoryContainer(inBlock, inDim);
-    if (!inContainer) return makeResult(false, "no_container");
+    const inInfo = getAttachedInventoryInfo(inBlock, inDim);
+    if (!inInfo || !inInfo.container || !inInfo.block) return makeResult(false, "no_container");
+    const inContainer = inInfo.container;
+    const inContainerKey = getContainerKey(inInfo.block);
 
-    const inputFilter = getFilterContainer(inBlock);
+    const inputFilter = getFilterForBlock(inBlock);
     const pull = findFirstMatchingSlot(inContainer, inputFilter);
     if (!pull) return makeResult(false, "no_item");
 
@@ -826,7 +842,7 @@ export function createNetworkTransferController(deps, opts) {
       : null;
     if (!options || !Array.isArray(options) || options.length === 0) return makeResult(false, "no_options");
 
-    const filteredOptions = filterOutputsByWhitelist(options, inStack.typeId, resolveBlockInfo);
+    const filteredOptions = filterOutputsByWhitelist(options, inStack.typeId, resolveBlockInfo, getFilterForBlock);
     if (!filteredOptions || filteredOptions.length === 0) return makeResult(false, "no_options");
     if (debugEnabled) {
       debugState.outputOptionsTotal += filteredOptions.length;
@@ -873,6 +889,10 @@ export function createNetworkTransferController(deps, opts) {
 
       const cKey = getContainerKey(cInfo.block);
       if (!cKey) {
+        candidates.splice(candidates.indexOf(pick), 1);
+        continue;
+      }
+      if (inContainerKey && cKey === inContainerKey) {
         candidates.splice(candidates.indexOf(pick), 1);
         continue;
       }
@@ -1444,7 +1464,10 @@ function pickWeightedRandom(outputs) {
   let total = 0;
   const weights = outputs.map((o) => {
     const len = Array.isArray(o.path) ? o.path.length : 1;
-    const w = 1 / Math.max(1, len);
+    const clamped = Math.min(Math.max(1, len), PATH_WEIGHT_MAX_LEN);
+    const base = 1 / clamped;
+    const jitter = PATH_WEIGHT_RANDOM_MIN + (Math.random() * (PATH_WEIGHT_RANDOM_MAX - PATH_WEIGHT_RANDOM_MIN));
+    const w = base * jitter;
     total += w;
     return w;
   });
@@ -1582,12 +1605,13 @@ function getFilterContainer(block) {
   }
 }
 
-function isFilterEmpty(container) {
+function isFilterEmpty(filter) {
   try {
-    if (!container) return true;
-    const size = container.size;
+    if (!filter) return true;
+    if (filter instanceof Set) return filter.size === 0;
+    const size = filter.size;
     for (let i = 0; i < size; i++) {
-      const it = container.getItem(i);
+      const it = filter.getItem(i);
       if (it && it.amount > 0) return false;
     }
     return true;
@@ -1596,13 +1620,14 @@ function isFilterEmpty(container) {
   }
 }
 
-function getFilterSet(container) {
+function getFilterSet(filter) {
   try {
-    if (!container) return null;
-    const size = container.size;
+    if (!filter) return null;
+    if (filter instanceof Set) return filter;
+    const size = filter.size;
     const set = new Set();
     for (let i = 0; i < size; i++) {
-      const it = container.getItem(i);
+      const it = filter.getItem(i);
       if (!it || it.amount <= 0) continue;
       set.add(it.typeId);
     }
@@ -1612,28 +1637,32 @@ function getFilterSet(container) {
   }
 }
 
-function filterAllows(container, typeId) {
-  if (!container || !typeId) return true;
-  if (isFilterEmpty(container)) return true;
-  const set = getFilterSet(container);
+function filterAllows(filter, typeId) {
+  if (!filter || !typeId) return true;
+  if (isFilterEmpty(filter)) return true;
+  const set = getFilterSet(filter);
   if (!set || set.size === 0) return true;
   return set.has(typeId);
 }
 
-function filterOutputsByWhitelist(options, typeId, resolveBlockInfo) {
+function filterOutputsByWhitelist(options, typeId, resolveBlockInfo, getFilterForBlock) {
   try {
     if (!options || options.length === 0) return [];
     if (typeof resolveBlockInfo !== "function") return options;
-    const filtered = [];
+    const prioritized = [];
+    const allowAll = [];
     for (const opt of options) {
       if (!opt || !opt.outputKey) continue;
       const outInfo = resolveBlockInfo(opt.outputKey);
       if (!outInfo || !outInfo.block || outInfo.block.typeId !== OUTPUT_ID) continue;
-      const filter = getFilterContainer(outInfo.block);
+      const filter = (typeof getFilterForBlock === "function")
+        ? getFilterForBlock(outInfo.block)
+        : getFilterContainer(outInfo.block);
       if (!filterAllows(filter, typeId)) continue;
-      filtered.push(opt);
+      if (filter && !isFilterEmpty(filter)) prioritized.push(opt);
+      else allowAll.push(opt);
     }
-    return filtered;
+    return (prioritized.length > 0) ? prioritized : allowAll;
   } catch (_) {
     return [];
   }
