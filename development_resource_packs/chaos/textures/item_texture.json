@@ -4,6 +4,30 @@
   "texture_data": {
     "chaos_wand": {
       "textures": "textures/items/chaos_wand"
+    },
+    "flux_1": {
+      "textures": "textures/items/flux_1"
+    },
+    "flux_2": {
+      "textures": "textures/items/flux_2"
+    },
+    "flux_3": {
+      "textures": "textures/items/flux_3"
+    },
+    "flux_4": {
+      "textures": "textures/items/flux_4"
+    },
+    "flux_5": {
+      "textures": "textures/items/flux_5"
+    },
+    "exotic_shard": {
+      "textures": "textures/items/exotic_shard"
+    },
+    "exotic_fiber": {
+      "textures": "textures/items/exotic_fiber"
+    },
+    "exotic_alloy_lump": {
+      "textures": "textures/items/exotic_alloy_lump"
     }
   }
 }

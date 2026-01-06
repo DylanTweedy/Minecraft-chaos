@@ -13,6 +13,17 @@ function safePlaySound(player, soundId, location) {
   }
 }
 
+function safePlaySoundAt(dimension, soundId, location) {
+  try {
+    if (!soundId || !dimension || !location) return;
+    if (typeof dimension.playSound === "function") {
+      dimension.playSound(soundId, location);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function looksLikeMolangVariableMap(molang) {
   try {
     if (!molang) return false;
@@ -661,7 +672,21 @@ export function fxTransferItem(fromBlock, toBlock, itemTypeId, fx) {
       scale: (fx?.beamFxScale ?? 1) * 0.8,
     });
 
-    const orb = fx && fx.particleTransferItem;
+    let orb = fx && fx.particleTransferItem;
+    if (itemTypeId && fx?.particleExoticOrbById && fx.particleExoticOrbById[itemTypeId]) {
+      orb = fx.particleExoticOrbById[itemTypeId] || orb;
+    } else if (itemTypeId && fx?.particleFluxOrbByTier && Array.isArray(fx.particleFluxOrbByTier)) {
+      let fluxTier = 0;
+      if (itemTypeId === "chaos:flux_1") fluxTier = 1;
+      else if (itemTypeId === "chaos:flux_2") fluxTier = 2;
+      else if (itemTypeId === "chaos:flux_3") fluxTier = 3;
+      else if (itemTypeId === "chaos:flux_4") fluxTier = 4;
+      else if (itemTypeId === "chaos:flux_5") fluxTier = 5;
+      if (fluxTier > 0) {
+        const idx = fluxTier - 1;
+        orb = fx.particleFluxOrbByTier[idx] || orb;
+      }
+    }
     if (!orb) return;
 
     // Direction vector
@@ -691,6 +716,131 @@ export function fxTransferItem(fromBlock, toBlock, itemTypeId, fx) {
     };
 
     safeSpawnParticle(dim, orb, spawn, molang);
+  } catch {
+    // ignore
+  }
+}
+
+// ---------- Flux FX ----------
+
+export function fxFluxOrbStep(fromBlock, toBlock, fx, tier) {
+  try {
+    if (!fromBlock || !toBlock) return;
+
+    const dim = fromBlock.dimension;
+    if (!dim) return;
+
+    let orb = fx?.particleFluxOrb || fx?.particleTransferItem;
+    if (fx?.particleFluxOrbByTier && Array.isArray(fx.particleFluxOrbByTier)) {
+      const idx = Math.max(1, Math.min(5, tier | 0)) - 1;
+      orb = fx.particleFluxOrbByTier[idx] || orb;
+    }
+    if (!orb) return;
+
+    const from = {
+      x: fromBlock.location.x + 0.5,
+      y: fromBlock.location.y + 0.5,
+      z: fromBlock.location.z + 0.5,
+    };
+    const to = {
+      x: toBlock.location.x + 0.5,
+      y: toBlock.location.y + 0.5,
+      z: toBlock.location.z + 0.5,
+    };
+
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len <= 0.0001) return;
+
+    const dir = { x: dx / len, y: dy / len, z: dz / len };
+
+    let molang = null;
+    if (fx && typeof fx.makeMolang === "function") {
+      try {
+        molang = fx.makeMolang(dir, fromBlock, toBlock, null);
+      } catch {
+        molang = null;
+      }
+    }
+
+    const spawn = {
+      x: from.x + dir.x * 0.15,
+      y: from.y + dir.y * 0.15,
+      z: from.z + dir.z * 0.15,
+    };
+    safeSpawnParticle(dim, orb, spawn, molang);
+  } catch {
+    // ignore
+  }
+}
+
+export function fxFluxGenerate(block, fx) {
+  try {
+    if (!block || fx?.fluxFxEnabled === false) return;
+    const particleId = fx?.particleFluxGenerate;
+    if (!particleId) return;
+
+    const loc = block.location;
+    burstAround(block.dimension, {
+      x: loc.x + 0.5,
+      y: loc.y + 0.7,
+      z: loc.z + 0.5,
+    }, particleId, fx?.fluxGenerateBurstCount ?? 4, fx?.fluxGenerateBurstRadius ?? 0.2, fx?.fluxMolang);
+  } catch {
+    // ignore
+  }
+}
+
+export function fxFluxRefine(block, fx, itemTypeId) {
+  try {
+    if (!block || fx?.fluxFxEnabled === false) return;
+    let particleId = fx?.particleFluxRefine;
+    if (itemTypeId && fx?.particleFluxRefineByTier && Array.isArray(fx.particleFluxRefineByTier)) {
+      let tier = 0;
+      if (itemTypeId === "chaos:flux_1") tier = 1;
+      else if (itemTypeId === "chaos:flux_2") tier = 2;
+      else if (itemTypeId === "chaos:flux_3") tier = 3;
+      else if (itemTypeId === "chaos:flux_4") tier = 4;
+      else if (itemTypeId === "chaos:flux_5") tier = 5;
+      if (tier > 0) {
+        const idx = tier - 1;
+        particleId = fx.particleFluxRefineByTier[idx] || particleId;
+      }
+    }
+    if (!particleId) return;
+
+    const loc = block.location;
+    burstAround(block.dimension, {
+      x: loc.x + 0.5,
+      y: loc.y + 0.7,
+      z: loc.z + 0.5,
+    }, particleId, fx?.fluxRefineBurstCount ?? 5, fx?.fluxRefineBurstRadius ?? 0.25, fx?.fluxMolang);
+  } catch {
+    // ignore
+  }
+}
+
+export function fxFluxMutate(block, fx, itemTypeId) {
+  try {
+    if (!block || fx?.fluxFxEnabled === false) return;
+    let particleId = fx?.particleFluxMutate;
+    if (itemTypeId && fx?.particleFluxMutateById && fx.particleFluxMutateById[itemTypeId]) {
+      particleId = fx.particleFluxMutateById[itemTypeId] || particleId;
+    }
+    const soundId = fx?.sfxFluxMutate;
+    if (!particleId && !soundId) return;
+
+    const loc = block.location;
+    if (particleId) {
+      burstAround(block.dimension, {
+        x: loc.x + 0.5,
+        y: loc.y + 0.7,
+        z: loc.z + 0.5,
+      }, particleId, fx?.fluxMutateBurstCount ?? 6, fx?.fluxMutateBurstRadius ?? 0.3, fx?.fluxMolang);
+    }
+    if (soundId) safePlaySoundAt(block.dimension, soundId, loc);
   } catch {
     // ignore
   }

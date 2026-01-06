@@ -100,6 +100,44 @@ export const FX = {
 
   particleTransferBeam: "chaos:transfer_beam",
   particleTransferItem: "chaos:transfer_orb",
+  particleFluxOrb: "chaos:flux_orb_1",
+  particleFluxOrbByTier: [
+    "chaos:flux_orb_1",
+    "chaos:flux_orb_2",
+    "chaos:flux_orb_3",
+    "chaos:flux_orb_4",
+    "chaos:flux_orb_5",
+  ],
+  particleExoticOrbById: {
+    "chaos:exotic_shard": "chaos:exotic_orb_shard",
+    "chaos:exotic_fiber": "chaos:exotic_orb_fiber",
+    "chaos:exotic_alloy_lump": "chaos:exotic_orb_alloy_lump",
+  },
+
+  // Flux FX (lightweight, optional)
+  fluxFxEnabled: true,
+  particleFluxGenerate: "chaos:block_burst_pop",
+  particleFluxRefine: "chaos:link_input_charge",
+  particleFluxMutate: "chaos:link_output_burst",
+  particleFluxRefineByTier: [
+    "chaos:flux_refine_burst_1",
+    "chaos:flux_refine_burst_2",
+    "chaos:flux_refine_burst_3",
+    "chaos:flux_refine_burst_4",
+    "chaos:flux_refine_burst_5",
+  ],
+  particleFluxMutateById: {
+    "chaos:exotic_shard": "chaos:exotic_mutate_burst_shard",
+    "chaos:exotic_fiber": "chaos:exotic_mutate_burst_fiber",
+    "chaos:exotic_alloy_lump": "chaos:exotic_mutate_burst_alloy_lump",
+  },
+  sfxFluxMutate: "random.levelup",
+  fluxGenerateBurstCount: 4,
+  fluxGenerateBurstRadius: 0.2,
+  fluxRefineBurstCount: 5,
+  fluxRefineBurstRadius: 0.25,
+  fluxMutateBurstCount: 6,
+  fluxMutateBurstRadius: 0.3,
 
   // Default tinting. Override in presets for vision if needed.
   beamMolang: () => makeColorMolang(0.2, 0.8, 1.0, 1.0),        // link (cyan)
@@ -144,7 +182,6 @@ export const FX = {
   // Debug: transfer stats in action bar/chat
   debugTransferStats: false,
   debugTransferStatsIntervalTicks: 100,
-  debugTransferStatsActionBar: false,
 
   // Signature supports extra args (fx.js will pass them):
   // makeMolang(dir, fromBlock, toBlock, itemTypeId)
