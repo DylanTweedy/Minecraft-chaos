@@ -65,11 +65,11 @@ function getBlockLevel(block) {
 function getOrbColor(level) {
   const lvl = Math.min(5, Math.max(1, level | 0));
   const palette = [
-    { r: 0.2, g: 0.9, b: 1.0, a: 1.0 },  // L1 cyan
-    { r: 0.3, g: 1.0, b: 0.4, a: 1.0 },  // L2 green
-    { r: 1.0, g: 0.8, b: 0.2, a: 1.0 },  // L3 gold
-    { r: 1.0, g: 0.3, b: 0.9, a: 1.0 },  // L4 magenta
-    { r: 1.0, g: 0.95, b: 0.95, a: 1.0 }, // L5 bright
+    { r: 0.78, g: 0.8, b: 0.84, a: 1.0 }, // L1 iron
+    { r: 1.0, g: 0.78, b: 0.2, a: 1.0 },  // L2 gold
+    { r: 0.2, g: 0.9, b: 0.9, a: 1.0 },   // L3 diamond
+    { r: 0.2, g: 0.2, b: 0.24, a: 1.0 },  // L4 netherite
+    { r: 0.85, g: 0.65, b: 1.0, a: 1.0 }, // L5 masterwork
   ];
   return palette[lvl - 1] || palette[0];
 }

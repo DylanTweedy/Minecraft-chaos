@@ -14,7 +14,7 @@ const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
 const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
 
-const LEVEL_STEP = 50;
+const LEVEL_STEP = 100;
 const MAX_LEVEL = 5;
 
 // ---------- Perf knobs ----------
@@ -116,8 +116,28 @@ function getPrismCountsCached() {
 }
 
 function getLevelForCount(count) {
-  const lvl = 1 + Math.floor(Math.max(0, count) / LEVEL_STEP);
-  return Math.min(Math.max(1, lvl), MAX_LEVEL);
+  const base = Math.max(1, LEVEL_STEP | 0);
+  let needed = base;
+  let total = 0;
+  const c = Math.max(0, count | 0);
+  for (let lvl = 1; lvl <= MAX_LEVEL; lvl++) {
+    total += needed;
+    if (c < total) return lvl;
+    needed *= 2;
+  }
+  return MAX_LEVEL;
+}
+
+function getNextTierDelta(count) {
+  const lvl = getLevelForCount(count);
+  if (lvl >= MAX_LEVEL) return 0;
+  let needed = Math.max(1, LEVEL_STEP | 0);
+  let total = 0;
+  for (let i = 1; i < (lvl + 1); i++) {
+    total += needed;
+    needed *= 2;
+  }
+  return Math.max(0, total - Math.max(0, count | 0));
 }
 
 function getTargetBlock(player) {
@@ -160,10 +180,13 @@ function showWandStats(player) {
 
   const typeLabel = (id === INPUT_ID) ? "Input" : (id === OUTPUT_ID ? "Output" : "Prism");
   const countLabel = Number.isFinite(count) ? `${count}` : "n/a";
+  const nextLabel = Number.isFinite(count)
+    ? (getNextTierDelta(count) > 0 ? `${getNextTierDelta(count)}` : "max")
+    : "n/a";
 
   try {
     player.onScreenDisplay.setActionBar(
-      `Chaos ${typeLabel} | L${level} | Transfers: ${countLabel}`
+      `Chaos ${typeLabel} | L${level} | Transfers: ${countLabel} | Next: ${nextLabel}`
     );
   } catch {
     // ignore
@@ -290,8 +313,6 @@ export function startLinkVision() {
         }
       }
     }
-    if (_flatLinks.length === 0) return;
-
     const maxDist = Number(FX.linkVisionDistance) || 32;
     const maxDistSq = maxDist * maxDist;
     const perTick = Math.max(1, Number(FX.linksPerTickBudget) || 24);
@@ -300,6 +321,8 @@ export function startLinkVision() {
       if (!isHoldingWand(player)) continue;
 
       showWandStats(player);
+
+      if (_flatLinks.length === 0) continue;
 
       const dimId = player.dimension.id;
       const pLoc = player.location;

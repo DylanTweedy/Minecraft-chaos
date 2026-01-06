@@ -23,17 +23,19 @@ const DEFAULTS = {
   maxVisitedPerSearch: 200,
   orbStepTicks: 20,
   maxOutputOptions: 6,
-  levelStep: 50,
+  levelStep: 100,
   maxLevel: 5,
   itemsPerOrbBase: 1,
-  itemsPerOrbStep: 1,
-  maxItemsPerOrb: 16,
-  minOrbStepTicks: 4,
+  itemsPerOrbGrowth: 2,
+  maxItemsPerOrb: 64,
+  minOrbStepTicks: 1,
   orbVisualMinSpeedScale: 1.0,
   orbVisualMaxSpeedScale: 1.0,
-  orbStepLevelBoost: 0.75,
-  maxQueuedInsertsPerTick: 6,
-  maxFullChecksPerTick: 6,
+  maxQueuedInsertsPerTick: 4,
+  maxFullChecksPerTick: 4,
+  levelUpBurstCount: 8,
+  levelUpBurstRadius: 0.35,
+  orbLifetimeScale: 0.5,
 };
 
 const reservedByContainer = new Map();
@@ -402,6 +404,7 @@ export function createNetworkTransferController(deps, opts) {
   const queueByContainer = new Map();
   const fullContainers = new Set();
   let fullCursor = 0;
+  let queueCursor = 0;
 
   function getSpeed(block) {
     try {
@@ -410,10 +413,10 @@ export function createNetworkTransferController(deps, opts) {
         if (s && typeof s === "object") return s;
       }
     } catch (_) {}
-    return {
-      intervalTicks: cfg.perInputIntervalTicks,
-      amount: 1,
-    };
+    const level = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const scale = Math.pow(2, Math.max(0, level - 1));
+    const interval = Math.max(1, Math.floor(cfg.perInputIntervalTicks / scale));
+    return { intervalTicks: interval, amount: 1 };
   }
 
   function start() {
@@ -560,11 +563,15 @@ export function createNetworkTransferController(deps, opts) {
     let budget = Math.max(0, cfg.maxQueuedInsertsPerTick | 0);
     if (budget <= 0 || queueByContainer.size === 0) return;
 
-    for (const [containerKey, queue] of queueByContainer) {
-      if (budget <= 0) break;
+    const keys = Array.from(queueByContainer.keys());
+    while (budget > 0 && keys.length > 0) {
+      if (queueCursor >= keys.length) queueCursor = 0;
+      const containerKey = keys[queueCursor++];
+      const queue = queueByContainer.get(containerKey);
       if (!queue || queue.length === 0) {
         queueByContainer.delete(containerKey);
         fullContainers.delete(containerKey);
+        budget--;
         continue;
       }
 
@@ -582,12 +589,14 @@ export function createNetworkTransferController(deps, opts) {
         }
         queueByContainer.delete(containerKey);
         fullContainers.delete(containerKey);
+        budget--;
         continue;
       }
 
       const job = queue[0];
       if (!job) {
         queue.shift();
+        budget--;
         continue;
       }
 
@@ -598,15 +607,14 @@ export function createNetworkTransferController(deps, opts) {
         if (outInfo?.block && outInfo.block.typeId === OUTPUT_ID) {
           noteOutputTransfer(job.outputKey, outInfo.block);
         }
-        budget--;
         if (queue.length === 0) {
           queueByContainer.delete(containerKey);
           fullContainers.delete(containerKey);
         }
       } else {
         fullContainers.add(containerKey);
-        budget--;
       }
+      budget--;
     }
   }
 
@@ -763,9 +771,10 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      const desiredAmount = getTransferAmount(previewLevel, inStack);
-      const capacity = getInsertCapacityWithReservations(cKey, cInfo.container, inStack.typeId, inStack);
-      const amount = Math.min(desiredAmount, inStack.amount, capacity);
+    const available = getTotalCountForType(inContainer, inStack.typeId);
+    const desiredAmount = getTransferAmount(previewLevel, inStack);
+    const capacity = getInsertCapacityWithReservations(cKey, cInfo.container, inStack.typeId, inStack);
+    const amount = Math.min(desiredAmount, available, capacity);
       if (amount <= 0) {
         if (getContainerCapacityWithReservations(cKey, cInfo.container) <= 0) {
           fullContainers.add(cKey);
@@ -800,7 +809,7 @@ export function createNetworkTransferController(deps, opts) {
     const current = inContainer.getItem(inSlot);
     if (!current || current.typeId !== inStack.typeId || current.amount <= 0) return false;
 
-    if (!decrementInputSlotSafe(inContainer, inSlot, current, transferAmount)) return false;
+    if (!decrementInputSlotsForType(inContainer, inStack.typeId, transferAmount)) return false;
 
     const level = noteTransferAndGetLevel(inputKey, inBlock);
     inflight.push({
@@ -922,7 +931,11 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function noteTransferAndGetLevel(inputKey, block) {
-    const current = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
+    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
+    const stored = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
+    const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
+    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
     const next = current + 1;
     transferCounts.set(inputKey, next);
     levelsDirty = true;
@@ -938,26 +951,46 @@ export function createNetworkTransferController(deps, opts) {
 
   function getLevelForCount(count, step, maxLevel) {
     const base = Math.max(1, step | 0);
-    const lvl = 1 + Math.floor(Math.max(0, count) / base);
-    return Math.min(Math.max(1, lvl), Math.max(1, maxLevel | 0));
+    const cap = Math.max(1, maxLevel | 0);
+    let needed = base;
+    let total = 0;
+    const c = Math.max(0, count | 0);
+    for (let lvl = 1; lvl <= cap; lvl++) {
+      total += needed;
+      if (c < total) return lvl;
+      needed *= 2;
+    }
+    return cap;
+  }
+
+  function getMinCountForLevel(level, step) {
+    const base = Math.max(1, step | 0);
+    const lvl = Math.max(1, level | 0);
+    let needed = base;
+    let total = 0;
+    for (let i = 1; i < lvl; i++) {
+      total += needed;
+      needed *= 2;
+    }
+    return total;
   }
 
   function getTransferAmount(level, stack) {
-    const base = Math.max(1, cfg.itemsPerOrbBase | 0);
-    const step = Math.max(0, cfg.itemsPerOrbStep | 0);
     const maxItems = Math.max(1, cfg.maxItemsPerOrb | 0);
     const lvl = Math.max(1, level | 0);
-    const desired = base + (lvl - 1) * step;
     const maxStack = Math.max(1, stack?.maxAmount || 64);
-    return Math.min(maxItems, maxStack, desired);
+    const cap = Math.min(maxItems, maxStack);
+    if (lvl <= 1) return 1;
+    const steps = Math.max(0, (cfg.maxLevel | 0) - lvl);
+    const desired = Math.floor(cap / Math.pow(2, steps));
+    return Math.max(1, Math.min(cap, desired));
   }
 
   function getOrbStepTicks(level) {
     const safeLevel = Math.max(1, level | 0);
     const base = Math.max(1, cfg.orbStepTicks | 0);
     const minTicks = Math.max(1, cfg.minOrbStepTicks | 0);
-    const boost = Math.max(0.1, Number(cfg.orbStepLevelBoost) || 0.75);
-    const scale = 1 + (safeLevel - 1) * boost;
+    const scale = Math.pow(2, Math.max(0, safeLevel - 1));
     return Math.max(minTicks, Math.floor(base / scale));
   }
 
@@ -966,15 +999,22 @@ export function createNetworkTransferController(deps, opts) {
       if (!block || block.typeId !== INPUT_ID) return;
       const perm = block.permutation;
       if (!perm) return;
+      const current = perm.getState("chaos:level");
+      if ((current | 0) === (level | 0)) return;
       const next = perm.withState("chaos:level", level | 0);
       block.setPermutation(next);
+      spawnLevelUpBurst(block);
     } catch {
       // ignore
     }
   }
 
   function notePrismPassage(prismKey, block) {
-    const current = prismCounts.has(prismKey) ? prismCounts.get(prismKey) : 0;
+    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
+    const stored = prismCounts.has(prismKey) ? prismCounts.get(prismKey) : 0;
+    const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
+    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
     const next = current + 1;
     prismCounts.set(prismKey, next);
     prismLevelsDirty = true;
@@ -987,15 +1027,22 @@ export function createNetworkTransferController(deps, opts) {
       if (!block || block.typeId !== PRISM_ID) return;
       const perm = block.permutation;
       if (!perm) return;
+      const current = perm.getState("chaos:level");
+      if ((current | 0) === (level | 0)) return;
       const next = perm.withState("chaos:level", level | 0);
       block.setPermutation(next);
+      spawnLevelUpBurst(block);
     } catch {
       // ignore
     }
   }
 
   function noteOutputTransfer(outputKey, block) {
-    const current = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
+    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
+    const stored = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
+    const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
+    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
     const next = current + 1;
     outputCounts.set(outputKey, next);
     outputLevelsDirty = true;
@@ -1008,8 +1055,11 @@ export function createNetworkTransferController(deps, opts) {
       if (!block || block.typeId !== OUTPUT_ID) return;
       const perm = block.permutation;
       if (!perm) return;
+      const current = perm.getState("chaos:level");
+      if ((current | 0) === (level | 0)) return;
       const next = perm.withState("chaos:level", level | 0);
       block.setPermutation(next);
+      spawnLevelUpBurst(block);
     } catch {
       // ignore
     }
@@ -1060,6 +1110,31 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
+  function spawnLevelUpBurst(block) {
+    try {
+      if (!block) return;
+      const dim = block.dimension;
+      const particleId = FX?.particleSuccess || FX?.particleBeamOutputBurst;
+      if (!dim || !particleId) return;
+
+      const count = Math.max(1, cfg.levelUpBurstCount | 0);
+      const radius = Math.max(0, Number(cfg.levelUpBurstRadius) || 0.35);
+      const base = block.location;
+      for (let i = 0; i < count; i++) {
+        const ox = (Math.random() * 2 - 1) * radius;
+        const oy = (Math.random() * 2 - 1) * radius;
+        const oz = (Math.random() * 2 - 1) * radius;
+        dim.spawnParticle(particleId, {
+          x: base.x + 0.5 + ox,
+          y: base.y + 0.6 + oy,
+          z: base.z + 0.5 + oz,
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   function normalizeDir(a, b) {
     const dx = b.x - a.x;
     const dy = b.y - a.y;
@@ -1071,7 +1146,9 @@ export function createNetworkTransferController(deps, opts) {
 
   function getOrbLifetimeSeconds(level) {
     const stepTicks = Math.max(1, getOrbStepTicks(Math.max(1, level | 0)));
-    return Math.max(0.05, stepTicks / 20);
+    const base = stepTicks / 20;
+    const scale = Math.max(0.1, Number(cfg.orbLifetimeScale) || 0.5);
+    return Math.max(0.03, base * scale);
   }
 
   function getOrbVisualSpeed(from, to, dir, level, lifetimeSeconds) {
@@ -1090,11 +1167,11 @@ export function createNetworkTransferController(deps, opts) {
   function getOrbColor(level) {
     const lvl = Math.min(cfg.maxLevel | 0, Math.max(1, level | 0));
     const palette = [
-      { r: 0.2, g: 0.9, b: 1.0, a: 1.0 },  // L1 cyan
-      { r: 0.3, g: 1.0, b: 0.4, a: 1.0 },  // L2 green
-      { r: 1.0, g: 0.8, b: 0.2, a: 1.0 },  // L3 gold
-      { r: 1.0, g: 0.3, b: 0.9, a: 1.0 },  // L4 magenta
-      { r: 1.0, g: 0.95, b: 0.95, a: 1.0 }, // L5 bright
+      { r: 0.78, g: 0.8, b: 0.84, a: 1.0 }, // L1 iron
+      { r: 1.0, g: 0.78, b: 0.2, a: 1.0 },  // L2 gold
+      { r: 0.2, g: 0.9, b: 0.9, a: 1.0 },   // L3 diamond
+      { r: 0.2, g: 0.2, b: 0.24, a: 1.0 },  // L4 netherite
+      { r: 0.85, g: 0.65, b: 1.0, a: 1.0 }, // L5 masterwork
     ];
     return palette[lvl - 1] || palette[0];
   }
@@ -1432,6 +1509,47 @@ function findFirstMatchingSlot(container, filterContainer) {
     return null;
   } catch (_) {
     return null;
+  }
+}
+
+function getTotalCountForType(container, typeId) {
+  try {
+    if (!container || !typeId) return 0;
+    const size = container.size;
+    let total = 0;
+    for (let i = 0; i < size; i++) {
+      const it = container.getItem(i);
+      if (!it || it.typeId !== typeId) continue;
+      total += it.amount | 0;
+    }
+    return Math.max(0, total);
+  } catch (_) {
+    return 0;
+  }
+}
+
+function decrementInputSlotsForType(container, typeId, count) {
+  try {
+    if (!container || !typeId || count <= 0) return false;
+    let remaining = count | 0;
+    const size = container.size;
+    for (let i = 0; i < size && remaining > 0; i++) {
+      const it = container.getItem(i);
+      if (!it || it.typeId !== typeId) continue;
+      const take = Math.min(remaining, it.amount | 0);
+      if (take <= 0) continue;
+      if (it.amount === take) {
+        if (!clearSlotSafe(container, i)) return false;
+      } else {
+        const dec = (typeof it.clone === "function") ? it.clone() : it;
+        dec.amount = it.amount - take;
+        try { container.setItem(i, dec); } catch (_) { return false; }
+      }
+      remaining -= take;
+    }
+    return remaining <= 0;
+  } catch (_) {
+    return false;
   }
 }
 
