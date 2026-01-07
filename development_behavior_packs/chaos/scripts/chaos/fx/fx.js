@@ -569,6 +569,32 @@ function burstAround(dimension, center, particleId, count, radius, molang) {
   }
 }
 
+function burstMix(dimension, center, mix, molang) {
+  try {
+    if (!dimension || !center || !Array.isArray(mix)) return;
+    for (const entry of mix) {
+      if (!entry || !entry.id) continue;
+      const count = Math.max(1, entry.count | 0);
+      const radius = Math.max(0, Number(entry.radius) || 0);
+      const useMolang = entry.molang ?? molang;
+      burstAround(dimension, center, entry.id, count, radius, useMolang);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function resolveFluxMolang(fx, itemTypeId) {
+  try {
+    if (!fx) return null;
+    const m = fx.fluxMolang;
+    if (typeof m === "function") return m(itemTypeId);
+    return m || null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- Public FX ----------
 
 export function fxSelectInput(player, block, fx) {
@@ -677,8 +703,10 @@ export function fxTransferItem(fromBlock, toBlock, itemTypeId, fx) {
     });
 
     let orb = fx && fx.particleTransferItem;
+    let isExoticOrb = false;
     if (itemTypeId && fx?.particleExoticOrbById && fx.particleExoticOrbById[itemTypeId]) {
       orb = fx.particleExoticOrbById[itemTypeId] || orb;
+      isExoticOrb = true;
     } else if (itemTypeId && fx?.particleFluxOrbByTier && Array.isArray(fx.particleFluxOrbByTier)) {
       let fluxTier = 0;
       if (itemTypeId === "chaos:flux_1") fluxTier = 1;
@@ -704,7 +732,7 @@ export function fxTransferItem(fromBlock, toBlock, itemTypeId, fx) {
     const dir = { x: dx / len, y: dy / len, z: dz / len };
 
     let molang = null;
-    if (fx && typeof fx.makeMolang === "function") {
+    if (!isExoticOrb && fx && typeof fx.makeMolang === "function") {
       try {
         molang = fx.makeMolang(dir, fromBlock, toBlock, itemTypeId);
       } catch {
@@ -783,15 +811,16 @@ export function fxFluxOrbStep(fromBlock, toBlock, fx, tier) {
 export function fxFluxGenerate(block, fx) {
   try {
     if (!block || fx?.fluxFxEnabled === false) return;
+    const loc = block.location;
+    const center = { x: loc.x + 0.5, y: loc.y + 0.7, z: loc.z + 0.5 };
+    const molang = resolveFluxMolang(fx, null);
+    if (Array.isArray(fx?.burstMixFluxGenerate) && fx.burstMixFluxGenerate.length > 0) {
+      burstMix(block.dimension, center, fx.burstMixFluxGenerate, molang);
+      return;
+    }
     const particleId = fx?.particleFluxGenerate;
     if (!particleId) return;
-
-    const loc = block.location;
-    burstAround(block.dimension, {
-      x: loc.x + 0.5,
-      y: loc.y + 0.7,
-      z: loc.z + 0.5,
-    }, particleId, fx?.fluxGenerateBurstCount ?? 4, fx?.fluxGenerateBurstRadius ?? 0.2, fx?.fluxMolang);
+    burstAround(block.dimension, center, particleId, fx?.fluxGenerateBurstCount ?? 4, fx?.fluxGenerateBurstRadius ?? 0.2, molang);
   } catch {
     // ignore
   }
@@ -813,14 +842,26 @@ export function fxFluxRefine(block, fx, itemTypeId) {
         particleId = fx.particleFluxRefineByTier[idx] || particleId;
       }
     }
-    if (!particleId) return;
-
     const loc = block.location;
-    burstAround(block.dimension, {
-      x: loc.x + 0.5,
-      y: loc.y + 0.7,
-      z: loc.z + 0.5,
-    }, particleId, fx?.fluxRefineBurstCount ?? 5, fx?.fluxRefineBurstRadius ?? 0.25, fx?.fluxMolang);
+    const center = { x: loc.x + 0.5, y: loc.y + 0.7, z: loc.z + 0.5 };
+    const molang = resolveFluxMolang(fx, itemTypeId);
+    if (itemTypeId && Array.isArray(fx?.burstMixFluxRefineByTier)) {
+      let tier = 0;
+      if (itemTypeId === "chaos:flux_1") tier = 1;
+      else if (itemTypeId === "chaos:flux_2") tier = 2;
+      else if (itemTypeId === "chaos:flux_3") tier = 3;
+      else if (itemTypeId === "chaos:flux_4") tier = 4;
+      else if (itemTypeId === "chaos:flux_5") tier = 5;
+      if (tier > 0) {
+        const mix = fx.burstMixFluxRefineByTier[tier - 1];
+        if (Array.isArray(mix) && mix.length > 0) {
+          burstMix(block.dimension, center, mix, molang);
+          return;
+        }
+      }
+    }
+    if (!particleId) return;
+    burstAround(block.dimension, center, particleId, fx?.fluxRefineBurstCount ?? 5, fx?.fluxRefineBurstRadius ?? 0.25, molang);
   } catch {
     // ignore
   }
@@ -833,16 +874,24 @@ export function fxFluxMutate(block, fx, itemTypeId) {
     if (itemTypeId && fx?.particleFluxMutateById && fx.particleFluxMutateById[itemTypeId]) {
       particleId = fx.particleFluxMutateById[itemTypeId] || particleId;
     }
+    if (itemTypeId && fx?.burstMixFluxMutateById && fx.burstMixFluxMutateById[itemTypeId]) {
+      const loc = block.location;
+      const center = { x: loc.x + 0.5, y: loc.y + 0.7, z: loc.z + 0.5 };
+      burstMix(block.dimension, center, fx.burstMixFluxMutateById[itemTypeId], resolveFluxMolang(fx, itemTypeId));
+      if (fx?.sfxFluxMutate) safePlaySoundAt(block.dimension, fx.sfxFluxMutate, loc);
+      return;
+    }
     const soundId = fx?.sfxFluxMutate;
     if (!particleId && !soundId) return;
 
     const loc = block.location;
+    const molang = resolveFluxMolang(fx, itemTypeId);
     if (particleId) {
       burstAround(block.dimension, {
         x: loc.x + 0.5,
         y: loc.y + 0.7,
         z: loc.z + 0.5,
-      }, particleId, fx?.fluxMutateBurstCount ?? 6, fx?.fluxMutateBurstRadius ?? 0.3, fx?.fluxMolang);
+      }, particleId, fx?.fluxMutateBurstCount ?? 6, fx?.fluxMutateBurstRadius ?? 0.3, molang);
     }
     if (soundId) safePlaySoundAt(block.dimension, soundId, loc);
   } catch {

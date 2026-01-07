@@ -1,0 +1,14 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:item": {
+    "description": {
+      "identifier": "chaos:chaos_crystal_shard",
+      "menu_category": { "category": "items" }
+    },
+    "components": {
+      "minecraft:display_name": { "value": "item.chaos:chaos_crystal_shard.name" },
+      "minecraft:icon": "chaos_crystal_shard",
+      "minecraft:max_stack_size": 64
+    }
+  }
+}

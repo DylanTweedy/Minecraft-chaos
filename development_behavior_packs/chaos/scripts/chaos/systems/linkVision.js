@@ -5,11 +5,13 @@ import { getPairsMap } from "../features/links/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
+import { getCrystalState } from "../crystallizer.js";
 
 const WAND_ID = "chaos:wand";
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
 const PRISM_ID = "chaos:prism";
+const CRYSTALLIZER_ID = "chaos:crystallizer";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
 const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
@@ -158,10 +160,23 @@ function showWandStats(player) {
   if (!block) return;
 
   const id = block.typeId;
-  if (id !== INPUT_ID && id !== OUTPUT_ID && id !== PRISM_ID) return;
+  if (id !== INPUT_ID && id !== OUTPUT_ID && id !== PRISM_ID && id !== CRYSTALLIZER_ID) return;
 
   const loc = block.location;
   const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
+  if (id === CRYSTALLIZER_ID) {
+    const state = getCrystalState(key);
+    const stored = Math.max(0, Number(state?.fluxStored) || 0);
+    const prestige = Math.max(0, Number(state?.prestigeCount) || 0);
+    try {
+      player.onScreenDisplay.setActionBar(
+        `Chaos Crystallizer | Stored: ${stored} | Prestige: ${prestige}`
+      );
+    } catch {
+      // ignore
+    }
+    return;
+  }
   let count = null;
   if (id === INPUT_ID) {
     const counts = getInputCountsCached();

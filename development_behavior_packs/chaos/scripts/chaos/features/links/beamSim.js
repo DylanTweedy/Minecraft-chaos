@@ -6,6 +6,7 @@ import { bumpNetworkStamp } from "./networkStamp.js";
 const INPUT_ID = "chaos:input_node";
 const OUTPUT_ID = "chaos:output_node";
 const PRISM_ID = "chaos:prism";
+const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
 const INPUTS_PER_TICK = 1;
 const RELAYS_PER_TICK = 1;
@@ -23,7 +24,7 @@ const DP_BEAMS = "chaos:beams_v0_json";
 // Placement settle window (bounded, event-seeded; NOT polling/scanning)
 const EMIT_RETRY_TICKS = 4;
 
-const PASS_THROUGH_IDS = new Set(["minecraft:air", BEAM_ID, OUTPUT_ID]);
+const PASS_THROUGH_IDS = new Set(["minecraft:air", BEAM_ID, OUTPUT_ID, INPUT_ID]);
 
 // -----------------------------------------------------------------------------
 // Persistent model
@@ -149,7 +150,7 @@ function prismHasDirectSource(dim, loc) {
     const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
     if (!b) continue;
     if (b.typeId === BEAM_ID && beamAxisMatchesDir(b, d.dx, d.dy, d.dz)) return true;
-    if (b.typeId === INPUT_ID || b.typeId === OUTPUT_ID) return true;
+    if (b.typeId === INPUT_ID || b.typeId === OUTPUT_ID || b.typeId === CRYSTALLIZER_ID) return true;
   }
   return false;
 }
@@ -167,7 +168,7 @@ function prismHasRelaySource(dim, loc) {
   ];
   for (const d of dirs) {
     const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
-    if (b?.typeId !== PRISM_ID) continue;
+    if (b?.typeId !== PRISM_ID && b?.typeId !== CRYSTALLIZER_ID) continue;
     if (prismHasDirectSource(dim, b.location)) return true;
   }
   return false;
@@ -240,7 +241,7 @@ function enqueueAdjacentPrisms(dim, loc) {
     const y = loc.y + d.dy;
     const z = loc.z + d.dz;
     const b = dim.getBlock({ x, y, z });
-    if (b?.typeId === PRISM_ID) {
+    if (b?.typeId === PRISM_ID || b?.typeId === CRYSTALLIZER_ID) {
       enqueueRelayForRescan(key(dim.id, x, y, z));
     }
   }
@@ -268,7 +269,7 @@ function enqueueBeamsInLine(dim, loc) {
         continue;
       }
       if (id === OUTPUT_ID) continue;
-      if (id === PRISM_ID) break;
+      if (id === PRISM_ID || id === CRYSTALLIZER_ID) break;
       if (id === "minecraft:air") break;
       break;
     }
@@ -301,7 +302,7 @@ function clearBeamsFromBreak(dim, loc) {
       if (id === "minecraft:air") break;
       if (id === OUTPUT_ID) break;
       if (id === INPUT_ID) break;
-      if (id === PRISM_ID) break;
+      if (id === PRISM_ID || id === CRYSTALLIZER_ID) break;
       break;
     }
   }
@@ -381,7 +382,11 @@ function scanOutputsInDir(dim, loc, dx, dy, dz) {
       outputs.push(i);
       continue;
     }
-    if (id === PRISM_ID) {
+    if (id === INPUT_ID) {
+      outputs.push(i);
+      continue;
+    }
+    if (id === PRISM_ID || id === CRYSTALLIZER_ID) {
       prismDist = i;
       break;
     }
@@ -391,7 +396,7 @@ function scanOutputsInDir(dim, loc, dx, dy, dz) {
       break;
     }
 
-    // Any other block (including inputs) blocks the scan.
+    // Any other block blocks the scan.
     break;
   }
   return { outputs, prismDist };
@@ -427,7 +432,8 @@ function fillBeamsToDistance(dim, loc, dx, dy, dz, dist, axis, recorded, recorde
     }
 
     if (id === OUTPUT_ID) continue;
-    if (id === PRISM_ID) break;
+    if (id === INPUT_ID) continue;
+    if (id === PRISM_ID || id === CRYSTALLIZER_ID) break;
 
     // Blocker appeared unexpectedly; stop filling.
     break;
@@ -477,7 +483,7 @@ function rebuildRelayBeams(entry, map) {
   if (!dim) return;
 
   const pb = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-  if (!pb || pb.typeId !== PRISM_ID) {
+  if (!pb || (pb.typeId !== PRISM_ID && pb.typeId !== CRYSTALLIZER_ID)) {
     removeRecordedBeams(entry);
     delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
     return;
@@ -573,7 +579,7 @@ function beamValidFromInput(dim, inputLoc, dx, dy, dz, beamDist) {
     if (!b) break;
 
     const id = b.typeId;
-    if (id === OUTPUT_ID || id === PRISM_ID) {
+    if (id === OUTPUT_ID || id === PRISM_ID || id === CRYSTALLIZER_ID || id === INPUT_ID) {
       farthestOutput = i;
       break;
     }
@@ -600,7 +606,7 @@ function beamValidFromPrism(dim, prismLoc, dx, dy, dz, beamDist) {
     if (!b) break;
 
     const id = b.typeId;
-    if (id === OUTPUT_ID || id === PRISM_ID) {
+    if (id === OUTPUT_ID || id === PRISM_ID || id === CRYSTALLIZER_ID || id === INPUT_ID) {
       farthestNode = i;
       break;
     }
@@ -634,7 +640,7 @@ function isBeamStillValid(dim, loc) {
         if (beamValidFromInput(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) return true;
         break;
       }
-      if (id === PRISM_ID) {
+      if (id === PRISM_ID || id === CRYSTALLIZER_ID) {
         if (beamValidFromPrism(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) return true;
         break;
       }
@@ -706,10 +712,10 @@ function handleBlockChanged(dim, loc, prevId, nextId) {
   const beamChanged = (prevId === BEAM_ID || selfId === BEAM_ID);
   if (beamChanged) enqueueAdjacentPrisms(dim, loc);
 
-  if (selfId === PRISM_ID || prevId === PRISM_ID) {
+  if (selfId === PRISM_ID || prevId === PRISM_ID || selfId === CRYSTALLIZER_ID || prevId === CRYSTALLIZER_ID) {
     enqueueRelayForRescan(key(dim.id, loc.x, loc.y, loc.z));
   }
-  if (prevId === PRISM_ID) {
+  if (prevId === PRISM_ID || prevId === CRYSTALLIZER_ID) {
     const map = loadBeamsMap();
     const prismKey = key(dim.id, loc.x, loc.y, loc.z);
     const entry = map[prismKey];
@@ -744,7 +750,7 @@ function handleBlockChanged(dim, loc, prevId, nextId) {
         enqueueInputForRescan(key(dim.id, x, y, z));
         break;
       }
-      if (id === PRISM_ID) {
+      if (id === PRISM_ID || id === CRYSTALLIZER_ID) {
         enqueueRelayForRescan(key(dim.id, x, y, z));
         break;
       }

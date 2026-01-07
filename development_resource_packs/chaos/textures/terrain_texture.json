@@ -26,6 +26,10 @@
     "foundry_bottom": { "textures": "textures/blocks/foundry-bottom" },
     "foundry_side":   { "textures": "textures/blocks/foundry-side" },
 
+    "crystalizer_top":    { "textures": "textures/blocks/crystalizer_top" },
+    "crystalizer_bottom": { "textures": "textures/blocks/crystalizer_bottom" },
+    "crystalizer_side":   { "textures": "textures/blocks/crystalizer_side" },
+
     "prism_top":    { "textures": "textures/blocks/prism_top" },
     "prism_bottom": { "textures": "textures/blocks/prism_bottom" },
     "prism_side":   { "textures": "textures/blocks/prism_side" },

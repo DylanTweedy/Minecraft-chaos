@@ -28,6 +28,9 @@
     },
     "exotic_alloy_lump": {
       "textures": "textures/items/exotic_alloy_lump"
+    },
+    "chaos_crystal_shard": {
+      "textures": "textures/items/exotic_shard"
     }
   }
 }

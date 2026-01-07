@@ -18,6 +18,10 @@
         "size": [0.3, 0.3],
         "facing_camera_mode": "rotate_xyz"
       },
+      "minecraft:particle_initial_spin": {
+        "rotation": "math.random(0, 360)",
+        "rotation_rate": "math.random(180, 360)"
+      },
       "minecraft:particle_appearance_tinting": {
         "color": [
           "variable.chaos_color_r",

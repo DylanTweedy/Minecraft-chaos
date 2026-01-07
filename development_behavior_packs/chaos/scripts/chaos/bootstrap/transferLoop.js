@@ -42,7 +42,7 @@ export function startTransferLoop(ctx) {
         {
           maxTransfersPerTick: 4,
           perInputIntervalTicks: 20,
-          orbStepTicks: 20,
+          orbStepTicks: 60,
           maxOrbFxPerTick: 160,
           debugTransferStats: false,
           maxInputsScannedPerTick: 12,

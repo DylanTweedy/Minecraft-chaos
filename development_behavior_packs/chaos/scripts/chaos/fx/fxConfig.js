@@ -74,6 +74,29 @@ function getOrbColor(level) {
   return palette[lvl - 1] || palette[0];
 }
 
+function getFluxColor(itemTypeId) {
+  switch (itemTypeId) {
+    case "chaos:flux_1":
+      return { r: 0.2, g: 0.9, b: 0.7, a: 1.0 };
+    case "chaos:flux_2":
+      return { r: 0.35, g: 0.95, b: 0.5, a: 1.0 };
+    case "chaos:flux_3":
+      return { r: 0.2, g: 0.8, b: 1.0, a: 1.0 };
+    case "chaos:flux_4":
+      return { r: 0.5, g: 0.6, b: 1.0, a: 1.0 };
+    case "chaos:flux_5":
+      return { r: 0.9, g: 0.5, b: 1.0, a: 1.0 };
+    case "chaos:exotic_shard":
+      return { r: 0.6, g: 0.9, b: 1.0, a: 1.0 };
+    case "chaos:exotic_fiber":
+      return { r: 0.4, g: 1.0, b: 0.8, a: 1.0 };
+    case "chaos:exotic_alloy_lump":
+      return { r: 1.0, g: 0.7, b: 0.3, a: 1.0 };
+    default:
+      return { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+  }
+}
+
 // Must match transfer_orb.json lifetime (seconds)
 const ORB_LIFETIME_SECONDS = 1.0;
 
@@ -131,13 +154,59 @@ export const FX = {
     "chaos:exotic_fiber": "chaos:exotic_mutate_burst_fiber",
     "chaos:exotic_alloy_lump": "chaos:exotic_mutate_burst_alloy_lump",
   },
+  burstMixFluxGenerate: [
+    { id: "chaos:block_burst_pop", count: 3, radius: 0.22 },
+    { id: "chaos:block_burst_puff", count: 2, radius: 0.3 },
+    { id: "chaos:link_input_charge", count: 2, radius: 0.18 },
+    { id: "chaos:link_output_burst", count: 2, radius: 0.24 },
+  ],
+  burstMixFluxRefineByTier: [
+    [
+      { id: "chaos:flux_refine_burst_1", count: 3, radius: 0.26 },
+      { id: "chaos:block_burst_puff", count: 2, radius: 0.3 },
+    ],
+    [
+      { id: "chaos:flux_refine_burst_2", count: 3, radius: 0.26 },
+      { id: "chaos:block_burst_puff", count: 2, radius: 0.3 },
+    ],
+    [
+      { id: "chaos:flux_refine_burst_3", count: 3, radius: 0.26 },
+      { id: "chaos:block_burst_puff", count: 2, radius: 0.3 },
+    ],
+    [
+      { id: "chaos:flux_refine_burst_4", count: 4, radius: 0.28 },
+      { id: "chaos:block_burst_puff", count: 2, radius: 0.32 },
+    ],
+    [
+      { id: "chaos:flux_refine_burst_5", count: 4, radius: 0.28 },
+      { id: "chaos:block_burst_puff", count: 2, radius: 0.32 },
+    ],
+  ],
+  burstMixFluxMutateById: {
+    "chaos:exotic_shard": [
+      { id: "chaos:exotic_mutate_burst_shard", count: 3, radius: 0.3 },
+      { id: "chaos:link_output_burst", count: 2, radius: 0.22 },
+    ],
+    "chaos:exotic_fiber": [
+      { id: "chaos:exotic_mutate_burst_fiber", count: 3, radius: 0.3 },
+      { id: "chaos:link_output_burst", count: 2, radius: 0.22 },
+    ],
+    "chaos:exotic_alloy_lump": [
+      { id: "chaos:exotic_mutate_burst_alloy_lump", count: 3, radius: 0.3 },
+      { id: "chaos:link_output_burst", count: 2, radius: 0.22 },
+    ],
+  },
   sfxFluxMutate: "random.levelup",
-  fluxGenerateBurstCount: 4,
+  fluxGenerateBurstCount: 3,
   fluxGenerateBurstRadius: 0.2,
-  fluxRefineBurstCount: 5,
-  fluxRefineBurstRadius: 0.25,
-  fluxMutateBurstCount: 6,
-  fluxMutateBurstRadius: 0.3,
+  fluxRefineBurstCount: 3,
+  fluxRefineBurstRadius: 0.22,
+  fluxMutateBurstCount: 4,
+  fluxMutateBurstRadius: 0.26,
+  fluxMolang: (itemTypeId) => {
+    const c = getFluxColor(itemTypeId);
+    return makeColorMolang(c.r, c.g, c.b, c.a);
+  },
 
   // Default tinting. Override in presets for vision if needed.
   beamMolang: () => makeColorMolang(0.2, 0.8, 1.0, 1.0),        // link (cyan)
@@ -159,8 +228,8 @@ export const FX = {
   maxParticlesPerTick: 80,
   linksPerTickBudget: 12,
   fxQueueEnabled: true,
-  fxQueueMaxPerTick: 100,
-  fxQueueMaxQueued: 1000,
+  fxQueueMaxPerTick: 60,
+  fxQueueMaxQueued: 800,
 
   // Link vision culling
   linkVisionDistance: 32,

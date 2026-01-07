@@ -4,6 +4,8 @@ import { startCleanupOnBreak } from "../systems/cleanupOnBreak.js";
 import { startBeamSimV0 } from "../features/links/beamSim.js";
 import { startFxQueue } from "../systems/fxQueue.js";
 import { startFilterInteract } from "../systems/filterInteract.js";
+import { startCrystallizerSystem } from "../crystallizer.js";
+import { startPrestigeSystem } from "../prestige.js";
 
 export function startSystems() {
   // Start FX queue first so spawns don't stall if later systems throw.
@@ -12,4 +14,6 @@ export function startSystems() {
   try { startCleanupOnBreak(); } catch {}
   try { startFilterInteract(); } catch {}
   try { startBeamSimV0(); } catch {}
+  try { startCrystallizerSystem(); } catch {}
+  try { startPrestigeSystem(); } catch {}
 }

@@ -22,9 +22,10 @@ const FLUX_TIER_BY_ID = new Map(FLUX_IDS.map((id, i) => [id, i + 1]));
 const OUTPUT_FLUX_CHANCE = [0.01, 0.02, 0.04, 0.07, 0.1];
 const OUTPUT_FLUX_DOUBLE_CHANCE_L5 = 0.03;
 
-const PRISM_REFINE_CHANCE = [0.10, 0.18, 0.30, 0.45, 0.65];
-const PRISM_MUTATION_CHANCE = [0.0005, 0.0010, 0.0020, 0.0035, 0.0060];
-const MAX_REFINE_CHECKS_PER_TRANSFER = 8;
+const PRISM_REFINE_CHANCE = [0.02, 0.035, 0.05, 0.07, 0.10];
+const PRISM_MUTATION_CHANCE = [0.0002, 0.0004, 0.0007, 0.0012, 0.0020];
+const MAX_REFINE_CHECKS_PER_TRANSFER = 4;
+const REQUIRED_SPEED_FOR_TIER = [0, 1.15, 1.35, 1.6, 1.9, 2.2];
 
 const EXOTIC_WEIGHTS = [
   { id: "chaos:exotic_shard", w: 70 },
@@ -158,7 +159,7 @@ function findFluxTargetFromPath(fullPath, outputBlock, getAttachedInventoryInfo,
       ? getAttachedInventoryInfo(block, dim)
       : null;
     const inv = info?.container || getBlockInventory(block);
-    if (inv) return { block, inventory: inv, index: i };
+    if (inv) return { block: info?.block || block, inventory: inv, index: i };
   }
   return null;
 }
@@ -197,7 +198,7 @@ function findFluxTargetFromPathPositions(pathPositions, outputBlock, getAttached
       ? getAttachedInventoryInfo(block, dim)
       : null;
     const inv = info?.container || getBlockInventory(block);
-    if (inv) return { block, inventory: inv, index: i, outputIndex };
+    if (inv) return { block: info?.block || block, inventory: inv, index: i, outputIndex };
   }
 
   return { block: null, inventory: null, index: -1, outputIndex };
@@ -224,6 +225,11 @@ export function tryGenerateFluxOnTransfer(ctx) {
     let amount = 1;
     if (tier >= 5 && Math.random() < OUTPUT_FLUX_DOUBLE_CHANCE_L5) {
       amount = 2;
+    }
+
+    if (ctx?.consumeFluxOutput) {
+      fxFluxGenerate(outputBlock, ctx?.FX);
+      return amount;
     }
 
     const fluxStack = new ItemStack(FLUX_IDS[0], amount);
@@ -260,6 +266,9 @@ export function tryGenerateFluxOnTransfer(ctx) {
         amount: fluxStack.amount,
         dropPos: targetBlock?.location || outputBlock.location,
         dimId: dim?.id,
+        stepTicks: ctx?.transferStepTicks,
+        speedScale: ctx?.transferSpeedScale,
+        refineOnPrism: true,
       });
       scheduled = true;
     } else if (scheduleFxBlocks && canSchedule) {
@@ -279,6 +288,9 @@ export function tryGenerateFluxOnTransfer(ctx) {
         containerKey,
         amount: fluxStack.amount,
         dropPos: targetBlock?.location || outputBlock.location,
+        stepTicks: ctx?.transferStepTicks,
+        speedScale: ctx?.transferSpeedScale,
+        refineOnPrism: true,
       });
       scheduled = true;
     } else if (outputIndex >= 0 && targetIndex >= 0 && outputIndex > targetIndex && targetBlock) {
@@ -324,6 +336,7 @@ export function tryRefineFluxInTransfer(ctx) {
     if (!isFluxTypeId(typeId)) return null;
 
     const tier = getPrismTier(prismBlock);
+    const speedScale = Math.max(0.1, Number(ctx?.speedScale) || 1.0);
     const refineChance = PRISM_REFINE_CHANCE[tier - 1] || 0;
     const mutationChance = PRISM_MUTATION_CHANCE[tier - 1] || 0;
 
@@ -337,14 +350,24 @@ export function tryRefineFluxInTransfer(ctx) {
     for (let i = 0; i < checks; i++) {
       let outType = typeId;
       const curTier = getFluxTier(outType);
-      if (curTier > 0 && curTier < 5 && Math.random() < refineChance) {
-        refined++;
-        outType = getFluxTypeForTier(curTier + 1);
-        if (!refinedTypeId) refinedTypeId = outType;
-        if (Math.random() < mutationChance) {
-          mutated++;
-          outType = pickWeightedExotic();
-          if (!mutatedTypeId) mutatedTypeId = outType;
+      if (curTier > 0 && curTier < 5) {
+        const required = REQUIRED_SPEED_FOR_TIER[curTier + 1] || 1.0;
+        if (speedScale < required) {
+          const prev = results.get(outType) || 0;
+          results.set(outType, prev + 1);
+          continue;
+        }
+        const scaledChance = Math.min(0.95, refineChance * speedScale);
+        if (Math.random() < scaledChance) {
+          refined++;
+          outType = getFluxTypeForTier(curTier + 1);
+          if (!refinedTypeId) refinedTypeId = outType;
+          const scaledMutate = Math.min(0.95, mutationChance * Math.max(1.0, speedScale));
+          if (Math.random() < scaledMutate) {
+            mutated++;
+            outType = pickWeightedExotic();
+            if (!mutatedTypeId) mutatedTypeId = outType;
+          }
         }
       }
       const prev = results.get(outType) || 0;

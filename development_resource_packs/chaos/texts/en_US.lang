@@ -24,3 +24,7 @@ item.chaos:exotic_fiber.name=Exotic Fiber
 item.chaos:exotic_fiber=Exotic Fiber
 item.chaos:exotic_alloy_lump.name=Exotic Alloy Lump
 item.chaos:exotic_alloy_lump=Exotic Alloy Lump
+item.chaos:chaos_crystal_shard.name=Chaos Crystal Shard
+item.chaos:chaos_crystal_shard=Chaos Crystal Shard
+tile.chaos:crystallizer.name=Chaos Crystallizer
+tile.chaos:crystallizer=Chaos Crystallizer
