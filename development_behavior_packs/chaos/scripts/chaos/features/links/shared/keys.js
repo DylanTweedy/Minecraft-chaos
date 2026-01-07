@@ -1,4 +1,4 @@
-// scripts/chaos/keys.js
+// scripts/chaos/features/links/shared/keys.js
 // Pure helpers only. No imports, no side effects.
 
 export function makeKey(dimId, x, y, z) {

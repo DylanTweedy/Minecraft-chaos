@@ -23,6 +23,8 @@ the wrong face unless you rebind or replace them by hand.
 - Only the Chaos Crystal runs per-tick logic.
 - The network uses bounded sampling per tick, so large networks transfer slower but stay performant.
 - No cross-dimension networks in Phase 1.
+- Transfer system modules live in `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/`.
+- On load, the transfer loop sends a chat message reporting how many transfer modules loaded.
 - Ensure both the Behavior Pack and Resource Pack are enabled for the custom blocks and items to appear.
 - If your Bedrock version prompts for experimental features to allow custom blocks, enable them.
 

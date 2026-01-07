@@ -11,7 +11,7 @@ import { fxSelectInput, fxPairSuccess, fxTransferItem } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeLinkFx, makeTransferFx } from "../fx/presets.js";
 import { getGlobalInputCount, getGlobalLinkCount, getPerInputOutputCount } from "../core/stats.js";
-import { makeKeyFromBlock, pendingToKey } from "../features/links/keys.js";
+import { makeKeyFromBlock, pendingToKey } from "../features/links/shared/keys.js";
 import { handleWandUseOn } from "../features/links/wand.js";
 
 const WAND_ID = "chaos:wand";

@@ -1,5 +1,9 @@
 // scripts/chaos/bootstrap/transferLoop.js
-import { createTransferPathfinder, createNetworkTransferController } from "../features/links/transferSystem.js";
+import {
+  createTransferPathfinder,
+  createNetworkTransferController,
+  getLinksModuleStatus,
+} from "../features/links/transferSystem.js";
 import { getNetworkStamp } from "../features/links/networkStamp.js";
 
 export function startTransferLoop(ctx) {
@@ -11,6 +15,18 @@ export function startTransferLoop(ctx) {
   } = ctx;
 
   let transferStarted = false;
+  let transferAnnounced = false;
+
+  function sendChat(msg) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") player.sendMessage(msg);
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   // Start transfer loop after ready
   system.runInterval(() => {
@@ -51,8 +67,22 @@ export function startTransferLoop(ctx) {
         }
       );
       controller.start();
+      const status = (typeof getLinksModuleStatus === "function")
+        ? getLinksModuleStatus()
+        : { loaded: 0, total: 0 };
+      if (!transferAnnounced) {
+        sendChat(`Chaos Transfer: modules loaded ${status.loaded}/${status.total}.`);
+        transferAnnounced = true;
+      }
     } catch {
       // never break load
+      if (!transferAnnounced) {
+        const status = (typeof getLinksModuleStatus === "function")
+          ? getLinksModuleStatus()
+          : { loaded: 0, total: 0 };
+        sendChat(`Chaos Transfer: modules loaded ${status.loaded}/${status.total} (failed to start).`);
+        transferAnnounced = true;
+      }
     }
   }, 1);
 }
