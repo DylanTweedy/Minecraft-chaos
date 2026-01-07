@@ -1,0 +1,20 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:recipe_shaped": {
+    "description": { "identifier": "chaos:output_node" },
+    "tags": ["crafting_table"],
+    "pattern": [
+      "AEA",
+      "OHO",
+      "ARA"
+    ],
+    "key": {
+      "A": { "item": "minecraft:amethyst_shard" },
+      "E": { "item": "minecraft:ender_eye" },
+      "O": { "item": "minecraft:obsidian" },
+      "H": { "item": "minecraft:hopper" },
+      "R": { "item": "minecraft:redstone" }
+    },
+    "result": { "item": "chaos:output_node", "count": 1 }
+  }
+}

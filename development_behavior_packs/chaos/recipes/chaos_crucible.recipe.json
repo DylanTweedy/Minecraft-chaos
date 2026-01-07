@@ -1,0 +1,19 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:recipe_shaped": {
+    "description": { "identifier": "chaos:crucible" },
+    "tags": ["crafting_table"],
+    "pattern": [
+      "ESE",
+      "FCF",
+      "EFE"
+    ],
+    "key": {
+      "E": { "item": "chaos:exotic_alloy_lump" },
+      "S": { "item": "chaos:exotic_shard" },
+      "F": { "item": "chaos:exotic_fiber" },
+      "C": { "item": "minecraft:cauldron" }
+    },
+    "result": { "item": "chaos:crucible", "count": 1 }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:recipe_shaped": {
+    "description": { "identifier": "chaos:foundry" },
+    "tags": ["crafting_table"],
+    "pattern": [
+      "ASA",
+      "FBF",
+      "AEA"
+    ],
+    "key": {
+      "A": { "item": "chaos:exotic_alloy_lump" },
+      "S": { "item": "chaos:chaos_crystal_shard" },
+      "F": { "item": "chaos:flux_5" },
+      "B": { "item": "minecraft:blast_furnace" },
+      "E": { "item": "chaos:exotic_fiber" }
+    },
+    "result": { "item": "chaos:foundry", "count": 1 }
+  }
+}
