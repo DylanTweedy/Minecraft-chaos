@@ -13,6 +13,28 @@ const OUTPUT_ID = "chaos:output_node";
 const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
+const FURNACE_BLOCK_IDS = new Set([
+  "minecraft:furnace",
+  "minecraft:lit_furnace",
+  "minecraft:blast_furnace",
+  "minecraft:lit_blast_furnace",
+  "minecraft:smoker",
+  "minecraft:lit_smoker",
+]);
+const FURNACE_FUEL_FALLBACK_IDS = new Set([
+  "minecraft:coal",
+  "minecraft:charcoal",
+  "minecraft:coal_block",
+  "minecraft:blaze_rod",
+  "minecraft:lava_bucket",
+  "minecraft:stick",
+  "minecraft:bamboo",
+]);
+const FURNACE_SLOTS = {
+  input: 0,
+  fuel: 1,
+  output: 2,
+};
 const DP_BEAMS = "chaos:beams_v0_json";
 const DP_TRANSFERS = "chaos:transfers_v0_json";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
@@ -20,8 +42,9 @@ const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
 const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
 const MAX_STEPS = MAX_BEAM_LEN * 12;
 const PATH_WEIGHT_MAX_LEN = 6;
-const PATH_WEIGHT_RANDOM_MIN = 0.4;
-const PATH_WEIGHT_RANDOM_MAX = 1.6;
+const PATH_WEIGHT_LEN_EXP = 0.6;
+const PATH_WEIGHT_RANDOM_MIN = 0.5;
+const PATH_WEIGHT_RANDOM_MAX = 2.0;
 const CRYSTAL_FLUX_WEIGHT = 6.0;
 const CRYSTAL_ROUTE_MAX_NODES = 256;
 const SPEED_SCALE_MAX = 1.8;
@@ -658,7 +681,8 @@ export function createNetworkTransferController(deps, opts) {
     const keyId = `${containerKey}|${typeId}|${maxStack}`;
     if (insertCapacityCache.has(keyId)) return insertCapacityCache.get(keyId);
     if (debugEnabled) debugState.inventoryScans++;
-    const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack);
+    const info = resolveContainerInfoCached(containerKey);
+    const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack, info?.block);
     insertCapacityCache.set(keyId, capacity);
     return capacity;
   }
@@ -666,7 +690,8 @@ export function createNetworkTransferController(deps, opts) {
   function getContainerCapacityCached(containerKey, container) {
     if (totalCapacityCache.has(containerKey)) return totalCapacityCache.get(containerKey);
     if (debugEnabled) debugState.inventoryScans++;
-    const capacity = getContainerCapacityWithReservations(containerKey, container);
+    const info = resolveContainerInfoCached(containerKey);
+    const capacity = getContainerCapacityWithReservations(containerKey, container, info?.block);
     totalCapacityCache.set(containerKey, capacity);
     return capacity;
   }
@@ -799,22 +824,27 @@ export function createNetworkTransferController(deps, opts) {
       queueByContainer.set(containerKey, queue);
     }
     queue.push({ itemTypeId, amount, outputKey, reservedTypeId: reservedTypeId || itemTypeId });
-    fullContainers.add(containerKey);
+    const info = resolveContainerInfoCached(containerKey);
+    if (!isFurnaceBlock(info?.block)) fullContainers.add(containerKey);
   }
 
   function resolveContainerInfo(containerKey) {
     return resolveContainerInfoCached(containerKey);
   }
 
-  function getContainerCapacityWithReservations(containerKey, container) {
+  function getContainerCapacityWithReservations(containerKey, container, containerBlock) {
     try {
       if (!containerKey || !container) return 0;
+      const slots = getFurnaceSlots(container, containerBlock);
       const size = container.size;
       let stackRoom = 0;
       let emptySlots = 0;
 
-      for (let i = 0; i < size; i++) {
-        const it = container.getItem(i);
+      const indices = slots ? [slots.input, slots.fuel] : null;
+      const loopCount = indices ? indices.length : size;
+      for (let i = 0; i < loopCount; i++) {
+        const slot = indices ? indices[i] : i;
+        const it = container.getItem(slot);
         if (!it) {
           emptySlots++;
           continue;
@@ -872,7 +902,7 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      if (tryInsertAmount(info.container, job.itemTypeId, job.amount)) {
+      if (tryInsertAmountForContainer(info.container, info.block, job.itemTypeId, job.amount)) {
         queue.shift();
         releaseContainerSlot(containerKey, job.reservedTypeId || job.itemTypeId, job.amount);
         const outInfo = job.outputKey ? resolveBlockInfo(job.outputKey) : null;
@@ -883,7 +913,7 @@ export function createNetworkTransferController(deps, opts) {
           queueByContainer.delete(containerKey);
           fullContainers.delete(containerKey);
         }
-      } else {
+      } else if (!isFurnaceBlock(info.block)) {
         fullContainers.add(containerKey);
       }
       budget--;
@@ -1056,7 +1086,7 @@ export function createNetworkTransferController(deps, opts) {
     const inContainerKey = getContainerKey(inInfo.block);
 
     const inputFilter = getFilterForBlock(inBlock);
-    const pull = findRandomMatchingSlot(inContainer, inputFilter);
+    const pull = findInputSlotForContainer(inContainer, inInfo.block, inputFilter);
     if (!pull) return makeResult(false, "no_item");
 
     const inSlot = pull.slot;
@@ -1096,7 +1126,10 @@ export function createNetworkTransferController(deps, opts) {
     }
     if (candidates.length === 0) return makeResult(false, "no_options");
 
-    const available = getTotalCountForTypeCached(inContainerKey, inContainer, inStack.typeId);
+    const isFurnaceInput = isFurnaceBlock(inInfo.block);
+    const available = isFurnaceInput
+      ? Math.max(0, inStack.amount | 0)
+      : getTotalCountForTypeCached(inContainerKey, inContainer, inStack.typeId);
     while (candidates.length > 0) {
       const pick = pickWeightedRandomWithBias(candidates, (opt) => {
         const type = opt?.outputType || "output";
@@ -1173,7 +1206,7 @@ export function createNetworkTransferController(deps, opts) {
       const capacity = getInsertCapacityCached(cKey, cInfo.container, inStack.typeId, inStack);
       const amount = Math.min(desiredAmount, available, capacity);
       if (amount <= 0) {
-        if (getContainerCapacityCached(cKey, cInfo.container) <= 0) {
+        if (!isFurnaceBlock(cInfo.block) && getContainerCapacityCached(cKey, cInfo.container) <= 0) {
           fullContainers.add(cKey);
           sawFull = true;
         }
@@ -1216,7 +1249,11 @@ export function createNetworkTransferController(deps, opts) {
     const current = inContainer.getItem(inSlot);
     if (!current || current.typeId !== inStack.typeId || current.amount <= 0) return makeResult(false, "no_item");
 
-    if (!decrementInputSlotsForType(inContainer, inStack.typeId, transferAmount)) return makeResult(false, "no_item");
+    if (isFurnaceInput) {
+      if (!decrementInputSlotSafe(inContainer, inSlot, current, transferAmount)) return makeResult(false, "no_item");
+    } else {
+      if (!decrementInputSlotsForType(inContainer, inStack.typeId, transferAmount)) return makeResult(false, "no_item");
+    }
 
     const prismKey = findFirstPrismKeyInPath(dim, inputInfo.pos.dimId, pathInfo.path);
     const level = noteTransferAndGetLevel(inputKey, inBlock);
@@ -1394,7 +1431,7 @@ export function createNetworkTransferController(deps, opts) {
         if (info?.container) {
           let allInserted = true;
           for (const entry of itemsToInsert) {
-            if (!tryInsertAmount(info.container, entry.typeId, entry.amount)) {
+            if (!tryInsertAmountForContainer(info.container, info.block, entry.typeId, entry.amount)) {
               allInserted = false;
               enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, null, entry.typeId);
             }
@@ -1552,7 +1589,7 @@ export function createNetworkTransferController(deps, opts) {
 
     let allInserted = true;
     for (const entry of itemsToInsert) {
-      if (!tryInsertAmount(outContainerInfo.container, entry.typeId, entry.amount)) {
+      if (!tryInsertAmountForContainer(outContainerInfo.container, outContainerInfo.block, entry.typeId, entry.amount)) {
         allInserted = false;
         enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
       }
@@ -1754,7 +1791,7 @@ export function createNetworkTransferController(deps, opts) {
         }
         if (!scheduled) {
           if (cInfo?.container && containerKey) {
-            if (!tryInsertAmount(cInfo.container, entry.typeId, entry.amount)) {
+            if (!tryInsertAmountForContainer(cInfo.container, cInfo.block, entry.typeId, entry.amount)) {
               enqueuePendingForContainer(containerKey, entry.typeId, entry.amount, route.outputKey, entry.typeId);
             }
           } else {
@@ -2484,15 +2521,15 @@ function pickWeightedRandom(outputs) {
   if (outputs.length === 1) return outputs[0];
 
   let total = 0;
-  const weights = outputs.map((o) => {
-    const len = Array.isArray(o.path) ? o.path.length : 1;
-    const clamped = Math.min(Math.max(1, len), PATH_WEIGHT_MAX_LEN);
-    const base = 1 / clamped;
-    const jitter = PATH_WEIGHT_RANDOM_MIN + (Math.random() * (PATH_WEIGHT_RANDOM_MAX - PATH_WEIGHT_RANDOM_MIN));
-    const w = base * jitter;
-    total += w;
-    return w;
-  });
+    const weights = outputs.map((o) => {
+      const len = Array.isArray(o.path) ? o.path.length : 1;
+      const clamped = Math.min(Math.max(1, len), PATH_WEIGHT_MAX_LEN);
+      const base = 1 / Math.pow(clamped, PATH_WEIGHT_LEN_EXP);
+      const jitter = PATH_WEIGHT_RANDOM_MIN + (Math.random() * (PATH_WEIGHT_RANDOM_MAX - PATH_WEIGHT_RANDOM_MIN));
+      const w = base * jitter;
+      total += w;
+      return w;
+    });
 
   let r = Math.random() * total;
   for (let i = 0; i < outputs.length; i++) {
@@ -2508,16 +2545,16 @@ function pickWeightedRandomWithBias(outputs, getBias) {
   const biasFn = (typeof getBias === "function") ? getBias : (() => 1.0);
 
   let total = 0;
-  const weights = outputs.map((o) => {
-    const len = Array.isArray(o.path) ? o.path.length : 1;
-    const clamped = Math.min(Math.max(1, len), PATH_WEIGHT_MAX_LEN);
-    const base = 1 / clamped;
-    const jitter = PATH_WEIGHT_RANDOM_MIN + (Math.random() * (PATH_WEIGHT_RANDOM_MAX - PATH_WEIGHT_RANDOM_MIN));
-    const bias = Math.max(0.1, Number(biasFn(o)) || 1.0);
-    const w = base * jitter * bias;
-    total += w;
-    return w;
-  });
+    const weights = outputs.map((o) => {
+      const len = Array.isArray(o.path) ? o.path.length : 1;
+      const clamped = Math.min(Math.max(1, len), PATH_WEIGHT_MAX_LEN);
+      const base = 1 / Math.pow(clamped, PATH_WEIGHT_LEN_EXP);
+      const jitter = PATH_WEIGHT_RANDOM_MIN + (Math.random() * (PATH_WEIGHT_RANDOM_MAX - PATH_WEIGHT_RANDOM_MIN));
+      const bias = Math.max(0.1, Number(biasFn(o)) || 1.0);
+      const w = base * jitter * bias;
+      total += w;
+      return w;
+    });
 
   let r = Math.random() * total;
   for (let i = 0; i < outputs.length; i++) {
@@ -2720,6 +2757,106 @@ function filterOutputsByWhitelist(options, typeId, resolveBlockInfo, getFilterFo
   }
 }
 
+function isFurnaceBlock(block) {
+  try {
+    return !!block && FURNACE_BLOCK_IDS.has(block.typeId);
+  } catch (_) {
+    return false;
+  }
+}
+
+function getFurnaceSlots(container, block) {
+  if (!isFurnaceBlock(block)) return null;
+  if (!container || (container.size | 0) < 3) return null;
+  return FURNACE_SLOTS;
+}
+
+function makeProbeStack(typeId) {
+  try {
+    return new ItemStack(typeId, 1);
+  } catch (_) {
+    return null;
+  }
+}
+
+function isFuelStack(stack) {
+  try {
+    if (!stack || typeof stack.getComponent !== "function") return false;
+    if (stack.getComponent("minecraft:fuel")) return true;
+    if (stack.getComponent("minecraft:burn_duration")) return true;
+    if (typeof stack.getTags === "function") {
+      const tags = stack.getTags();
+      if (Array.isArray(tags)) {
+        if (tags.includes("minecraft:is_fuel")) return true;
+        if (tags.includes("minecraft:fuel")) return true;
+      }
+    }
+    return FURNACE_FUEL_FALLBACK_IDS.has(stack.typeId);
+  } catch (_) {
+    return false;
+  }
+}
+
+function getSlotInsertCapacity(container, slot, typeId, maxStack) {
+  try {
+    if (!container) return 0;
+    const it = container.getItem(slot);
+    if (!it) return Math.max(1, maxStack | 0);
+    if (it.typeId !== typeId) return 0;
+    const max = it.maxAmount || maxStack || 64;
+    return Math.max(0, max - (it.amount | 0));
+  } catch (_) {
+    return 0;
+  }
+}
+
+function tryInsertAmountIntoSlot(container, slot, typeId, amount, maxStack) {
+  try {
+    if (!container || !typeId) return false;
+    let remaining = Math.max(1, amount | 0);
+    if (remaining <= 0) return false;
+
+    const max = Math.max(1, maxStack | 0);
+    const it = container.getItem(slot);
+    if (!it) {
+      const add = Math.min(max, remaining);
+      try {
+        container.setItem(slot, new ItemStack(typeId, add));
+        remaining -= add;
+      } catch (_) {}
+    } else if (it.typeId === typeId) {
+      const current = it.amount | 0;
+      if (current < max) {
+        const add = Math.min(max - current, remaining);
+        const next = (typeof it.clone === "function") ? it.clone() : it;
+        next.amount = current + add;
+        try {
+          container.setItem(slot, next);
+          remaining -= add;
+        } catch (_) {}
+      }
+    }
+    return remaining <= 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function tryInsertAmountForContainer(container, block, typeId, amount) {
+  try {
+    const slots = getFurnaceSlots(container, block);
+    if (slots) {
+      const probe = makeProbeStack(typeId);
+      const maxStack = probe?.maxAmount || 64;
+      const targetSlot = isFuelStack(probe) ? slots.fuel : slots.input;
+      return tryInsertAmountIntoSlot(container, targetSlot, typeId, amount, maxStack);
+    }
+  } catch (_) {
+    // fall through
+  }
+  return tryInsertAmount(container, typeId, amount);
+}
+
 function findRandomNonEmptySlot(container) {
   try {
     const size = container.size;
@@ -2730,6 +2867,19 @@ function findRandomNonEmptySlot(container) {
     }
     if (candidates.length === 0) return null;
     return candidates[Math.floor(Math.random() * candidates.length)];
+  } catch (_) {
+    return null;
+  }
+}
+
+function findInputSlotForContainer(container, block, filterContainer) {
+  try {
+    const slots = getFurnaceSlots(container, block);
+    if (!slots) return findRandomMatchingSlot(container, filterContainer);
+    const it = container.getItem(slots.output);
+    if (!it || it.amount <= 0) return null;
+    if (!filterAllows(filterContainer, it.typeId)) return null;
+    return { slot: slots.output, stack: it };
   } catch (_) {
     return null;
   }
@@ -2880,16 +3030,27 @@ function canInsertOneWithReservations(containerKey, container, typeId) {
   }
 }
 
-function getInsertCapacityWithReservations(containerKey, container, typeId, stack) {
-  try {
-    const size = container.size;
-    let stackRoom = 0;
-    let emptySlots = 0;
-    const maxStack = Math.max(1, stack?.maxAmount || 64);
+  function getInsertCapacityWithReservations(containerKey, container, typeId, stack, containerBlock) {
+    try {
+      const size = container.size;
+      const slots = getFurnaceSlots(container, containerBlock);
+      if (slots) {
+        const probe = stack || makeProbeStack(typeId);
+        const maxStack = Math.max(1, probe?.maxAmount || 64);
+        const targetSlot = isFuelStack(probe) ? slots.fuel : slots.input;
+        const slotCapacity = getSlotInsertCapacity(container, targetSlot, typeId, maxStack);
+        const reserved = getReservedForContainer(containerKey);
+        const reservedForType = reserved.byType ? (reserved.byType.get(typeId) || 0) : 0;
+        return Math.max(0, slotCapacity - reservedForType);
+      }
 
-    for (let i = 0; i < size; i++) {
-      const it = container.getItem(i);
-      if (!it) {
+      let stackRoom = 0;
+      let emptySlots = 0;
+      const maxStack = Math.max(1, stack?.maxAmount || 64);
+
+      for (let i = 0; i < size; i++) {
+        const it = container.getItem(i);
+        if (!it) {
         emptySlots++;
         continue;
       }
