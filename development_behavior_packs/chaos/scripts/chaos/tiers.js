@@ -1,9 +1,13 @@
 // scripts/chaos/tiers.js
+import { getPrismTierFromTypeId, isPrismBlock } from "./features/links/transfer/config.js";
 
 function getTierFromBlock(block) {
   try {
-    const level = block?.permutation?.getState("chaos:level");
-    if (Number.isFinite(level)) return Math.max(1, Math.min(5, level | 0));
+    if (!block) return 1;
+    // Extract tier from block typeId
+    if (isPrismBlock(block)) {
+      return getPrismTierFromTypeId(block.typeId);
+    }
   } catch {
     // ignore
   }

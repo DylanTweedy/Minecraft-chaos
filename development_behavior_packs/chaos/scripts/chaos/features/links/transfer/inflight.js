@@ -3,7 +3,7 @@ import { MAX_STEPS } from "./config.js";
 import { loadInflight, saveInflight } from "./storage.js";
 import { resolveBlockInfoStatic } from "./adapter.js";
 import { getAttachedInventoryInfo } from "./inventory.js";
-import { getContainerKey } from "./keys.js";
+import { getContainerKey, getContainerKeyFromInfo } from "./keys.js";
 
 function sanitizeInflightEntry(entry) {
   try {
@@ -39,7 +39,7 @@ export function loadInflightStateFromWorld(world, inflight, cfg) {
       const outInfo = resolveBlockInfoStatic(world, clean.outputKey);
       if (outInfo?.block) {
         const cInfo = getAttachedInventoryInfo(outInfo.block, outInfo.dim);
-        if (cInfo?.block) clean.containerKey = getContainerKey(cInfo.block);
+        clean.containerKey = getContainerKeyFromInfo(cInfo);
       }
     }
     inflight.push(clean);

@@ -60,7 +60,7 @@ export function startTransferLoop(ctx) {
           perInputIntervalTicks: 20,
           orbStepTicks: 60,
           maxOrbFxPerTick: 160,
-          debugTransferStats: false,
+          debugTransferStats: true,
           maxInputsScannedPerTick: 12,
           maxQueuedInsertsPerTick: 2,
           maxFullChecksPerTick: 2,

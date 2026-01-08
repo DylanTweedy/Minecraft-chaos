@@ -1,15 +1,15 @@
 // scripts/chaos/systems/filterInteract.js
-// Right-click node filters using dynamic properties (no block inventory required).
+// Right-click prism filters using dynamic properties (no block inventory required).
 
 import { world } from "@minecraft/server";
 import { toggleFilterForBlock, clearFilterForBlock } from "../features/links/filters.js";
+import { isPrismBlock } from "../features/links/transfer/config.js";
 
 const WAND_ID = "chaos:wand";
-const INPUT_ID = "chaos:input_node";
-const OUTPUT_ID = "chaos:output_node";
 
-function isNodeBlock(id) {
-  return id === INPUT_ID || id === OUTPUT_ID;
+function isNodeBlock(id, block = null) {
+  if (block) return isPrismBlock(block);
+  return isPrismBlock({ typeId: id });
 }
 
 function showFeedback(player, message) {
@@ -34,7 +34,7 @@ export function startFilterInteract() {
       if (!player || player.typeId !== "minecraft:player") return;
 
       const block = ev?.block;
-      if (!block || !isNodeBlock(block.typeId)) return;
+      if (!block || !isNodeBlock(block.typeId, block)) return;
 
       const item = ev?.itemStack;
       const itemId = item?.typeId;
@@ -42,6 +42,16 @@ export function startFilterInteract() {
 
       // Prevent placement on nodes when using items to set filters.
       if (ev && "cancel" in ev) ev.cancel = true;
+
+      // Shift-right-click with block = place block without triggering filter
+      if (player.isSneaking && itemId && itemId !== "minecraft:air") {
+        // Check if it's a placeable block (basic check)
+        const isPlaceableBlock = !itemId.includes(":") || itemId.startsWith("minecraft:");
+        if (isPlaceableBlock) {
+          // Allow block placement - don't trigger filter
+          return;
+        }
+      }
 
       if (player.isSneaking && (!itemId || itemId === "minecraft:air")) {
         const cleared = clearFilterForBlock(world, block);
@@ -76,7 +86,7 @@ export function startFilterInteract() {
   world.afterEvents.playerBreakBlock.subscribe((ev) => {
     try {
       const brokenId = ev?.brokenBlockPermutation?.type?.id;
-      if (!isNodeBlock(brokenId)) return;
+      if (!isNodeBlock(brokenId, block)) return;
       const block = ev?.block;
       if (!block) return;
       clearFilterForBlock(world, block);

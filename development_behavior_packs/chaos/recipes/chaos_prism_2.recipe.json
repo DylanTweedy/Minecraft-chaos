@@ -1,0 +1,17 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:recipe_shaped": {
+    "description": { "identifier": "chaos:prism_2" },
+    "tags": ["crafting_table"],
+    "pattern": [
+      "F",
+      "P",
+      "F"
+    ],
+    "key": {
+      "P": { "item": "chaos:prism_1" },
+      "F": { "item": "chaos:flux_1" }
+    },
+    "result": { "item": "chaos:prism_2", "count": 1 }
+  }
+}

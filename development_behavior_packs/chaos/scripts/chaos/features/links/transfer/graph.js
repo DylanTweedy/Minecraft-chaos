@@ -1,19 +1,18 @@
 // scripts/chaos/features/links/transfer/graph.js
-import { BEAM_ID, INPUT_ID, OUTPUT_ID, PRISM_ID, CRYSTALLIZER_ID, MAX_BEAM_LEN } from "./config.js";
+import { BEAM_ID, CRYSTALLIZER_ID, MAX_BEAM_LEN, isPrismBlock } from "./config.js";
 
-export function getNodeType(id) {
-  if (id === INPUT_ID) return "input";
-  if (id === OUTPUT_ID) return "output";
-  if (id === PRISM_ID) return "prism";
+export function getNodeType(id, block = null) {
+  // Use block if provided for more accurate check
+  if (block && isPrismBlock(block)) return "prism";
+  if (isPrismBlock({ typeId: id })) return "prism";
   if (id === CRYSTALLIZER_ID) return "crystal";
   return null;
 }
 
 export function allowAdjacentNode(curType, nodeType) {
+  // All prisms can connect to each other and crystallizers
   if (curType === "prism" || nodeType === "prism") return true;
   if (curType === "crystal" || nodeType === "crystal") return true;
-  if (nodeType === "output") return true;
-  if (nodeType === "input") return true;
   return false;
 }
 
@@ -32,7 +31,7 @@ export function scanEdgeFromNode(dim, loc, dir, curNodeType) {
       continue;
     }
 
-    const nodeType = getNodeType(id);
+    const nodeType = getNodeType(id, b);
     if (nodeType) {
       if (path.length === 0 && !allowAdjacentNode(curNodeType, nodeType)) return null;
       return {

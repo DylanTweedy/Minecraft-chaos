@@ -27,11 +27,33 @@ function safeJsonStringify(v) {
 export function loadBeamsMap(world) {
   try {
     const raw = world.getDynamicProperty(DP_BEAMS);
+    if (typeof raw !== "string") return {};
+    
+    // Check if raw data looks truncated (common sign: ends mid-JSON)
+    const isTruncated = raw.length > 0 && !raw.trim().endsWith("}") && !raw.trim().endsWith("]");
+    
     const parsed = safeJsonParse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
+    if (!parsed || typeof parsed !== "object") {
+      // If we have raw data but parsing failed, it might be truncated
+      if (raw.length > 1000 && isTruncated) {
+        // Log warning - but we can't use console in Bedrock, so return empty
+        // The controller will detect this via size checks
+      }
+      return {};
+    }
     return parsed;
   } catch {
     return {};
+  }
+}
+
+export function saveBeamsMap(world, map) {
+  try {
+    const raw = safeJsonStringify(map);
+    if (typeof raw !== "string") return;
+    world.setDynamicProperty(DP_BEAMS, raw);
+  } catch {
+    // ignore
   }
 }
 

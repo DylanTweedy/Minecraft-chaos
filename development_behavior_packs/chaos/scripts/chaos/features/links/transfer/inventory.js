@@ -12,23 +12,198 @@ export function getAttachedInventoryInfo(nodeBlock, dimension) {
   try {
     const attachedDir = getAttachedDirectionFromStates(nodeBlock);
     if (attachedDir) {
+      // Check block first
       const adj = getNeighborBlock(nodeBlock, dimension, attachedDir);
-      const c = getInventoryContainer(adj);
-      if (c) return { container: c, block: adj };
+      if (adj) {
+        const c = getInventoryContainer(adj);
+        if (c) return { container: c, block: adj };
+      }
+      // Check for entity with inventory
+      const entityInfo = getNeighborInventoryEntity(dimension, nodeBlock.location, attachedDir);
+      if (entityInfo) return { container: entityInfo.container, block: null, entity: entityInfo.entity };
     }
 
     const dirs = ["north", "south", "east", "west", "up", "down"];
     const hits = [];
     for (const d of dirs) {
+      // Check block first
       const adj = getNeighborBlock(nodeBlock, dimension, d);
-      const c = getInventoryContainer(adj);
-      if (c) hits.push({ container: c, block: adj });
+      if (adj) {
+        const c = getInventoryContainer(adj);
+        if (c) hits.push({ container: c, block: adj, entity: null });
+      }
+      // Check for entity with inventory (only if no block found at this location)
+      if (!adj) {
+        const entityInfo = getNeighborInventoryEntity(dimension, nodeBlock.location, d);
+        if (entityInfo) hits.push({ container: entityInfo.container, block: null, entity: entityInfo.entity });
+      }
       if (hits.length > 1) break;
     }
     if (hits.length === 1) return hits[0];
     return null;
   } catch (_) {
     return null;
+  }
+}
+
+// Get ALL adjacent inventories for a prism (for multi-inventory support)
+export function getAllAdjacentInventories(prismBlock, dimension) {
+  try {
+    if (!prismBlock || !dimension) return [];
+    const inventories = [];
+    const checkedLocations = new Set();
+    
+    const dirs = ["north", "south", "east", "west", "up", "down"];
+    for (const d of dirs) {
+      const adj = getNeighborBlock(prismBlock, dimension, d);
+      if (adj) {
+        const locKey = `${adj.location.x},${adj.location.y},${adj.location.z}`;
+        if (checkedLocations.has(locKey)) continue;
+        checkedLocations.add(locKey);
+        
+        const c = getInventoryContainer(adj);
+        if (c) {
+          inventories.push({ container: c, block: adj, entity: null, direction: d });
+        }
+      }
+      
+      // Also check for entities at this location
+      const entityInfo = getNeighborInventoryEntity(dimension, prismBlock.location, d);
+      if (entityInfo && entityInfo.entity) {
+        const loc = entityInfo.entity.location;
+        const locKey = `${Math.floor(loc.x)},${Math.floor(loc.y)},${Math.floor(loc.z)}`;
+        if (!checkedLocations.has(locKey)) {
+          checkedLocations.add(locKey);
+          inventories.push({ container: entityInfo.container, block: null, entity: entityInfo.entity, direction: d });
+        }
+      }
+    }
+    
+    return inventories;
+  } catch (_) {
+    return [];
+  }
+}
+
+// Aggregate capacity across all inventories
+export function getTotalCapacityForType(inventories, typeId) {
+  try {
+    if (!Array.isArray(inventories) || inventories.length === 0) return 0;
+    let total = 0;
+    for (const invInfo of inventories) {
+      if (!invInfo?.container) continue;
+      total += getTotalCountForType(invInfo.container, typeId);
+      // Also calculate available space
+      const size = invInfo.container.size;
+      for (let i = 0; i < size; i++) {
+        const it = invInfo.container.getItem(i);
+        if (!it) {
+          total += 64; // Max stack size estimate
+        } else if (it.typeId === typeId) {
+          const max = it.maxAmount || 64;
+          total += Math.max(0, max - it.amount);
+        }
+      }
+    }
+    return total;
+  } catch (_) {
+    return 0;
+  }
+}
+
+// Get random item from all inventories (for unattuned push)
+export function getRandomItemFromInventories(inventories, filterSet) {
+  try {
+    if (!Array.isArray(inventories) || inventories.length === 0) return null;
+    
+    const candidates = [];
+    for (const invInfo of inventories) {
+      if (!invInfo?.container) continue;
+      const size = invInfo.container.size;
+      for (let i = 0; i < size; i++) {
+        const it = invInfo.container.getItem(i);
+        if (!it || it.amount <= 0) continue;
+        
+        // If filter exists, exclude filtered items (push non-filtered)
+        if (filterSet && filterSet.size > 0) {
+          if (filterSet.has(it.typeId)) continue; // Skip filtered items
+        }
+        
+        candidates.push({ 
+          container: invInfo.container, 
+          slot: i, 
+          stack: it,
+          inventoryIndex: inventories.indexOf(invInfo)
+        });
+      }
+    }
+    
+    if (candidates.length === 0) return null;
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    return pick;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Insert into random available inventory (prioritize existing stacks)
+export function tryInsertIntoInventories(inventories, typeId, amount, filterSet) {
+  try {
+    if (!Array.isArray(inventories) || inventories.length === 0) return false;
+    if (!typeId || amount <= 0) return false;
+    
+    // If filter exists, only insert filtered items (pull filtered)
+    if (filterSet && filterSet.size > 0) {
+      if (!filterSet.has(typeId)) return false; // Reject non-filtered items
+    }
+    
+    let remaining = amount;
+    const probe = new ItemStack(typeId, 1);
+    const maxStack = probe?.maxAmount || 64;
+    
+    // Shuffle inventories for randomness
+    const shuffled = [...inventories].sort(() => Math.random() - 0.5);
+    
+    // First pass: fill existing stacks
+    for (const invInfo of shuffled) {
+      if (!invInfo?.container || remaining <= 0) continue;
+      const size = invInfo.container.size;
+      for (let i = 0; i < size && remaining > 0; i++) {
+        const it = invInfo.container.getItem(i);
+        if (!it || it.typeId !== typeId) continue;
+        const max = it.maxAmount || maxStack;
+        if (it.amount >= max) continue;
+        
+        const add = Math.min(max - it.amount, remaining);
+        const next = (typeof it.clone === "function") ? it.clone() : it;
+        next.amount = it.amount + add;
+        
+        try {
+          invInfo.container.setItem(i, next);
+          remaining -= add;
+        } catch (_) {}
+      }
+    }
+    
+    // Second pass: fill empty slots
+    for (const invInfo of shuffled) {
+      if (!invInfo?.container || remaining <= 0) continue;
+      const size = invInfo.container.size;
+      for (let i = 0; i < size && remaining > 0; i++) {
+        const it = invInfo.container.getItem(i);
+        if (it) continue;
+        
+        const add = Math.min(maxStack, remaining);
+        try {
+          invInfo.container.setItem(i, new ItemStack(typeId, add));
+          remaining -= add;
+        } catch (_) {}
+      }
+    }
+    
+    return remaining <= 0;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -105,13 +280,67 @@ export function getNeighborBlock(block, dimension, dir) {
   }
 }
 
+export function getNeighborInventoryEntity(dimension, loc, dir) {
+  try {
+    if (!dimension || !loc) return null;
+    // Exclude player entities - transfer nodes shouldn't interact with player inventories
+    const EXCLUDED_ENTITY_TYPES = new Set([
+      "minecraft:player",
+      "minecraft:npc"
+    ]);
+    
+    let nx = loc.x, ny = loc.y, nz = loc.z;
+    switch (dir) {
+      case "north": nz -= 0.5; break;
+      case "south": nz += 0.5; break;
+      case "west": nx -= 0.5; break;
+      case "east": nx += 0.5; break;
+      case "down": ny -= 0.5; break;
+      case "up": ny += 0.5; break;
+      default: return null;
+    }
+    const searchLoc = { x: nx, y: ny, z: nz };
+    const entities = dimension.getEntities({ location: searchLoc, maxDistance: 1.0 });
+    for (const entity of entities) {
+      if (!entity) continue;
+      // Skip excluded entity types (players, NPCs)
+      try {
+        const typeId = entity.typeId;
+        if (EXCLUDED_ENTITY_TYPES.has(typeId)) continue;
+      } catch (_) {
+        continue;
+      }
+      try {
+        const inv = entity.getComponent("minecraft:inventory");
+        if (inv && inv.container) return { entity, container: inv.container };
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export function getInventoryContainer(block) {
   try {
     if (!block) return null;
+    // Check for inventory component on block
     const inv = block.getComponent("minecraft:inventory");
-    if (!inv) return null;
-    const c = inv.container;
-    return c || null;
+    if (inv && inv.container) return inv.container;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+export function getInventoryContainerFromEntity(entity) {
+  try {
+    if (!entity) return null;
+    const inv = entity.getComponent("minecraft:inventory");
+    if (inv && inv.container) return inv.container;
+    return null;
   } catch (_) {
     return null;
   }
@@ -119,6 +348,7 @@ export function getInventoryContainer(block) {
 
 export function isFurnaceBlock(block) {
   try {
+    if (!block) return false;
     return !!block && FURNACE_BLOCK_IDS.has(block.typeId);
   } catch (_) {
     return false;
@@ -126,7 +356,7 @@ export function isFurnaceBlock(block) {
 }
 
 export function getFurnaceSlots(container, block) {
-  if (!isFurnaceBlock(block)) return null;
+  if (!block || !isFurnaceBlock(block)) return null;
   if (!container || (container.size | 0) < 3) return null;
   return FURNACE_SLOTS;
 }

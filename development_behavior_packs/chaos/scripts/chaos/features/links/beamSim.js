@@ -1,7 +1,7 @@
 // scripts/chaos/beamSim.js
 import { world, system } from "@minecraft/server";
+import { isPrismBlock } from "./transfer/config.js";
 import {
-  INPUT_ID,
   BEAM_ID,
   INPUTS_PER_TICK,
   RELAYS_PER_TICK,
@@ -10,7 +10,7 @@ import {
 } from "./beam/config.js";
 import { loadBeamsMap, saveBeamsMap, parseKey, getDimensionById } from "./beam/storage.js";
 import { isBeamStillValid } from "./beam/validation.js";
-import { rebuildOrRemoveAllDeterministically, rebuildInputBeams, rebuildRelayBeams } from "./beam/rebuild.js";
+import { rebuildOrRemoveAllDeterministically, rebuildPrismBeams, rebuildRelayBeams } from "./beam/rebuild.js";
 import { registerBeamEvents } from "./beam/events.js";
 import {
   enqueueAdjacentBeams,
@@ -52,26 +52,28 @@ export function startBeamSimV0() {
       }
     }
 
-    let inputBudget = INPUTS_PER_TICK;
-    while (inputBudget-- > 0 && hasPendingInputs()) {
-      const inputKey = takePendingInput();
-      if (!inputKey) continue;
+    // Scan prisms for beam placement (all prisms can emit beams)
+    let prismBudget = INPUTS_PER_TICK; // Reuse budget constant
+    while (prismBudget-- > 0 && hasPendingInputs()) {
+      const prismKey = takePendingInput(); // Reuse queue for prisms
+      if (!prismKey) continue;
 
-      const entry = map[inputKey];
+      const entry = map[prismKey];
       if (!entry) continue;
 
       const dim = getDimensionById(world, entry.dimId);
       if (!dim) continue;
 
-      const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-      if (!ib || ib.typeId !== INPUT_ID) {
-        delete map[inputKey];
+      const pb = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
+      // Only prisms now
+      if (!pb || !isPrismBlock(pb)) {
+        delete map[prismKey];
         changed = true;
         continue;
       }
 
-      rebuildInputBeams(world, entry);
-      map[inputKey] = entry;
+      rebuildPrismBeams(world, entry);
+      map[prismKey] = entry;
       changed = true;
     }
 

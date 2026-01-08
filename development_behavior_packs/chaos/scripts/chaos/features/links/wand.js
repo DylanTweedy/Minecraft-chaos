@@ -6,8 +6,7 @@ export function handleWandUseOn(e, deps) {
   try {
     const {
       WAND_ID,
-      INPUT_ID,
-      OUTPUT_ID,
+      isPrismBlock,
 
       // state
       getPending,
@@ -48,10 +47,8 @@ export function handleWandUseOn(e, deps) {
     if (!block) return;
 
     const typeId = block.typeId;
-    const clickedType =
-      (typeId === INPUT_ID) ? "input" :
-      (typeId === OUTPUT_ID) ? "output" :
-      null;
+    // In unified system, all prisms work the same - wand can link any prism to any prism
+    const clickedType = isPrismBlock({ typeId }) ? "prism" : null;
 
     if (!clickedType) return;
 
@@ -74,9 +71,7 @@ export function handleWandUseOn(e, deps) {
       fxSelectInput(player, block, FX);
 
       player.sendMessage(
-        (clickedType === "input")
-          ? `§a[Chaos] Input selected: §f${makeKeyFromBlock(block)}§7 (now click an output)`
-          : `§d[Chaos] Output selected: §f${makeKeyFromBlock(block)}§7 (now click an input)`
+        `§a[Chaos] Prism selected: §f${makeKeyFromBlock(block)}§7 (now click another prism)`
       );
       return;
     }
@@ -87,19 +82,17 @@ export function handleWandUseOn(e, deps) {
       fxSelectInput(player, block, FX);
 
       player.sendMessage(
-        (clickedType === "input")
-          ? `§e[Chaos] Input→Input (no pair). Restarted: §f${makeKeyFromBlock(block)}§7 (now click an output)`
-          : `§e[Chaos] Output→Output (no pair). Restarted: §f${makeKeyFromBlock(block)}§7 (now click an input)`
+        `§e[Chaos] Same prism selected. Restarted: §f${makeKeyFromBlock(block)}§7 (now click another prism)`
       );
       return;
     }
 
-    // ---- Opposite types: toggle link ----
+    // ---- Link two prisms ----
     const inputKey =
-      (clickedType === "input") ? makeKeyFromBlock(block) : pendingToKey(pending);
+      (clickedType === "prism" && pending.type === "prism") ? pendingToKey(pending) : makeKeyFromBlock(block);
 
     const outputKey =
-      (clickedType === "output") ? makeKeyFromBlock(block) : pendingToKey(pending);
+      (clickedType === "prism" && pending.type === "prism") ? makeKeyFromBlock(block) : pendingToKey(pending);
 
     if (inputKey === outputKey) {
       player.sendMessage("§c[Chaos] Cannot link a node to itself.");
@@ -115,15 +108,13 @@ export function handleWandUseOn(e, deps) {
       savePairsToWorldSafe();
     }
 
-    const inputPos =
-      (clickedType === "input")
-        ? block.location
-        : { x: pending.x, y: pending.y, z: pending.z };
+    const inputPos = (clickedType === "prism" && pending.type === "prism")
+      ? { x: pending.x, y: pending.y, z: pending.z }
+      : block.location;
 
-    const outputPos =
-      (clickedType === "output")
-        ? block.location
-        : { x: pending.x, y: pending.y, z: pending.z };
+    const outputPos = (clickedType === "prism" && pending.type === "prism")
+      ? block.location
+      : { x: pending.x, y: pending.y, z: pending.z };
 
     let fxCfg = FX;
     if (removed) {

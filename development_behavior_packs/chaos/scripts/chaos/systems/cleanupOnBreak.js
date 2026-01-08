@@ -4,10 +4,7 @@ import { world, system } from "@minecraft/server";
 import { getPairsMap, savePairsToWorldSafe, isPersistenceEnabled } from "../features/links/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
 import { makeUnpairFx } from "../fx/presets.js";
-
-const INPUT_ID = "chaos:input_node";
-const OUTPUT_ID = "chaos:output_node";
-const PRISM_ID = "chaos:prism";
+import { isPrismBlock, getPrismTierFromTypeId, getPrismTypeIdForTier } from "../features/links/transfer/config.js";
 
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
@@ -122,10 +119,12 @@ function getNextTierDelta(count) {
   return Math.max(0, nextMin - Math.max(0, count | 0));
 }
 
-function getLevelFromPermutation(perm) {
+function getLevelFromPermutation(perm, block = null) {
   try {
-    const lvl = perm?.getState?.("chaos:level");
-    if (Number.isFinite(lvl)) return lvl | 0;
+    // Extract tier from block typeId if available
+    if (block && isPrismBlock(block)) {
+      return getPrismTierFromTypeId(block.typeId);
+    }
   } catch {
     // ignore
   }
@@ -133,9 +132,8 @@ function getLevelFromPermutation(perm) {
 }
 
 function getDropDpKey(typeId) {
-  if (typeId === INPUT_ID) return DP_INPUT_LEVELS;
-  if (typeId === OUTPUT_ID) return DP_OUTPUT_LEVELS;
-  if (typeId === PRISM_ID) return DP_PRISM_LEVELS;
+  // Unified system - all prisms use DP_PRISM_LEVELS
+  if (isPrismBlock({ typeId })) return DP_PRISM_LEVELS;
   return null;
 }
 
@@ -146,7 +144,7 @@ function getCountForBreak(typeId, key, perm) {
   const raw = map[key];
   const n = Number(raw);
   if (Number.isFinite(n) && n > 0) return n | 0;
-  const level = getLevelFromPermutation(perm);
+  const level = getLevelFromPermutation(perm, null); // Block not available here
   return getMinCountForLevel(level);
 }
 
@@ -464,7 +462,7 @@ export function startCleanupOnBreak() {
       if (!block) return;
 
       const brokenId = ev.brokenBlockPermutation?.type?.id;
-      if (brokenId !== INPUT_ID && brokenId !== OUTPUT_ID && brokenId !== PRISM_ID) return;
+      if (!isPrismBlock({ typeId: brokenId })) return;
 
       const dimId = block.dimension?.id;
       const loc = block.location;
@@ -494,7 +492,7 @@ export function startCleanupOnBreak() {
         if (!itemInfo || !itemInfo.stack) return;
 
         const typeId = itemInfo.stack.typeId;
-        if (typeId !== INPUT_ID && typeId !== OUTPUT_ID && typeId !== PRISM_ID) return;
+        if (!isPrismBlock({ typeId })) return;
 
         const pending = matchPendingDrop(loc, dimId, typeId);
         if (!pending) return;
@@ -523,7 +521,7 @@ export function startCleanupOnBreak() {
       const block = ev?.block;
       if (!block) return;
       const typeId = block.typeId;
-      if (typeId !== INPUT_ID && typeId !== OUTPUT_ID && typeId !== PRISM_ID) return;
+      if (!isPrismBlock(block)) return;
 
       const dimId = block.dimension?.id;
       const loc = block.location;
@@ -534,9 +532,14 @@ export function startCleanupOnBreak() {
       const count = readCountFromItem(item);
       const level = getLevelForCount(count);
 
+      // New system: replace block with appropriate tier instead of setting state
+      // No state preservation needed - prisms use same texture on all sides
       try {
-        const perm = block.permutation;
-        if (perm) block.setPermutation(perm.withState("chaos:level", level | 0));
+        const newTypeId = getPrismTypeIdForTier(level);
+        const dim = block.dimension;
+        if (dim && newTypeId !== typeId) {
+          dim.setBlock(loc, newTypeId);
+        }
       } catch {
         // ignore
       }

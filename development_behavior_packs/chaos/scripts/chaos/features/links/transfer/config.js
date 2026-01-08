@@ -1,11 +1,32 @@
 // scripts/chaos/features/links/transfer/config.js
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 
-const INPUT_ID = "chaos:input_node";
-const OUTPUT_ID = "chaos:output_node";
-const PRISM_ID = "chaos:prism";
+// CENTRALIZED PRISM ID LIST - Single source of truth for all prism block types
+const PRISM_IDS = ["chaos:prism_1", "chaos:prism_2", "chaos:prism_3", "chaos:prism_4", "chaos:prism_5"];
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
+
+// Helper functions for prism tier system
+function isPrismBlock(block) {
+  if (!block) return false;
+  const typeId = block.typeId;
+  return PRISM_IDS.includes(typeId);
+}
+
+function getPrismTierFromTypeId(typeId) {
+  if (!typeId) return 1;
+  const match = typeId.match(/^chaos:prism_(\d+)$/);
+  if (match) {
+    const tier = parseInt(match[1], 10);
+    return Math.max(1, Math.min(5, tier)); // Clamp to 1-5
+  }
+  return 1; // Default to tier 1
+}
+
+function getPrismTypeIdForTier(tier) {
+  const safeTier = Math.max(1, Math.min(5, Math.floor(tier || 1)));
+  return PRISM_IDS[safeTier - 1] || PRISM_IDS[0];
+}
 const FURNACE_BLOCK_IDS = new Set([
   "minecraft:furnace",
   "minecraft:lit_furnace",
@@ -41,19 +62,20 @@ const PATH_WEIGHT_RANDOM_MAX = 2.0;
 const CRYSTAL_FLUX_WEIGHT = 6.0;
 const CRYSTAL_ROUTE_MAX_NODES = 256;
 const SPEED_SCALE_MAX = 1.8;
-const PRISM_SPEED_BOOST_BASE = 1.0;
-const PRISM_SPEED_BOOST_PER_TIER = 0.08;
+const PRISM_SPEED_BOOST_BASE = 0.0; // Tier 1 has no boost
+const PRISM_SPEED_BOOST_PER_TIER = 0.05; // Each tier adds 5% boost (tier 2 = 5%, tier 5 = 20%)
 
 const DEFAULTS = {
-  maxTransfersPerTick: 4,
-  perInputIntervalTicks: 10,
+  maxTransfersPerTick: 4, // Budget for item transfers started per tick
+  maxSearchesPerTick: 8, // Budget for pathfinding searches per tick
+  perPrismIntervalTicks: 10, // Base interval between prism scans
   cacheTicks: 10,
   cacheTicksWithStamp: 60,
   maxVisitedPerSearch: 200,
   orbStepTicks: 20,
   maxOutputOptions: 6,
-  levelStep: 200,
-  prismLevelStep: 400,
+  levelStep: 2000, // Massively increased for natural progression
+  prismLevelStep: 4000, // Massively increased for natural progression
   maxLevel: 5,
   itemsPerOrbBase: 1,
   itemsPerOrbGrowth: 2,
@@ -67,20 +89,21 @@ const DEFAULTS = {
   levelUpBurstCount: 8,
   levelUpBurstRadius: 0.35,
   orbLifetimeScale: 0.5,
-  maxInputsScannedPerTick: 24,
+  maxPrismsScannedPerTick: 24, // Budget for prisms to scan per tick
   debugTransferStats: false,
   debugTransferStatsIntervalTicks: 100,
-  backoffBaseTicks: 10,
+  backoffBaseTicks: 10, // Base backoff when prism finds nothing
   backoffMaxTicks: 200,
   backoffMaxLevel: 6,
   maxFluxFxInFlight: 24,
   inflightSaveIntervalTicks: 40,
+  // Legacy - kept for compatibility
+  perInputIntervalTicks: 10,
+  maxInputsScannedPerTick: 24,
 };
 
 export {
-  INPUT_ID,
-  OUTPUT_ID,
-  PRISM_ID,
+  PRISM_IDS, // CENTRALIZED: Single source of truth for all prism block IDs
   CRYSTALLIZER_ID,
   BEAM_ID,
   FURNACE_BLOCK_IDS,
@@ -103,4 +126,7 @@ export {
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
   DEFAULTS,
+  isPrismBlock, // CENTRALIZED: Use this function to check if a block is a prism
+  getPrismTierFromTypeId, // CENTRALIZED: Use this to get tier from typeId
+  getPrismTypeIdForTier, // CENTRALIZED: Use this to get typeId from tier
 };

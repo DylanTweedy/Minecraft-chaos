@@ -5,7 +5,8 @@
       "identifier": "chaos:beam",
       "menu_category": { "category": "construction" },
       "states": {
-        "chaos:axis": ["x", "y", "z"]
+        "chaos:axis": ["x", "y", "z"],
+        "chaos:level": [1, 2, 3, 4, 5]
       }
     },
     "components": {
@@ -45,6 +46,71 @@
         "condition": "q.block_state('chaos:axis') == 'z'",
         "components": {
           "minecraft:transformation": { "rotation": [0, 90, 0] }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 1",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 2",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam2",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 3",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam3",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 4",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam4",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 5",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam5",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
         }
       }
     ]

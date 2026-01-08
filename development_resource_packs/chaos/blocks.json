@@ -1,18 +1,24 @@
 {
   "format_version": "1.19.30",
-  "chaos:input_node": {
-    "sound": "amethyst_block"
-  },
-  "chaos:output_node": {
-    "sound": "amethyst_block"
-  },
   "chaos:crucible": {
     "sound": "amethyst_block"
   },
   "chaos:foundry": {
     "sound": "amethyst_block"
   },
-  "chaos:prism": {
+  "chaos:prism_1": {
+    "sound": "amethyst_block"
+  },
+  "chaos:prism_2": {
+    "sound": "amethyst_block"
+  },
+  "chaos:prism_3": {
+    "sound": "amethyst_block"
+  },
+  "chaos:prism_4": {
+    "sound": "amethyst_block"
+  },
+  "chaos:prism_5": {
     "sound": "amethyst_block"
   },
   "chaos:crystallizer": {

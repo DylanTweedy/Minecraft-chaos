@@ -2,19 +2,22 @@
 import { ItemStack, MolangVariableMap } from "@minecraft/server";
 import {
   DEFAULTS,
-  INPUT_ID,
-  OUTPUT_ID,
-  PRISM_ID,
+  PRISM_IDS,
   CRYSTALLIZER_ID,
   CRYSTAL_FLUX_WEIGHT,
   MAX_STEPS,
   SPEED_SCALE_MAX,
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
+  DP_BEAMS,
+  isPrismBlock,
+  getPrismTierFromTypeId,
+  getPrismTypeIdForTier,
 } from "./config.js";
 import { mergeCfg } from "./utils.js";
 import {
   loadBeamsMap,
+  saveBeamsMap,
   loadInputLevels,
   saveInputLevels,
   loadOutputLevels,
@@ -23,19 +26,22 @@ import {
   savePrismLevels,
 } from "./storage.js";
 import { loadInflightStateFromWorld, persistInflightStateToWorld } from "./inflight.js";
-import { key, parseKey, getContainerKey } from "./keys.js";
+import { key, parseKey, getContainerKey, getContainerKeyFromInfo } from "./keys.js";
 import {
   getAttachedInventoryInfo,
+  getAllAdjacentInventories,
   getInventoryContainer,
   isFurnaceBlock,
   getFurnaceSlots,
   tryInsertAmountForContainer,
+  tryInsertIntoInventories,
   getTotalCountForType,
+  getRandomItemFromInventories,
   findInputSlotForContainer,
   decrementInputSlotSafe,
   decrementInputSlotsForType,
 } from "./inventory.js";
-import { getFilterContainer, filterOutputsByWhitelist } from "./filters.js";
+import { getFilterContainer, filterOutputsByWhitelist, getFilterSet } from "./filters.js";
 import {
   getInsertCapacityWithReservations,
   getReservedForContainer,
@@ -53,7 +59,8 @@ import {
   findDropLocation,
   pickWeightedRandomWithBias,
 } from "./path.js";
-import { findOutputRouteFromNode, findCrystallizerRouteFromOutput } from "./routes.js";
+import { findOutputRouteFromNode, findCrystallizerRouteFromOutput, findCrystallizerRouteFromPrism } from "./routes.js";
+import { makeDirs, scanEdgeFromNode } from "./graph.js";
 import { runTransferPipeline } from "./pipeline.js";
 import { getFilterSetForBlock } from "../filters.js";
 import { tryGenerateFluxOnTransfer, tryRefineFluxInTransfer, getFluxTier, isFluxTypeId } from "../../../flux.js";
@@ -223,8 +230,25 @@ export function createNetworkTransferController(deps, opts) {
       blockCache.set(blockKey, info);
       if (debugEnabled) debugState.blockLookups++;
       return info;
-    } catch {
+    } catch (err) {
+      blockCache.set(blockKey, null);
       return null;
+    }
+  }
+  
+  // Direct block lookup without cache (for debugging)
+  function resolveBlockInfoDirect(blockKey) {
+    try {
+      if (!blockKey) return null;
+      const pos = parseKey(blockKey);
+      if (!pos) return null;
+      const dim = world.getDimension(pos.dimId);
+      if (!dim) return { error: "dimension_not_found", dimId: pos.dimId };
+      const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
+      if (!block) return { error: "block_not_found", pos };
+      return { dim, block, pos };
+    } catch (err) {
+      return { error: "exception", message: err?.message || String(err) };
     }
   }
 
@@ -294,7 +318,10 @@ export function createNetworkTransferController(deps, opts) {
         if (s && typeof s === "object") return s;
       }
     } catch (_) {}
-    const level = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    // Get tier from block typeId
+    const level = isPrismBlock(block)
+      ? getPrismTierFromTypeId(block.typeId)
+      : 1;
     const scale = Math.pow(2, Math.max(0, level - 1));
     const interval = Math.max(1, Math.floor(cfg.perInputIntervalTicks / scale));
     return { intervalTicks: interval, amount: 1 };
@@ -307,6 +334,16 @@ export function createNetworkTransferController(deps, opts) {
     loadOutputLevelsState();
     loadPrismLevelsState();
     tickId = system.runInterval(onTick, 1);
+    
+    // Debug: confirm transfer system started
+    if (debugEnabled) {
+      try {
+        const msg = "[Transfer] Transfer system started! Debug enabled.";
+        for (const player of world.getAllPlayers()) {
+          if (typeof player.sendMessage === "function") player.sendMessage(msg);
+        }
+      } catch {}
+    }
   }
 
   function stop() {
@@ -493,11 +530,11 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      if (tryInsertAmountForContainer(info.container, info.block, job.itemTypeId, job.amount)) {
+      if (tryInsertAmountForContainer(info.container, info.block || null, job.itemTypeId, job.amount)) {
         queue.shift();
         releaseContainerSlot(containerKey, job.reservedTypeId || job.itemTypeId, job.amount);
         const outInfo = job.outputKey ? resolveBlockInfo(job.outputKey) : null;
-        if (outInfo?.block && outInfo.block.typeId === OUTPUT_ID) {
+        if (outInfo?.block && (isPrismBlock(outInfo.block) || outInfo.block.typeId === CRYSTALLIZER_ID)) {
           noteOutputTransfer(job.outputKey, outInfo.block);
         }
         if (queue.length === 0) {
@@ -569,48 +606,60 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     const scanStart = debugEnabled ? Date.now() : 0;
-    const inputKeys = getInputKeys();
-    if (inputKeys.length === 0) return;
+    const prismKeys = getPrismKeys();
+    // Prism count tracked in aggregated stats (postDebugStats)
+    if (prismKeys.length === 0) return;
 
-    if (cursor >= inputKeys.length) cursor = 0;
+    if (cursor >= prismKeys.length) cursor = 0;
     let scanned = 0;
-    let budget = cfg.maxTransfersPerTick;
+    let transferBudget = cfg.maxTransfersPerTick;
+    let searchBudget = cfg.maxSearchesPerTick;
     let transfersThisTick = 0;
     const scanLimit = Math.min(
-      inputKeys.length,
-      Math.max(1, cfg.maxInputsScannedPerTick | 0)
+      prismKeys.length,
+      Math.max(1, cfg.maxPrismsScannedPerTick | 0)
     );
 
-    while (budget > 0 && scanned < scanLimit) {
-      const inputKey = inputKeys[cursor];
-      cursor = (cursor + 1) % inputKeys.length;
+    while ((transferBudget > 0 || searchBudget > 0) && scanned < scanLimit) {
+      const prismKey = prismKeys[cursor];
+      cursor = (cursor + 1) % prismKeys.length;
       scanned++;
 
-      const allowedAt = nextAllowed.has(inputKey) ? nextAllowed.get(inputKey) : 0;
+      const allowedAt = nextAllowed.has(prismKey) ? nextAllowed.get(prismKey) : 0;
       if (nowTick < allowedAt) continue;
 
-      const result = attemptTransferOne(inputKey);
-      const didTransfer = !!result?.ok;
-      if (didTransfer) transfersThisTick++;
+      // Attempt transfer with budgeted searches
+      const result = attemptTransferForPrism(prismKey, searchBudget);
+      const searchesUsed = result?.searchesUsed || 0;
+      searchBudget -= searchesUsed;
+      
+      // Track attempts in stats, don't spam chat
 
-      const info = resolveBlockInfo(inputKey);
-      let interval = cfg.perInputIntervalTicks;
+      const didTransfer = !!result?.ok;
+      if (didTransfer) {
+        transfersThisTick++;
+        transferBudget--;
+      }
+
+      const info = resolveBlockInfo(prismKey);
+      let interval = cfg.perPrismIntervalTicks;
       if (info && info.block) {
         const s = getSpeed(info.block);
-        interval = Math.max(1, (s && s.intervalTicks) ? s.intervalTicks : cfg.perInputIntervalTicks);
+        interval = Math.max(1, (s && s.intervalTicks) ? s.intervalTicks : cfg.perPrismIntervalTicks);
       }
       if (!didTransfer) {
         const reason = result?.reason;
-        if (reason === "full" || reason === "no_options") {
-          const level = bumpBackoff(inputKey);
+        if (reason === "full" || reason === "no_options" || reason === "no_item" || reason === "no_search_budget") {
+          const level = bumpBackoff(prismKey);
           interval += getBackoffTicks(level);
         }
       } else {
-        clearBackoff(inputKey);
+        clearBackoff(prismKey);
       }
-      nextAllowed.set(inputKey, nowTick + interval);
+      nextAllowed.set(prismKey, nowTick + interval);
 
-      if (didTransfer) budget--;
+      // If we're out of budgets, stop scanning
+      if (transferBudget <= 0 && searchBudget <= 0) break;
     }
     if (debugEnabled) {
       debugState.inputsScanned += scanned;
@@ -632,29 +681,265 @@ export function createNetworkTransferController(deps, opts) {
       persistOutputLevelsIfNeeded();
       persistPrismLevelsIfNeeded();
     }
-    if (debugEnabled) postDebugStats(inputKeys.length);
+    if (debugEnabled) postDebugStats(prismKeys.length);
   }
 
-  function getInputKeys() {
+  function getPrismKeys() {
     try {
+      let stamp = null;
       if (typeof getNetworkStamp === "function") {
-        const stamp = getNetworkStamp();
+        stamp = getNetworkStamp();
         if (cachedInputKeys && cachedInputsStamp === stamp) return cachedInputKeys;
-        const map = loadBeamsMap(world);
-        cachedInputKeys = Object.keys(map || {});
-        cachedInputsStamp = stamp;
-        if (debugEnabled) debugState.inputMapReloads++;
-        return cachedInputKeys;
       }
-    } catch {
-      // ignore
+      
+      // Check raw dynamic property size first
+      let rawSize = 0;
+      let rawData = null;
+      try {
+        rawData = world.getDynamicProperty(DP_BEAMS);
+        rawSize = typeof rawData === "string" ? rawData.length : 0;
+      } catch {}
+      
+      const map = loadBeamsMap(world);
+      // Filter to only return actual prisms from beams map
+      const allKeys = Object.keys(map || {});
+      const prismKeys = [];
+      let foundCount = 0;
+      let missingCount = 0;
+      let invalidCount = 0;
+      let parseFailCount = 0;
+      
+      // Track map stats for aggregated debug output (no per-call messages)
+      
+      for (const k of allKeys) {
+        // Quick filter: check if entry has kind="prism" (faster than block lookup)
+        const entry = map[k];
+        const hasPrismKind = entry && typeof entry === "object" && entry.kind === "prism";
+        
+        // First check if key parses
+        const parsed = parseKey(k);
+        if (!parsed) {
+          parseFailCount++;
+          continue;
+        }
+        
+        // Skip block lookup if entry doesn't have prism kind (but still do lookup if kind is missing for backwards compat)
+        if (entry && typeof entry === "object" && entry.kind && entry.kind !== "prism") {
+          missingCount++;
+          continue;
+        }
+        
+        const info = resolveBlockInfoCached(k);
+        if (!info) {
+          invalidCount++;
+          // Track lookup failures in stats, don't spam chat
+          continue;
+        }
+        if (info && info.block && isPrismBlock(info.block)) {
+          prismKeys.push(k);
+          foundCount++;
+        } else {
+          missingCount++;
+          // Track wrong block types in stats, don't spam chat
+        }
+      }
+      
+      // Track stats for aggregated debug output
+      // Only show warnings for critical issues
+      if (debugEnabled && prismKeys.length === 0 && inflight.length === 0 && nowTick % (debugInterval * 5) === 0) {
+        // Only warn if no prisms AND no inflight transfers for extended period
+        try {
+          const msg = `[Transfer] WARNING: No prisms found in map (${allKeys.length} total keys). Check if prisms are registered.`;
+          for (const player of world.getAllPlayers()) {
+            if (typeof player.sendMessage === "function") player.sendMessage(msg);
+          }
+        } catch {}
+      }
+      
+      // Warn about large map size (potential DP limit issue)
+      if (rawSize > 100000 && nowTick % (debugInterval * 10) === 0) { // 100KB - warn every 10 debug intervals
+        try {
+          const warnMsg = `[Transfer] WARNING: Beams map is ${Math.round(rawSize/1024)}KB - may exceed DP size limit!`;
+          for (const player of world.getAllPlayers()) {
+            if (typeof player.sendMessage === "function") player.sendMessage(warnMsg);
+          }
+        } catch {}
+      }
+      
+      // If no prisms found in beams map but we have inflight transfers, there might be prisms not in the map
+      // This can happen if beams map gets cleared or prisms aren't registered yet
+      if (prismKeys.length === 0 && inflight.length > 0) {
+        // Try to find prisms from inflight transfer output keys
+        const seenKeys = new Set();
+        for (const job of inflight) {
+          if (job.outputKey && !seenKeys.has(job.outputKey)) {
+            seenKeys.add(job.outputKey);
+            const info = resolveBlockInfoCached(job.outputKey);
+            if (info && info.block && isPrismBlock(info.block)) {
+              prismKeys.push(job.outputKey);
+              foundCount++;
+            }
+          }
+          if (job.prismKey && !seenKeys.has(job.prismKey)) {
+            seenKeys.add(job.prismKey);
+            const info = resolveBlockInfoCached(job.prismKey);
+            if (info && info.block && isPrismBlock(info.block)) {
+              prismKeys.push(job.prismKey);
+              foundCount++;
+            }
+          }
+        }
+      }
+      
+      // Auto-cleanup stale entries if too many lookups are failing
+      // Run cleanup more aggressively if no prisms found (every 100 ticks = 5 seconds)
+      // Otherwise run every 600 ticks (30 seconds) if >50% of entries are stale
+      if (prismKeys.length === 0 && invalidCount > allKeys.length * 0.5 && nowTick % 100 === 0) {
+        cleanupStaleBeamsMapEntries();
+      } else if (invalidCount > allKeys.length * 0.5 && nowTick % 600 === 0) {
+        cleanupStaleBeamsMapEntries();
+      }
+      // Track high invalid count in stats, cleanup happens automatically
+      
+      if (typeof getNetworkStamp === "function" && stamp !== null) {
+        cachedInputKeys = prismKeys;
+        cachedInputsStamp = stamp;
+      }
+      if (debugEnabled) debugState.inputMapReloads++;
+      
+      // Prism count tracked in aggregated stats (postDebugStats) - no per-call messages
+      return prismKeys;
+    } catch (e) {
+      // Track errors in stats, don't spam chat (only show critical errors)
+      if (debugEnabled && nowTick % (debugInterval * 10) === 0) {
+        try {
+          const msg = `[Transfer] ERROR loading prisms: ${e?.message || "unknown"}`;
+          for (const player of world.getAllPlayers()) {
+            if (typeof player.sendMessage === "function") player.sendMessage(msg);
+          }
+        } catch {}
+      }
+      // Fallback: return empty array
+      return [];
     }
-    const map = loadBeamsMap(world);
-    return Object.keys(map || {});
+  }
+
+  // Cleanup function to remove stale entries from beams map
+  function cleanupStaleBeamsMapEntries() {
+    try {
+      const map = loadBeamsMap(world);
+      const allKeys = Object.keys(map || {});
+      if (allKeys.length === 0) return;
+      
+      let removed = 0;
+      let kept = 0;
+      const cleaned = {};
+      
+      for (const k of allKeys) {
+        const entry = map[k];
+        if (!entry || typeof entry !== "object") {
+          removed++;
+          continue;
+        }
+        
+        // Parse key to get coordinates
+        const parsed = parseKey(k);
+        if (!parsed) {
+          removed++;
+          continue;
+        }
+        
+        // Check if block exists and is a prism
+        const info = resolveBlockInfoDirect(k);
+        if (info && info.error) {
+          // Block doesn't exist or dimension invalid - remove entry
+          removed++;
+          continue;
+        }
+        
+        if (info && info.block && isPrismBlock(info.block)) {
+          // Valid prism - ensure connections array exists
+          if (!Array.isArray(entry.connections)) {
+            entry.connections = [];
+          }
+          cleaned[k] = entry;
+          kept++;
+        } else {
+          // Block exists but isn't a prism - remove entry
+          removed++;
+        }
+      }
+      
+      // Save cleaned map
+      if (removed > 0) {
+        saveBeamsMap(world, cleaned);
+        
+        // Clear caches so fresh lookups can happen
+        resetTickCaches();
+        
+        if (debugEnabled) {
+          try {
+            const msg = `[Transfer] Cleanup: Removed ${removed} stale entries, kept ${kept} valid prisms (caches cleared)`;
+            for (const player of world.getAllPlayers()) {
+              if (typeof player.sendMessage === "function") player.sendMessage(msg);
+            }
+          } catch {}
+        }
+      } else if (kept === 0 && allKeys.length > 0) {
+        // Map has entries but none are valid - might be completely stale
+        if (debugEnabled) {
+          try {
+            const msg = `[Transfer] Cleanup: All ${allKeys.length} entries were stale - map cleared`;
+            for (const player of world.getAllPlayers()) {
+              if (typeof player.sendMessage === "function") player.sendMessage(msg);
+            }
+          } catch {}
+        }
+        // Clear the entire map if all entries are invalid
+        saveBeamsMap(world, {});
+        resetTickCaches();
+      }
+    } catch (err) {
+      if (debugEnabled) {
+        try {
+          const msg = `[Transfer] Cleanup error: ${err?.message || String(err)}`;
+          for (const player of world.getAllPlayers()) {
+            if (typeof player.sendMessage === "function") player.sendMessage(msg);
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // Scan nearby area for prisms (disabled - too expensive, use aggregated stats instead)
+  function scanNearbyPrisms() {
+    // Disabled to reduce lag - use aggregated stats instead
+    return;
+  }
+
+  // Legacy function name
+  function getInputKeys() {
+    return getPrismKeys();
   }
 
   function resolveBlockInfo(inputKey) {
-    return resolveBlockInfoCached(inputKey);
+    // Try cached first
+    const cached = resolveBlockInfoCached(inputKey);
+    if (cached) return cached;
+    
+    // Fallback: try direct lookup if cache failed
+    try {
+      if (!inputKey) return null;
+      const pos = parseKey(inputKey);
+      if (!pos) return null;
+      const dim = world.getDimension(pos.dimId);
+      if (!dim) return null;
+      const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
+      if (!block) return null;
+      return { dim, block, pos };
+    } catch {
+      return null;
+    }
   }
 
   function makeResult(ok, reason) {
@@ -671,73 +956,156 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
+  // Unified push/pull transfer for prisms
+  function attemptTransferForPrism(prismKey, searchBudget) {
+    let searchesUsed = 0;
+    const prismInfo = resolveBlockInfo(prismKey);
+    if (!prismInfo) return { ...makeResult(false, "no_prism"), searchesUsed };
+
+    const dim = prismInfo.dim;
+    const prismBlock = prismInfo.block;
+    if (!prismBlock || !isPrismBlock(prismBlock)) return { ...makeResult(false, "no_prism"), searchesUsed };
+
+    // Get all adjacent inventories (multi-inventory support)
+    const inventories = getAllAdjacentInventories(prismBlock, dim);
+    if (!inventories || inventories.length === 0) {
+      // Track in stats, don't spam chat
+      return { ...makeResult(false, "no_container"), searchesUsed };
+    }
+
+    // Get filter for this prism (attunement)
+    const filter = getFilterForBlock(prismBlock);
+    const filterSet = filter ? (filter instanceof Set ? filter : getFilterSet(filter)) : null;
+    const hasFilter = filterSet && filterSet.size > 0;
+
+    // TRY PUSH: Extract items from inventories and send to network
+    // - If unattuned: push random items
+    // - If attuned: push items NOT in filter
+    const randomItem = getRandomItemFromInventories(inventories, filterSet);
+    if (randomItem && searchBudget > 0) {
+      const result = attemptPushTransfer(prismKey, prismBlock, dim, inventories, randomItem, filterSet, searchBudget);
+      if (result.ok) {
+        // Debug: successful push (show immediately)
+            // Track successful pushes in stats, don't spam chat
+        return result;
+      }
+      searchesUsed += result.searchesUsed || 0;
+      searchBudget -= result.searchesUsed || 0;
+      // Track failures in stats, don't spam chat
+    } else {
+      // Track no item/no budget in stats, don't spam chat
+    }
+
+    // TRY PULL: Request filtered items from network (only if attuned and no push happened)
+    if (hasFilter && searchBudget > 0) {
+      const result = attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget);
+      if (result.ok) return result;
+      searchesUsed += result.searchesUsed || 0;
+    }
+
+    return { ...makeResult(false, "no_transfer"), searchesUsed };
+  }
+
+  // Legacy function name
   function attemptTransferOne(inputKey) {
-    const inputInfo = resolveBlockInfo(inputKey);
-    if (!inputInfo) return makeResult(false, "no_input");
+    const result = attemptTransferForPrism(inputKey, cfg.maxSearchesPerTick);
+    return makeResult(result.ok, result.reason);
+  }
 
-    const inDim = inputInfo.dim;
-    const inBlock = inputInfo.block;
-    if (!inBlock || inBlock.typeId !== INPUT_ID) return makeResult(false, "no_input");
+  // Push transfer: extract items from this prism's inventories and send to other prisms
+  function attemptPushTransfer(prismKey, prismBlock, dim, inventories, itemSource, filterSet, searchBudget) {
+    let searchesUsed = 0;
+    if (searchBudget <= 0) return { ...makeResult(false, "no_search_budget"), searchesUsed };
 
-    const inInfo = getAttachedInventoryInfo(inBlock, inDim);
-    if (!inInfo || !inInfo.container || !inInfo.block) return makeResult(false, "no_container");
-    const inContainer = inInfo.container;
-    const inContainerKey = getContainerKey(inInfo.block);
+    // itemSource is { container, slot, stack, inventoryIndex }
+    const sourceContainer = itemSource.container;
+    const sourceSlot = itemSource.slot;
+    const sourceStack = itemSource.stack;
+    if (!sourceStack || sourceStack.amount <= 0) return { ...makeResult(false, "no_item"), searchesUsed };
 
-    const inputFilter = getFilterForBlock(inBlock);
-    const pull = findInputSlotForContainer(inContainer, inInfo.block, inputFilter);
-    if (!pull) return makeResult(false, "no_item");
+    const prismInfo = resolveBlockInfo(prismKey);
+    if (!prismInfo) return { ...makeResult(false, "no_prism"), searchesUsed };
 
-    const inSlot = pull.slot;
-    const inStack = pull.stack;
-    if (!inStack || inStack.amount <= 0) return makeResult(false, "no_item");
+    // Find path to target prism using pathfinder
+    searchesUsed = 1;
+    // Use findPathForInput (legacy name, but now works with prisms via pathfinder update)
+    if (typeof findPathForInput !== "function") {
+      return { ...makeResult(false, "no_pathfinder"), searchesUsed };
+    }
 
-    const options = (typeof findPathForInput === "function")
-      ? findPathForInput(inputKey, nowTick)
-      : null;
-    if (!options || !Array.isArray(options) || options.length === 0) return makeResult(false, "no_options");
+    const options = findPathForInput(prismKey, nowTick);
+    if (!options || !Array.isArray(options) || options.length === 0) {
+      // Debug: no paths found (show every 100 ticks to reduce spam)
+        // Track path finding failures in stats, don't spam chat
+      if (typeof invalidateInput === "function") invalidateInput(prismKey);
+      return { ...makeResult(false, "no_options"), searchesUsed };
+    }
+    
+    // Debug: paths found (show occasionally)
+    // Path finding stats tracked in aggregated output (no per-search messages)
 
-    const filteredOptions = filterOutputsByWhitelist(
-      options,
-      inStack.typeId,
-      resolveBlockInfo,
-      getFilterForBlock,
-      { OUTPUT_ID, CRYSTALLIZER_ID }
-    );
-    if (!filteredOptions || filteredOptions.length === 0) return makeResult(false, "no_options");
+    // Filter options to prioritize prisms that want this item (matching filters)
+    const filteredOptions = [];
+    for (const opt of options) {
+      if (!opt || !opt.outputKey) continue;
+      const targetInfo = resolveBlockInfo(opt.outputKey);
+      if (!targetInfo || !targetInfo.block) continue;
+
+      // Crystallizers can always accept flux
+      if (targetInfo.block.typeId === CRYSTALLIZER_ID) {
+        if (isFluxTypeId(sourceStack.typeId)) {
+          filteredOptions.push(opt);
+        }
+        continue;
+      }
+
+      // Prisms - check if they have space and matching filter
+      if (isPrismBlock(targetInfo.block)) {
+        const targetInventories = getAllAdjacentInventories(targetInfo.block, targetInfo.dim);
+        if (!targetInventories || targetInventories.length === 0) continue;
+
+        const targetFilter = getFilterForBlock(targetInfo.block);
+        const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
+        
+        // If target has filter, prioritize if this item matches (they want it)
+        // If target has no filter, they can accept any item
+        if (!targetFilterSet || targetFilterSet.size === 0 || targetFilterSet.has(sourceStack.typeId)) {
+          filteredOptions.push(opt);
+        }
+      }
+    }
+
+    if (filteredOptions.length === 0) {
+      if (typeof invalidateInput === "function") invalidateInput(prismKey);
+      return { ...makeResult(false, "no_options"), searchesUsed };
+    }
+
     if (debugEnabled) {
       debugState.outputOptionsTotal += filteredOptions.length;
       debugState.outputOptionsMax = Math.max(debugState.outputOptionsMax, filteredOptions.length);
     }
 
-    const dim = inputInfo.dim;
-    if (!dim) return makeResult(false, "no_input");
-
-    const isFlux = isFluxTypeId(inStack.typeId);
-
-    const previewLevel = getNextInputLevel(inputKey);
+    const isFlux = isFluxTypeId(sourceStack.typeId);
+    const previewLevel = getNextInputLevel(prismKey);
     let pathInfo = null;
     let outInfo = null;
     let outBlock = null;
-    let outContainerInfo = null;
+    let outInventories = null;
     let containerKey = null;
     let transferAmount = 0;
     let sawFull = false;
-    let outputType = "output";
+    let outputType = "prism";
 
     let candidates = filteredOptions.slice();
     if (!isFlux) {
-      candidates = candidates.filter((c) => (c?.outputType || "output") !== "crystal");
+      candidates = candidates.filter((c) => (c?.outputType || "prism") !== "crystal");
     }
-    if (candidates.length === 0) return makeResult(false, "no_options");
+    if (candidates.length === 0) return { ...makeResult(false, "no_options"), searchesUsed };
 
-    const isFurnaceInput = isFurnaceBlock(inInfo.block);
-    const available = isFurnaceInput
-      ? Math.max(0, inStack.amount | 0)
-      : getTotalCountForTypeCached(inContainerKey, inContainer, inStack.typeId);
+    const available = sourceStack.amount;
     while (candidates.length > 0) {
       const pick = pickWeightedRandomWithBias(candidates, (opt) => {
-        const type = opt?.outputType || "output";
+        const type = opt?.outputType || "prism";
         if (isFlux && type === "crystal") return CRYSTAL_FLUX_WEIGHT;
         return 1.0;
       });
@@ -758,13 +1126,13 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      const pickedType = pick.outputType || "output";
+      const pickedType = pick.outputType || "prism";
       if (pickedType === "crystal") {
         if (info.block.typeId !== CRYSTALLIZER_ID) {
           candidates.splice(candidates.indexOf(pick), 1);
           continue;
         }
-        const desiredAmount = getTransferAmount(previewLevel, inStack);
+        const desiredAmount = getTransferAmount(previewLevel, sourceStack);
         const amount = Math.min(desiredAmount, available);
         if (amount <= 0) {
           candidates.splice(candidates.indexOf(pick), 1);
@@ -773,124 +1141,221 @@ export function createNetworkTransferController(deps, opts) {
         pathInfo = pick;
         outInfo = info;
         outBlock = info.block;
-        outContainerInfo = null;
+        outInventories = null;
         containerKey = null;
         transferAmount = amount;
         outputType = "crystal";
         break;
       }
 
-      if (info.block.typeId !== OUTPUT_ID) {
+      if (!isPrismBlock(info.block)) {
         candidates.splice(candidates.indexOf(pick), 1);
         continue;
       }
 
-      const cInfo = getAttachedInventoryInfo(info.block, info.dim);
-      if (!cInfo || !cInfo.container || !cInfo.block) {
+      // Get target prism's inventories
+      const targetInventories = getAllAdjacentInventories(info.block, info.dim);
+      if (!targetInventories || targetInventories.length === 0) {
         candidates.splice(candidates.indexOf(pick), 1);
         continue;
       }
 
-      const cKey = getContainerKey(cInfo.block);
-      if (!cKey) {
-        candidates.splice(candidates.indexOf(pick), 1);
-        continue;
-      }
-      if (inContainerKey && cKey === inContainerKey) {
-        candidates.splice(candidates.indexOf(pick), 1);
-        continue;
-      }
+      // Check if we can insert into any of the target inventories (capacity check only, don't insert yet)
+      let foundTarget = false;
+      for (const targetInv of targetInventories) {
+        if (!targetInv.container) continue;
+        const targetContainerKey = getContainerKey(targetInv.entity || targetInv.block);
+        if (!targetContainerKey) continue;
 
-      if (fullContainers.has(cKey)) {
-        sawFull = true;
-        candidates.splice(candidates.indexOf(pick), 1);
-        continue;
-      }
+        // Skip if same container
+        const sourceContainerKey = getContainerKey(inventories[itemSource.inventoryIndex].entity || inventories[itemSource.inventoryIndex].block);
+        if (sourceContainerKey && targetContainerKey === sourceContainerKey) continue;
 
-      const desiredAmount = getTransferAmount(previewLevel, inStack);
-      const capacity = getInsertCapacityCached(cKey, cInfo.container, inStack.typeId, inStack);
-      const amount = Math.min(desiredAmount, available, capacity);
-      if (amount <= 0) {
-        if (!isFurnaceBlock(cInfo.block) && getContainerCapacityCached(cKey, cInfo.container) <= 0) {
-          fullContainers.add(cKey);
+        if (fullContainers.has(targetContainerKey)) {
           sawFull = true;
+          continue;
         }
-        candidates.splice(candidates.indexOf(pick), 1);
-        continue;
+
+        // Check capacity (don't insert yet - that happens during finalization)
+        const desiredAmount = getTransferAmount(previewLevel, sourceStack);
+        const capacity = getInsertCapacityWithReservations(targetContainerKey, targetInv.container, sourceStack.typeId, sourceStack, targetInv.block);
+        if (capacity >= desiredAmount) {
+          pathInfo = pick;
+          outInfo = info;
+          outBlock = info.block;
+          outInventories = [targetInv];
+          containerKey = targetContainerKey;
+          transferAmount = desiredAmount;
+          outputType = "prism";
+          foundTarget = true;
+          break;
+        }
       }
 
-      pathInfo = pick;
-      outInfo = info;
-      outBlock = info.block;
-      outContainerInfo = cInfo;
-      containerKey = cKey;
-      transferAmount = amount;
-      outputType = "output";
-      break;
+      if (foundTarget) break;
+      candidates.splice(candidates.indexOf(pick), 1);
     }
 
     if (!pathInfo || !outInfo || !outBlock) {
-      if (typeof invalidateInput === "function") invalidateInput(inputKey);
-      return makeResult(false, sawFull ? "full" : "no_options");
-    }
-    if (outputType === "output" && (!outContainerInfo || !containerKey)) {
-      if (typeof invalidateInput === "function") invalidateInput(inputKey);
-      return makeResult(false, sawFull ? "full" : "no_options");
+      if (typeof invalidateInput === "function") invalidateInput(prismKey);
+      return { ...makeResult(false, sawFull ? "full" : "no_options"), searchesUsed };
     }
 
+    // Debug: validate path before extraction
     if (!validatePathStart(dim, pathInfo.path)) {
-      if (typeof invalidateInput === "function") invalidateInput(inputKey);
-      return makeResult(false, "no_options");
+      if (debugEnabled) {
+        try {
+          const msg = `[Transfer] Path validation failed! Path length: ${pathInfo.path?.length || 0}`;
+          for (const player of world.getAllPlayers()) {
+            if (typeof player.sendMessage === "function") player.sendMessage(msg);
+          }
+        } catch {}
+      }
+      if (typeof invalidateInput === "function") invalidateInput(prismKey);
+      return { ...makeResult(false, "path_invalid"), searchesUsed };
     }
 
-    const suppressOrb = (outputType === "crystal" && isFluxTypeId(inStack.typeId));
-    const firstStep = pathInfo.path[0];
-    const firstBlock = getBlockCached(inputInfo.pos.dimId, firstStep) || inDim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
-    const nodePath = buildNodePathSegments(inDim, pathInfo.path, inputInfo.pos);
-    const travelPath = nodePath?.points || pathInfo.path;
-    const segmentLengths = nodePath?.lengths || null;
-      // Initial orb spawn disabled to avoid duplicate first-segment FX.
+    // Extract item from source inventory
+    const current = sourceContainer.getItem(sourceSlot);
+    if (!current || current.typeId !== sourceStack.typeId || current.amount < transferAmount) {
+      return { ...makeResult(false, "no_item"), searchesUsed };
+    }
 
-    const current = inContainer.getItem(inSlot);
-    if (!current || current.typeId !== inStack.typeId || current.amount <= 0) return makeResult(false, "no_item");
-
-    if (isFurnaceInput) {
-      if (!decrementInputSlotSafe(inContainer, inSlot, current, transferAmount)) return makeResult(false, "no_item");
+    // Decrement from source
+    const remaining = current.amount - transferAmount;
+    if (remaining > 0) {
+      try {
+        const newStack = current.clone();
+        newStack.amount = remaining;
+        sourceContainer.setItem(sourceSlot, newStack);
+      } catch {
+        return { ...makeResult(false, "no_item"), searchesUsed };
+      }
     } else {
-      if (!decrementInputSlotsForType(inContainer, inStack.typeId, transferAmount)) return makeResult(false, "no_item");
+      try {
+        sourceContainer.setItem(sourceSlot, null);
+      } catch {
+        return { ...makeResult(false, "no_item"), searchesUsed };
+      }
     }
 
-    const prismKey = findFirstPrismKeyInPath(dim, inputInfo.pos.dimId, pathInfo.path);
-    const level = noteTransferAndGetLevel(inputKey, inBlock);
+    const suppressOrb = (outputType === "crystal" && isFluxTypeId(sourceStack.typeId));
+    const firstStep = pathInfo.path[0];
+    const prismPos = prismInfo.pos;
+    const firstBlock = getBlockCached(prismPos.dimId, firstStep) || dim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
+    
+    // Use node-based path (segments between prisms) - orbs move between nodes, not block-by-block
+    // Visual speed scales with distance so all segments take the same time
+    const nodePath = buildNodePathSegments(dim, pathInfo.path, prismPos);
+    let travelPath = nodePath?.points || pathInfo.path;
+    const segmentLengths = nodePath?.lengths || null;
+
+    // Ensure path has at least 2 points (source and destination)
+    if (!travelPath || travelPath.length < 2) {
+      if (debugEnabled) {
+        try {
+          const msg = `[Transfer] Path too short! Length: ${travelPath?.length || 0}, using fallback`;
+          for (const player of world.getAllPlayers()) {
+            if (typeof player.sendMessage === "function") player.sendMessage(msg);
+          }
+        } catch {}
+      }
+      // Fallback: create a path with at least source and destination
+      const destPos = pathInfo.outputPos || (pathInfo.path && pathInfo.path[pathInfo.path.length - 1]);
+      if (destPos) {
+        travelPath = [
+          { x: prismPos.x, y: prismPos.y, z: prismPos.z },
+          { x: destPos.x, y: destPos.y, z: destPos.z }
+        ];
+        // For fallback, assume segment length of 1
+        if (!segmentLengths) {
+          segmentLengths = [1];
+        }
+      } else {
+        return { ...makeResult(false, "path_too_short"), searchesUsed };
+      }
+    }
+
+    const pathPrismKey = findFirstPrismKeyInPath(dim, prismPos.dimId, pathInfo.path);
+    const level = noteTransferAndGetLevel(prismKey, prismBlock);
+    // stepTicks is constant per segment - visual speed scales with distance automatically
+    const stepTicks = getOrbStepTicks(level);
+    
+    // Calculate initial speed boost from source prism tier
+    const sourceTier = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock.typeId) : 1;
+    const sourceBoost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, sourceTier) - 1) * PRISM_SPEED_BOOST_PER_TIER);
+    const initialSpeedScale = Math.min(SPEED_SCALE_MAX, 1.0 + sourceBoost);
+    
+    // Track transfer creation in debug stats (no per-transfer messages)
+    if (debugEnabled) {
+      debugState.transfersStarted++;
+    }
+    
+    // Calculate initial delay - time scales with segment length
+    // Visual speed is constant, so longer segments take longer
+    // stepTicks is time per block, so multiply by segment length
+    // Speed boost from source prism is already applied
+    const segLen = segmentLengths?.[0] || 1;
+    // Time per segment = time per block * number of blocks
+    // Apply speed boost to make higher tier prisms faster
+    const baseTicksPerBlock = Math.max(1, Math.floor(stepTicks / 4)); // Faster: divide by 4
+    const ticksPerBlock = Math.max(1, Math.floor(baseTicksPerBlock / Math.max(0.1, initialSpeedScale)));
+    const totalTicksForFirstSegment = ticksPerBlock * Math.max(1, segLen | 0);
+    
     inflight.push({
-      dimId: inputInfo.pos.dimId,
-      itemTypeId: inStack.typeId,
+      dimId: prismPos.dimId,
+      itemTypeId: sourceStack.typeId,
       amount: transferAmount,
       path: travelPath,
       stepIndex: 0,
-      stepTicks: getOrbStepTicks(level),
-      speedScale: 1.0,
+      stepTicks: stepTicks,
+      speedScale: initialSpeedScale,
       outputKey: pathInfo.outputKey,
       outputType: outputType,
       suppressOrb: suppressOrb,
       containerKey: containerKey,
-      prismKey: prismKey,
-      startPos: { x: inputInfo.pos.x, y: inputInfo.pos.y, z: inputInfo.pos.z },
+      prismKey: pathPrismKey,
+      startPos: { x: prismPos.x, y: prismPos.y, z: prismPos.z },
       level: level,
       segmentLengths: segmentLengths,
-      ticksUntilStep: 0,
-      refinedItems: (outputType === "crystal" && isFluxTypeId(inStack.typeId))
-        ? [{ typeId: inStack.typeId, amount: transferAmount }]
+      ticksUntilStep: Math.max(1, totalTicksForFirstSegment), // Constant time per segment
+      refinedItems: (outputType === "crystal" && isFluxTypeId(sourceStack.typeId))
+        ? [{ typeId: sourceStack.typeId, amount: transferAmount }]
         : null,
     });
-    reserveContainerSlot(containerKey, inStack.typeId, transferAmount);
+    
+    if (containerKey) {
+      reserveContainerSlot(containerKey, sourceStack.typeId, transferAmount);
+    }
     inflightDirty = true;
 
-    return makeResult(true, "ok");
+    return { ...makeResult(true, "ok"), searchesUsed };
+  }
+
+  // Pull transfer: request filtered items from network
+  function attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget) {
+    let searchesUsed = 0;
+    if (searchBudget <= 0) return { ...makeResult(false, "no_search_budget"), searchesUsed };
+    if (!filterSet || filterSet.size === 0) return { ...makeResult(false, "no_filter"), searchesUsed };
+
+    // For now, pull is complex - we'd need to scan the network for items
+    // This is a placeholder - can be enhanced later with request system
+    // For now, we'll just return false and let push handle transfers
+    return { ...makeResult(false, "pull_not_implemented"), searchesUsed };
   }
 
   function tickInFlight() {
     if (inflight.length === 0) return;
+
+    // Debug: inflight count (show every 100 ticks)
+    if (debugEnabled && nowTick % 100 === 0 && inflight.length > 0) {
+      try {
+        // Inflight count already shown in aggregated stats
+        for (const player of world.getAllPlayers()) {
+          if (typeof player.sendMessage === "function") player.sendMessage(msg);
+        }
+      } catch {}
+    }
 
     for (let i = inflight.length - 1; i >= 0; i--) {
       const job = inflight[i];
@@ -899,6 +1364,7 @@ export function createNetworkTransferController(deps, opts) {
 
       const nextIdx = job.stepIndex + 1;
       if (nextIdx >= job.path.length) {
+        // Debug: job completing (removed duplicate - finalizeJob already has debug)
         finalizeJob(job);
         inflight.splice(i, 1);
         inflightDirty = true;
@@ -912,7 +1378,7 @@ export function createNetworkTransferController(deps, opts) {
 
       const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
       const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
-      if (curBlock?.typeId === PRISM_ID && job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
+      if (isPrismBlock(curBlock) && job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
         applyPrismRefineToFxJob(job, curBlock);
       }
       if (job.stepIndex < job.path.length - 1) {
@@ -936,7 +1402,7 @@ export function createNetworkTransferController(deps, opts) {
       }
 
       if (job.stepIndex < job.path.length - 1) {
-        if (curBlock?.typeId === PRISM_ID) {
+        if (isPrismBlock(curBlock)) {
           notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
           applyPrismSpeedBoost(job, curBlock);
           if (isFluxTypeId(job.itemTypeId)) {
@@ -945,14 +1411,29 @@ export function createNetworkTransferController(deps, opts) {
         }
       }
 
-      const segLen = job.segmentLengths?.[job.stepIndex] || 1;
       const baseTicks = job.stepTicks || cfg.orbStepTicks;
+      // Apply speed boost to logical speed (faster movement = fewer ticks per segment)
       const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
-      if (!job.suppressOrb) {
-        spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, stepTicks);
+      
+      // Get segment length - determines how long this segment takes
+      // Visual speed is constant, so longer segments take longer
+      const segLen = job.segmentLengths?.[job.stepIndex] || 1;
+      
+      // Calculate logical time for this segment (in ticks)
+      // Use smaller ticks per block to make movement faster
+      const ticksPerBlock = Math.max(1, Math.floor(stepTicks / 4)); // Faster: divide by 4
+      const logicalTicks = ticksPerBlock * Math.max(1, segLen | 0);
+      
+      // Spawn orb only if we have valid blocks and the path is still valid
+      // Visual lifetime must match logical time to keep them in sync
+      if (!job.suppressOrb && isPathBlock(curBlock) && (nextIdx >= job.path.length || isPathBlock(nextBlock))) {
+        spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0);
       }
+      
       job.stepIndex = nextIdx;
-      job.ticksUntilStep = stepTicks * Math.max(1, segLen | 0);
+      // Time per segment scales with length (longer segments = more time)
+      // Speed boost already applied via stepTicks reduction
+      job.ticksUntilStep = logicalTicks;
       inflightStepDirty = true;
     }
   }
@@ -981,7 +1462,7 @@ export function createNetworkTransferController(deps, opts) {
       const next = job.path[nextIdx];
       const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
       const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
-      if (curBlock?.typeId === PRISM_ID) {
+      if (isPrismBlock(curBlock)) {
         applyPrismSpeedBoost(job, curBlock);
         if (job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
           applyPrismRefineToFxJob(job, curBlock);
@@ -990,11 +1471,14 @@ export function createNetworkTransferController(deps, opts) {
       const segLen = job.segmentLengths?.[job.stepIndex] || 1;
       const baseTicks = job.stepTicks || cfg.orbStepTicks;
       const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
-      if (spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, stepTicks) && debugEnabled) {
+      // Use smaller ticks per block to make movement faster
+      const ticksPerBlock = Math.max(1, Math.floor(stepTicks / 4)); // Faster: divide by 4
+      const logicalTicks = ticksPerBlock * Math.max(1, segLen | 0);
+      if (spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0) && debugEnabled) {
         debugState.fluxFxSpawns++;
       }
       job.stepIndex = nextIdx;
-      job.ticksUntilStep = stepTicks * Math.max(1, segLen | 0);
+      job.ticksUntilStep = logicalTicks;
     }
   }
 
@@ -1036,7 +1520,7 @@ export function createNetworkTransferController(deps, opts) {
         if (info?.container) {
           let allInserted = true;
           for (const entry of itemsToInsert) {
-            if (!tryInsertAmountForContainer(info.container, info.block, entry.typeId, entry.amount)) {
+            if (!tryInsertAmountForContainer(info.container, info.block || null, entry.typeId, entry.amount)) {
               allInserted = false;
               enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, null, entry.typeId);
             }
@@ -1079,22 +1563,32 @@ export function createNetworkTransferController(deps, opts) {
       }
     }
 
-    const bfsLabel = pathStats
-      ? ` bfs=${pathStats.searches}:${pathStats.visitedTotal}/${pathStats.visitedMax} out=${pathStats.outputsTotal}/${pathStats.outputsMax}`
-      : "";
+    // Cleaner, more readable network stats
+    const parts = [];
+    parts.push(`Prisms: ${inputCount}`);
+    parts.push(`Transfers: ${debugState.transfersStarted}`);
+    parts.push(`In-flight: ${inflight.length}`);
+    if (queuedEntries > 0) {
+      parts.push(`Queued: ${queuedEntries} items`);
+    }
+    
+    if (pathStats && pathStats.searches > 0) {
+      parts.push(`Paths: ${pathStats.searches} searches`);
+    }
+    
+    if (debugState.orbSpawns > 0) {
+      parts.push(`Orbs: ${debugState.orbSpawns}`);
+    }
+    
+    if (fluxFxInflight.length > 0) {
+      parts.push(`Flux FX: ${fluxFxInflight.length}`);
+    }
+    
+    if (debugState.msTotal > 5) {
+      parts.push(`Time: ${debugState.msTotal}ms`);
+    }
 
-    const msg =
-      `Chaos Transfer | inputs=${inputCount} scanned=${debugState.inputsScanned} ` +
-      `xfer=${debugState.transfersStarted} inflight=${inflight.length} ` +
-      `fluxFx=${fluxFxInflight.length}/${cfg.maxFluxFxInFlight | 0} ` +
-      `orbFx=${debugState.orbSpawns} orbFxSkip=${debugState.orbFxSkipped} fluxFxSp=${debugState.fluxFxSpawns} ` +
-      `mapReloads=${debugState.inputMapReloads} ` +
-      `fluxGen=${debugState.fluxGenHits}/${debugState.fluxGenChecks} refine=${debugState.fluxRefined}/${debugState.fluxMutated}/${debugState.fluxRefineCalls} ` +
-      `blk=${debugState.blockLookups} cont=${debugState.containerLookups} inv=${debugState.inventoryScans} dp=${debugState.dpSaves} ` +
-      `msQ=${debugState.msQueues} msIn=${debugState.msInflight} msFx=${debugState.msFluxFx} msScan=${debugState.msScan} msSave=${debugState.msPersist} msTot=${debugState.msTotal} ` +
-      `qC=${queuedContainers} qE=${queuedEntries} qI=${queuedItems} qMax=${queuedMax} ` +
-      `full=${fullContainers.size} opts=${debugState.outputOptionsTotal}/${debugState.outputOptionsMax}` +
-      bfsLabel;
+    const msg = `[Transfer] ${parts.join(" | ")}`;
 
     for (const player of world.getAllPlayers()) {
       try {
@@ -1110,10 +1604,21 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function finalizeJob(job) {
+    // Prevent double-finalization
+    if (job._finalized) {
+      // Track double-finalization in stats, don't spam chat
+      return;
+    }
+    job._finalized = true;
+    
+    // Track finalization in debug stats (no per-transfer messages)
+    // Stats are aggregated in postDebugStats()
+    
     if (job?.outputType === "crystal") {
       if (job.skipCrystalAdd) return;
       const outInfo = resolveBlockInfo(job.outputKey);
       if (!outInfo || !outInfo.block || outInfo.block.typeId !== CRYSTALLIZER_ID) {
+        // Track crystallizer missing in stats, don't spam chat
         const dim = getDimensionCached(job.dimId);
         if (dim) {
           const fallback = job.path[job.path.length - 1] || job.startPos;
@@ -1141,6 +1646,7 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     if (!job.containerKey) {
+      // Track in stats, don't spam chat
       const dim = getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
@@ -1150,6 +1656,7 @@ export function createNetworkTransferController(deps, opts) {
     }
     const outInfo = resolveBlockInfo(job.outputKey);
     if (!outInfo) {
+      // Track in stats, don't spam chat
       const dim = getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
@@ -1160,17 +1667,50 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     const outBlock = outInfo.block;
-    if (!outBlock || outBlock.typeId !== OUTPUT_ID) {
+    // Target is now a prism (or crystallizer)
+    if (!outBlock || (!isPrismBlock(outBlock) && outBlock.typeId !== CRYSTALLIZER_ID)) {
+      // Track in stats, don't spam chat
       dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId, job.amount);
       releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       return;
     }
 
-    const outContainerInfo = getAttachedInventoryInfo(outBlock, outInfo.dim);
-    if (!outContainerInfo || !outContainerInfo.container || !outContainerInfo.block) {
-      dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
-      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-      return;
+    // For prisms, use multi-inventory support
+    let outInventories = null;
+    let outContainerInfo = null; // Initialize for use in flux generation
+    if (isPrismBlock(outBlock)) {
+      outInventories = getAllAdjacentInventories(outBlock, outInfo.dim);
+      if (!outInventories || outInventories.length === 0) {
+        // Debug: no inventories
+        if (debugEnabled) {
+          try {
+            const msg = `[Transfer] No inventories adjacent to target prism! Dropping item`;
+            for (const player of world.getAllPlayers()) {
+              if (typeof player.sendMessage === "function") player.sendMessage(msg);
+            }
+          } catch {}
+        }
+        dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
+        releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+        return;
+      }
+      // For prisms, use first inventory for flux generation
+      if (outInventories.length > 0) {
+        outContainerInfo = {
+          container: outInventories[0].container,
+          block: outInventories[0].block,
+          entity: outInventories[0].entity
+        };
+      }
+    } else {
+      // Crystallizer - use old method for now
+      outContainerInfo = getAttachedInventoryInfo(outBlock, outInfo.dim);
+      if (!outContainerInfo || !outContainerInfo.container) {
+        dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
+        releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+        return;
+      }
+      outInventories = [{ container: outContainerInfo.container, block: outContainerInfo.block, entity: outContainerInfo.entity }];
     }
 
     let itemsToInsert = Array.isArray(job.refinedItems) && job.refinedItems.length > 0
@@ -1194,58 +1734,109 @@ export function createNetworkTransferController(deps, opts) {
 
     let allInserted = true;
     for (const entry of itemsToInsert) {
-      if (!tryInsertAmountForContainer(outContainerInfo.container, outContainerInfo.block, entry.typeId, entry.amount)) {
-        allInserted = false;
-        enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
+      // Use multi-inventory insert for prisms
+      if (isPrismBlock(outBlock)) {
+        // Get filter for target prism to determine if it wants this item
+        const targetFilter = getFilterForBlock(outBlock);
+        const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
+        const inserted = tryInsertIntoInventories(outInventories, entry.typeId, entry.amount, targetFilterSet);
+        if (!inserted) {
+          // Track insertion failures in stats, don't spam chat
+          allInserted = false;
+          enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
+        }
+      } else {
+        // Crystallizer - use old method
+        const outContainerInfo = { container: outInventories[0].container, block: outInventories[0].block, entity: outInventories[0].entity };
+        const inserted = tryInsertAmountForContainer(outContainerInfo.container, outContainerInfo.block || null, entry.typeId, entry.amount);
+        if (!inserted) {
+          // Track insertion failures in stats, don't spam chat
+          allInserted = false;
+          enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
+        }
       }
     }
 
     if (allInserted) {
-      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-      noteOutputTransfer(job.outputKey, outBlock);
-      if (debugEnabled) debugState.fluxGenChecks++;
-      const crystalRoute = findCrystallizerRouteFromOutput(outBlock, job.dimId);
-      const fluxGenerated = tryGenerateFluxOnTransfer({
-        outputBlock: outBlock,
-        destinationInventory: outContainerInfo.container,
-        inputBlock: job.startPos ? outInfo.dim.getBlock(job.startPos) : null,
-        path: job.path,
-        getAttachedInventoryInfo,
-        getBlockAt: (pos, dim) => {
-          if (!pos) return null;
-          const dimId = dim?.id || job.dimId;
-          return getBlockCached(dimId, pos);
-        },
-        scheduleFluxTransferFx: enqueueFluxTransferFx,
-        scheduleFluxTransferFxPositions: enqueueFluxTransferFxPositions,
-        getContainerKey,
-        transferLevel: job.level,
-        transferStepTicks: job.stepTicks || cfg.orbStepTicks,
-        transferSpeedScale: 1.0,
-        FX: FX,
-        consumeFluxOutput: !!crystalRoute,
-      });
-      if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
-      if (fluxGenerated > 0 && crystalRoute) {
-        if (typeof enqueueFluxTransferFxPositions === "function") {
-          enqueueFluxTransferFxPositions(
-            crystalRoute.path,
-            crystalRoute.outputIndex,
-            crystalRoute.targetIndex,
-            "chaos:flux_1",
-            job.level,
-            {
-              amount: fluxGenerated,
-              dimId: job.dimId,
-              suppressDrop: true,
-              refineOnPrism: true,
-              crystalKey: key(job.dimId, crystalRoute.crystalPos.x, crystalRoute.crystalPos.y, crystalRoute.crystalPos.z),
-              stepTicks: job.stepTicks || cfg.orbStepTicks,
-              speedScale: 1.0,
+      // Track successful insertions in stats, don't spam chat
+      
+      // Remove any pending queue entries for this container/item to prevent duplicate insertions
+      if (job.containerKey && queueByContainer.has(job.containerKey)) {
+        const queue = queueByContainer.get(job.containerKey);
+        if (queue && Array.isArray(queue)) {
+          // Remove entries matching this item type and output
+          for (let i = queue.length - 1; i >= 0; i--) {
+            const queuedJob = queue[i];
+            if (queuedJob && queuedJob.itemTypeId === job.itemTypeId && queuedJob.outputKey === job.outputKey) {
+              queue.splice(i, 1);
             }
-          );
+          }
+          if (queue.length === 0) {
+            queueByContainer.delete(job.containerKey);
+            fullContainers.delete(job.containerKey);
+          }
         }
       }
+      
+      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+      if (isPrismBlock(outBlock)) {
+        // For prisms, note transfer for leveling
+        noteOutputTransfer(job.outputKey, outBlock);
+      }
+      if (debugEnabled) debugState.fluxGenChecks++;
+      const crystalRoute = isPrismBlock(outBlock) 
+        ? findCrystallizerRouteFromPrism(outBlock, job.dimId)
+        : findCrystallizerRouteFromOutput(outBlock, job.dimId);
+      
+      // Only generate flux if we have a valid container
+      if (outContainerInfo && outContainerInfo.container) {
+        const fluxGenerated = tryGenerateFluxOnTransfer({
+          outputBlock: outBlock,
+          destinationInventory: outContainerInfo.container,
+          inputBlock: job.startPos ? outInfo.dim.getBlock(job.startPos) : null,
+          path: job.path,
+          getAttachedInventoryInfo,
+          getBlockAt: (pos, dim) => {
+            if (!pos) return null;
+            const dimId = dim?.id || job.dimId;
+            return getBlockCached(dimId, pos);
+          },
+          scheduleFluxTransferFx: enqueueFluxTransferFx,
+          scheduleFluxTransferFxPositions: enqueueFluxTransferFxPositions,
+          getContainerKey,
+          transferLevel: job.level,
+          transferStepTicks: job.stepTicks || cfg.orbStepTicks,
+          transferSpeedScale: 1.0,
+          FX: FX,
+          consumeFluxOutput: !!crystalRoute,
+        });
+        if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
+        if (fluxGenerated > 0 && crystalRoute) {
+          if (typeof enqueueFluxTransferFxPositions === "function") {
+            enqueueFluxTransferFxPositions(
+              crystalRoute.path,
+              crystalRoute.outputIndex,
+              crystalRoute.targetIndex,
+              "chaos:flux_1",
+              job.level,
+              {
+                amount: fluxGenerated,
+                dimId: job.dimId,
+                suppressDrop: true,
+                refineOnPrism: true,
+                crystalKey: key(job.dimId, crystalRoute.crystalPos.x, crystalRoute.crystalPos.y, crystalRoute.crystalPos.z),
+                stepTicks: job.stepTicks || cfg.orbStepTicks,
+                speedScale: 1.0,
+              }
+            );
+          }
+        }
+      }
+      return;
+    } else {
+      // Some items failed to insert - they're queued, but we still need to release the reservation
+      // The queued items will be inserted by tickOutputQueues()
+      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       return;
     }
   }
@@ -1257,7 +1848,7 @@ export function createNetworkTransferController(deps, opts) {
       for (const p of path) {
         if (!p) continue;
         const b = getBlockCached(dimId, p);
-        if (b?.typeId === PRISM_ID) prisms.push(b);
+        if (b && isPrismBlock(b)) prisms.push(b);
       }
       return prisms;
     } catch {
@@ -1351,10 +1942,13 @@ export function createNetworkTransferController(deps, opts) {
 
   function applyPrismSpeedBoost(job, prismBlock) {
     try {
-      const level = (prismBlock?.permutation?.getState("chaos:level") | 0) || 1;
+      const level = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock.typeId) : 1;
+      // Calculate additive boost: tier 1 = 0%, tier 2 = 5%, tier 3 = 10%, tier 4 = 15%, tier 5 = 20%
       const boost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, level) - 1) * PRISM_SPEED_BOOST_PER_TIER);
       const current = Math.max(0.1, Number(job.speedScale) || 1.0);
-      job.speedScale = Math.min(SPEED_SCALE_MAX, current * boost);
+      // Add boost to current speed (1.0 + boost), not multiply
+      // Tier 1: 1.0 + 0.0 = 1.0, Tier 2: 1.0 + 0.05 = 1.05, etc.
+      job.speedScale = Math.min(SPEED_SCALE_MAX, current + boost);
     } catch {
       // ignore
     }
@@ -1374,7 +1968,7 @@ export function createNetworkTransferController(deps, opts) {
       const outInfo = resolveBlockInfo(route.outputKey);
       const outBlock = outInfo?.block;
       const cInfo = outBlock ? getAttachedInventoryInfo(outBlock, outInfo.dim) : null;
-      const containerKey = cInfo?.block ? getContainerKey(cInfo.block) : null;
+      const containerKey = getContainerKeyFromInfo(cInfo);
 
       for (const entry of exotics) {
         let scheduled = false;
@@ -1396,7 +1990,7 @@ export function createNetworkTransferController(deps, opts) {
         }
         if (!scheduled) {
           if (cInfo?.container && containerKey) {
-            if (!tryInsertAmountForContainer(cInfo.container, cInfo.block, entry.typeId, entry.amount)) {
+            if (!tryInsertAmountForContainer(cInfo.container, cInfo.block || null, entry.typeId, entry.amount)) {
               enqueuePendingForContainer(containerKey, entry.typeId, entry.amount, route.outputKey, entry.typeId);
             }
           } else {
@@ -1440,15 +2034,21 @@ export function createNetworkTransferController(deps, opts) {
             nodeType: edge.nodeType,
           });
 
-          if (edge.nodeType === "output") {
+          // Target prisms (or crystallizers)
+          if (edge.nodeType === "prism" || edge.nodeType === "crystal") {
             const outBlock = dim.getBlock(edge.nodePos);
-            if (!outBlock || outBlock.typeId !== OUTPUT_ID) {
+            if (!outBlock || (!isPrismBlock(outBlock) && outBlock.typeId !== CRYSTALLIZER_ID)) {
               continue;
             }
-            const cInfo = getAttachedInventoryInfo(outBlock, dim);
-            const containerKey = cInfo?.block ? getContainerKey(cInfo.block) : null;
-            if (!cInfo?.container || !containerKey) {
-              continue;
+            
+            // For prisms, check if they have inventories
+            if (isPrismBlock(outBlock)) {
+              const inventories = getAllAdjacentInventories(outBlock, dim);
+              if (!inventories || inventories.length === 0) {
+                continue;
+              }
+            } else {
+              // Crystallizer - always valid
             }
             return buildOutputRoute(startKey, nextKey, parent);
           }
@@ -1501,87 +2101,13 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  function findCrystallizerRouteFromOutput(outputBlock, dimId) {
-    try {
-      if (!outputBlock || !dimId) return null;
-      const dim = outputBlock.dimension;
-      if (!dim) return null;
-      const startPos = outputBlock.location;
-      const startKey = key(dimId, startPos.x, startPos.y, startPos.z);
-
-      const queue = [];
-      let qIndex = 0;
-      const visited = new Set();
-      const parent = new Map();
-      queue.push({ nodePos: { x: startPos.x, y: startPos.y, z: startPos.z }, nodeType: "output", key: startKey });
-      visited.add(startKey);
-
-      while (qIndex < queue.length && visited.size < CRYSTAL_ROUTE_MAX_NODES) {
-        const cur = queue[qIndex++];
-        const dirs = makeDirs();
-        for (const d of dirs) {
-          const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
-          if (!edge) continue;
-          const nextKey = key(dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
-          if (visited.has(nextKey)) continue;
-          visited.add(nextKey);
-          parent.set(nextKey, {
-            prevKey: cur.key,
-            edgePath: edge.path,
-            nodePos: { x: edge.nodePos.x, y: edge.nodePos.y, z: edge.nodePos.z },
-            nodeType: edge.nodeType,
-          });
-          if (edge.nodeType === "crystal") {
-            return buildCrystallizerRoute(startKey, nextKey, parent);
-          }
-          queue.push({ nodePos: edge.nodePos, nodeType: edge.nodeType, key: nextKey });
-          if (visited.size >= CRYSTAL_ROUTE_MAX_NODES) break;
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  function buildCrystallizerRoute(startKey, targetKey, parent) {
-    try {
-      const steps = [];
-      let curKey = targetKey;
-      while (curKey && curKey !== startKey) {
-        const info = parent.get(curKey);
-        if (!info) break;
-        steps.push(info);
-        curKey = info.prevKey;
-      }
-      if (curKey !== startKey) return null;
-      steps.reverse();
-
-      const parsedStart = parseKey(startKey);
-      if (!parsedStart) return null;
-      const forward = [{ x: parsedStart.x, y: parsedStart.y, z: parsedStart.z }];
-      for (const step of steps) {
-        if (Array.isArray(step.edgePath) && step.edgePath.length > 0) {
-          for (const p of step.edgePath) forward.push({ x: p.x, y: p.y, z: p.z });
-        }
-        forward.push({ x: step.nodePos.x, y: step.nodePos.y, z: step.nodePos.z });
-      }
-      if (forward.length < 2) return null;
-      const reversed = forward.slice().reverse();
-      const crystalPos = reversed[0];
-      return {
-        path: reversed,
-        outputIndex: reversed.length - 1,
-        targetIndex: 0,
-        crystalPos: { x: crystalPos.x, y: crystalPos.y, z: crystalPos.z },
-      };
-    } catch {
-      return null;
-    }
+  // Legacy function - now works with prisms
+  function findCrystallizerRouteFromOutput(prismBlock, dimId) {
+    return findCrystallizerRouteFromPrism(prismBlock, dimId);
   }
 
   function noteTransferAndGetLevel(inputKey, block) {
-    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
     const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
     const stored = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
     const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
@@ -1645,23 +2171,13 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function updateBlockLevel(block, level) {
-    try {
-      if (!block || block.typeId !== INPUT_ID) return;
-      const perm = block.permutation;
-      if (!perm) return;
-      const current = perm.getState("chaos:level");
-      if ((current | 0) === (level | 0)) return;
-      const next = perm.withState("chaos:level", level | 0);
-      block.setPermutation(next);
-      spawnLevelUpBurst(block);
-    } catch {
-      // ignore
-    }
+    // This is now handled by updatePrismBlockLevel for unified prisms
+    return updatePrismBlockLevel(block, level);
   }
 
   function notePrismPassage(prismKey, block) {
     const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
-    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
     const minCount = getMinCountForLevel(blockLevel, prismStep);
     const stored = prismCounts.has(prismKey) ? prismCounts.get(prismKey) : 0;
     const storedLevel = getLevelForCount(stored, prismStep, cfg.maxLevel);
@@ -1675,21 +2191,36 @@ export function createNetworkTransferController(deps, opts) {
 
   function updatePrismBlockLevel(block, level) {
     try {
-      if (!block || block.typeId !== PRISM_ID) return;
-      const perm = block.permutation;
-      if (!perm) return;
-      const current = perm.getState("chaos:level");
-      if ((current | 0) === (level | 0)) return;
-      const next = perm.withState("chaos:level", level | 0);
-      block.setPermutation(next);
-      spawnLevelUpBurst(block);
+      if (!block || !isPrismBlock(block)) return;
+      const safeLevel = Math.max(1, Math.min(5, Math.floor(level || 1)));
+      const newTypeId = getPrismTypeIdForTier(safeLevel);
+      
+      // Check if already at correct tier
+      const currentTier = getPrismTierFromTypeId(block.typeId);
+      if (currentTier === safeLevel) return;
+      
+      // Get current block location and states
+      const loc = block.location;
+      const dim = block.dimension;
+      if (!dim || !loc) return;
+      
+      // Replace block with new tier (no state preservation needed - prisms use same texture on all sides)
+      try {
+        dim.setBlock(loc, newTypeId);
+      } catch {
+        return; // Failed to replace block
+      }
+      
+      // Spawn level up effect on the new block
+      const updatedBlock = dim.getBlock(loc);
+      if (updatedBlock) spawnLevelUpBurst(updatedBlock);
     } catch {
       // ignore
     }
   }
 
   function noteOutputTransfer(outputKey, block) {
-    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
     const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
     const stored = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
     const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
@@ -1701,19 +2232,10 @@ export function createNetworkTransferController(deps, opts) {
     updateOutputBlockLevel(block, level);
   }
 
+  // Legacy function - prisms are now handled by updatePrismBlockLevel
   function updateOutputBlockLevel(block, level) {
-    try {
-      if (!block || block.typeId !== OUTPUT_ID) return;
-      const perm = block.permutation;
-      if (!perm) return;
-      const current = perm.getState("chaos:level");
-      if ((current | 0) === (level | 0)) return;
-      const next = perm.withState("chaos:level", level | 0);
-      block.setPermutation(next);
-      spawnLevelUpBurst(block);
-    } catch {
-      // ignore
-    }
+    // This is now handled by updatePrismBlockLevel for unified prisms
+    return updatePrismBlockLevel(block, level);
   }
 
   function rebuildReservationsFromInflight() {
@@ -1725,7 +2247,7 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  function spawnOrbStep(dim, from, to, level, fromBlock, toBlock, itemTypeId, lengthSteps, stepTicksOverride) {
+  function spawnOrbStep(dim, from, to, level, fromBlock, toBlock, itemTypeId, lengthSteps, logicalTicks, speedScale = 1.0) {
     try {
       if (!FX || !FX.particleTransferItem) return false;
       let fxId = FX.particleTransferItem;
@@ -1748,13 +2270,31 @@ export function createNetworkTransferController(deps, opts) {
       if (!dir) return false;
 
       const molang = new MolangVariableMap();
-      const steps = Math.max(1, lengthSteps | 0);
-      const stepTicks = Math.max(1, Number(stepTicksOverride) || getOrbStepTicks(level));
-      const lifetime = Math.max(0.05, (stepTicks * steps) / 20);
-      const speed = getOrbVisualSpeed(from, to, dir, level, lifetime);
+      
+      // Calculate distance for this segment
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const dz = to.z - from.z;
+      const dist = Math.max(0.01, Math.sqrt(dx * dx + dy * dy + dz * dz));
+      
+      // Calculate visual lifetime from logical time to keep them in sync
+      // logicalTicks is the time in ticks, convert to seconds (20 ticks = 1 second)
+      const lifetime = Math.max(0.05, logicalTicks / 20);
+      
+      // Calculate visual speed from distance and lifetime
+      // This ensures visual and logical are perfectly in sync
+      // Speed will scale with distance to maintain constant appearance
+      const speed = dist / lifetime;
+      
+      // Get tier from source prism (fromBlock) for orb color tinting
+      // This ensures orbs are colored based on the tier of the prism that fired them
+      const sourceTier = fromBlock && isPrismBlock(fromBlock) 
+        ? getPrismTierFromTypeId(fromBlock.typeId)
+        : level; // Fallback to job level if fromBlock is not a prism
+      
       const color = isFluxTypeId(itemTypeId)
         ? { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
-        : getOrbColor(level);
+        : getOrbColor(sourceTier);
       if (typeof molang.setSpeedAndDirection === "function") {
         molang.setSpeedAndDirection("variable.chaos_move", speed, dir);
       }
@@ -1907,26 +2447,6 @@ export function createNetworkTransferController(deps, opts) {
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (!Number.isFinite(len) || len <= 0.0001) return null;
     return { x: dx / len, y: dy / len, z: dz / len };
-  }
-
-  function getOrbLifetimeSeconds(level) {
-    const stepTicks = Math.max(1, getOrbStepTicks(Math.max(1, level | 0)));
-    const base = stepTicks / 20;
-    const scale = Math.max(0.1, Number(cfg.orbLifetimeScale) || 0.5);
-    return Math.max(0.03, base * scale);
-  }
-
-  function getOrbVisualSpeed(from, to, dir, level, lifetimeSeconds) {
-    // Keep particle motion visually in sync with step cadence.
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const dz = to.z - from.z;
-    const dist = Math.max(0.01, Math.sqrt(dx * dx + dy * dy + dz * dz));
-    const life = Math.max(0.05, Number(lifetimeSeconds) || 0.05);
-    const baseSpeed = dist / life;
-    const minScale = Math.max(0.1, Number(cfg.orbVisualMinSpeedScale) || 0.6);
-    const maxScale = Math.max(minScale, Number(cfg.orbVisualMaxSpeedScale) || 1.0);
-    return Math.max(0.1, baseSpeed * Math.max(minScale, Math.min(maxScale, 1.0)));
   }
 
   function getOrbColor(level) {

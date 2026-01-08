@@ -1,7 +1,7 @@
 {
   "format_version": "1.20.0",
   "minecraft:recipe_shaped": {
-    "description": { "identifier": "chaos:prism" },
+    "description": { "identifier": "chaos:prism_1" },
     "tags": ["crafting_table"],
     "pattern": [
       "GQG",
@@ -13,6 +13,6 @@
       "Q": { "item": "minecraft:quartz" },
       "A": { "item": "minecraft:amethyst_shard" }
     },
-    "result": { "item": "chaos:prism", "count": 1 }
+    "result": { "item": "chaos:prism_1", "count": 1 }
   }
 }

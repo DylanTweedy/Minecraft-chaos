@@ -41,12 +41,47 @@ function safeJsonStringify(v) {
   }
 }
 
+// Migrate old map format to new format (one-time conversion)
+function migrateBeamsMap(world, map) {
+  let migrated = false;
+  const migratedMap = {};
+  
+  for (const [key, entry] of Object.entries(map)) {
+    if (!entry || typeof entry !== "object") continue;
+    
+    // Create new entry with only connections structure
+    const newEntry = {
+      dimId: entry.dimId,
+      x: entry.x,
+      y: entry.y,
+      z: entry.z,
+      kind: entry.kind || "prism",
+      connections: Array.isArray(entry.connections) ? entry.connections : []
+    };
+    
+    // Remove old beams/rays arrays - they're no longer stored
+    if (Array.isArray(entry.beams) || Array.isArray(entry.rays)) {
+      migrated = true;
+    }
+    
+    migratedMap[key] = newEntry;
+  }
+  
+  if (migrated) {
+    saveBeamsMap(world, migratedMap);
+  }
+  
+  return migrated ? migratedMap : map;
+}
+
 export function loadBeamsMap(world) {
   try {
     const raw = world.getDynamicProperty(DP_BEAMS);
     const parsed = safeJsonParse(raw);
     if (!parsed || typeof parsed !== "object") return {};
-    return parsed;
+    
+    // Migrate old format to new format (one-time)
+    return migrateBeamsMap(world, parsed);
   } catch {
     return {};
   }

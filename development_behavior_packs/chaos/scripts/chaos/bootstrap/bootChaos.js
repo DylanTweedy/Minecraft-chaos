@@ -26,8 +26,9 @@ export function bootChaos(deps) {
           // ignore
         }
 
+        const persistenceStatus = isPersistenceEnabled() ? "§aON" : "§cOFF";
         world.sendMessage(
-          `§b[Chaos] Pairs loaded. Persistence: ${isPersistenceEnabled() ? "§aON" : "§cOFF"}`
+          `§b[Chaos] Pairs loaded. Persistence: ${persistenceStatus}`
         );
 
         const map = getPairsMap();

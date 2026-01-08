@@ -1,5 +1,5 @@
 // scripts/chaos/features/links/transfer/pathfinder.js
-import { DEFAULTS, INPUT_ID } from "./config.js";
+import { DEFAULTS, isPrismBlock } from "./config.js";
 import { mergeCfg } from "./utils.js";
 import { key, parseKey } from "./keys.js";
 import { makeDirs, scanEdgeFromNode } from "./graph.js";
@@ -20,37 +20,40 @@ export function createTransferPathfinder(deps, opts) {
     outputsMax: 0,
   };
 
-  function invalidateInput(inputKey) {
-    cache.delete(inputKey);
+  function invalidatePrism(prismKey) {
+    cache.delete(prismKey);
   }
 
-  function findPathForInput(inputKey, nowTick) {
+  // Find paths from a prism to other prisms (bidirectional - can push or pull)
+  function findPathsForPrism(prismKey, nowTick, filterForPull = null) {
     const stamp = (typeof getNetworkStamp === "function") ? getNetworkStamp() : null;
-    const cached = cache.get(inputKey);
+    const cached = cache.get(prismKey);
     if (cached) {
       const ttl = (stamp == null || stamp !== cached.stamp)
         ? cfg.cacheTicks
         : Math.max(cfg.cacheTicks, cfg.cacheTicksWithStamp);
       const okTick = (nowTick - cached.tick) <= ttl;
       const okStamp = (stamp == null || stamp === cached.stamp);
-      if (okTick && okStamp) return cached.outputs;
+      // If filter changed, invalidate cache
+      const filterMatch = (filterForPull === null) === (cached.filterForPull === null);
+      if (okTick && okStamp && filterMatch) return cached.outputs;
     }
 
-    const parsed = parseKey(inputKey);
+    const parsed = parseKey(prismKey);
     if (!parsed) {
-      cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
+      cache.set(prismKey, { tick: nowTick, stamp, outputs: null, filterForPull });
       return null;
     }
 
     const dim = world.getDimension(parsed.dimId);
     if (!dim) {
-      cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
+      cache.set(prismKey, { tick: nowTick, stamp, outputs: null, filterForPull });
       return null;
     }
 
     const startBlock = dim.getBlock({ x: parsed.x, y: parsed.y, z: parsed.z });
-    if (!startBlock || startBlock.typeId !== INPUT_ID) {
-      cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
+    if (!startBlock || !isPrismBlock(startBlock)) {
+      cache.set(prismKey, { tick: nowTick, stamp, outputs: null, filterForPull });
       return null;
     }
 
@@ -58,10 +61,11 @@ export function createTransferPathfinder(deps, opts) {
     let visitedCount = 0;
     const queue = [];
     let qIndex = 0;
+    const startPos = { x: parsed.x, y: parsed.y, z: parsed.z };
     queue.push({
-      nodePos: { x: parsed.x, y: parsed.y, z: parsed.z },
-      nodeType: "input",
-      path: [],
+      nodePos: startPos,
+      nodeType: "prism",
+      path: [startPos], // Include starting position in path
     });
     visited.add(key(parsed.dimId, parsed.x, parsed.y, parsed.z));
     visitedCount++;
@@ -95,7 +99,8 @@ export function createTransferPathfinder(deps, opts) {
 
         const nextPath = cur.path.concat(edge.path, [edge.nodePos]);
 
-        if (edge.nodeType === "output" || edge.nodeType === "crystal") {
+        // Target prisms (or crystallizers) can receive items
+        if (edge.nodeType === "prism" || edge.nodeType === "crystal") {
           outputs.push({
             dimId: parsed.dimId,
             outputKey: nextKey,
@@ -134,12 +139,21 @@ export function createTransferPathfinder(deps, opts) {
     stats.outputsMax = Math.max(stats.outputsMax, outputs.length);
 
     if (outputs.length > 0) {
-      cache.set(inputKey, { tick: nowTick, stamp, outputs });
+      cache.set(prismKey, { tick: nowTick, stamp, outputs, filterForPull });
       return outputs;
     }
 
-    cache.set(inputKey, { tick: nowTick, stamp, outputs: null });
+    cache.set(prismKey, { tick: nowTick, stamp, outputs: null, filterForPull });
     return null;
+  }
+
+  // Legacy compatibility
+  function findPathForInput(inputKey, nowTick) {
+    return findPathsForPrism(inputKey, nowTick, null);
+  }
+
+  function invalidateInput(inputKey) {
+    return invalidatePrism(inputKey);
   }
 
   function getAndResetStats() {
@@ -158,5 +172,11 @@ export function createTransferPathfinder(deps, opts) {
     return snapshot;
   }
 
-  return { findPathForInput, invalidateInput, getAndResetStats };
+  return { 
+    findPathsForPrism, 
+    findPathForInput, // Legacy compatibility
+    invalidatePrism,
+    invalidateInput, // Legacy compatibility
+    getAndResetStats 
+  };
 }

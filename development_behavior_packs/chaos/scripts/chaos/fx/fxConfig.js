@@ -1,6 +1,5 @@
 // scripts/chaos/fx/fxConfig.js
 import { MolangVariableMap } from "@minecraft/server";
-
 import {
   SFX_SELECT_INPUT,
   SFX_PAIR_SUCCESS,
@@ -16,6 +15,25 @@ import {
   PARTICLE_UNPAIR_SUCCESS,
   PARTICLE_UNPAIR_BEAM,
 } from "../core/constants.js";
+// TEMP: Comment out to test if this import breaks loading
+// import { isPrismBlock, getPrismTierFromTypeId } from "../features/links/transfer/config.js";
+
+// TEMP: Define locally to test
+function isPrismBlock(block) {
+  if (!block) return false;
+  const typeId = block.typeId;
+  return typeId === "chaos:prism_1" || typeId === "chaos:prism_2" || typeId === "chaos:prism_3" || typeId === "chaos:prism_4" || typeId === "chaos:prism_5";
+}
+
+function getPrismTierFromTypeId(typeId) {
+  if (!typeId) return 1;
+  const match = typeId.match(/^chaos:prism_(\d+)$/);
+  if (match) {
+    const tier = parseInt(match[1], 10);
+    return Math.max(1, Math.min(5, tier));
+  }
+  return 1;
+}
 
 function makeColorMolang(r, g, b, a) {
   const m = new MolangVariableMap();
@@ -54,7 +72,8 @@ function applyBeamMotion(m, dir, dist, speed) {
 
 function getBlockLevel(block) {
   try {
-    const level = block?.permutation?.getState("chaos:level");
+    // Get tier from block typeId
+    const level = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
     if (Number.isFinite(level)) return level | 0;
   } catch {
     // ignore
@@ -65,11 +84,11 @@ function getBlockLevel(block) {
 function getOrbColor(level) {
   const lvl = Math.min(5, Math.max(1, level | 0));
   const palette = [
-    { r: 0.78, g: 0.8, b: 0.84, a: 1.0 }, // L1 iron
-    { r: 1.0, g: 0.78, b: 0.2, a: 1.0 },  // L2 gold
-    { r: 0.2, g: 0.9, b: 0.9, a: 1.0 },   // L3 diamond
-    { r: 0.2, g: 0.2, b: 0.24, a: 1.0 },  // L4 netherite
-    { r: 0.85, g: 0.65, b: 1.0, a: 1.0 }, // L5 masterwork
+    { r: 0.95, g: 0.95, b: 0.92, a: 1.0 }, // L1 off-white
+    { r: 0.2, g: 0.7, b: 1.0, a: 1.0 },    // L2 blue/cyan
+    { r: 1.0, g: 0.75, b: 0.2, a: 1.0 },   // L3 amber/gold
+    { r: 0.2, g: 0.9, b: 0.4, a: 1.0 },    // L4 emerald
+    { r: 0.75, g: 0.4, b: 0.95, a: 1.0 },  // L5 purple/violet
   ];
   return palette[lvl - 1] || palette[0];
 }

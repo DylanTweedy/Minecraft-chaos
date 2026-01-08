@@ -1,16 +1,20 @@
 // scripts/chaos/features/links/beam/validation.js
 import {
-  INPUT_ID,
-  OUTPUT_ID,
-  PRISM_ID,
   CRYSTALLIZER_ID,
   BEAM_ID,
   isPassThrough,
 } from "./config.js";
+import { isPrismBlock } from "../transfer/config.js";
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 import { beamAxisMatchesDir, getBeamAxis, beamDirsForAxis } from "./axis.js";
 
-function prismHasDirectSource(dim, loc) {
+function isRelayBlock(typeId, block = null) {
+  if (block && isPrismBlock(block)) return true;
+  if (isPrismBlock({ typeId })) return true;
+  return typeId === CRYSTALLIZER_ID;
+}
+
+function relayHasDirectSource(dim, loc) {
   const dirs = [
     { dx: 1, dy: 0, dz: 0 },
     { dx: -1, dy: 0, dz: 0 },
@@ -23,13 +27,17 @@ function prismHasDirectSource(dim, loc) {
     const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
     if (!b) continue;
     if (b.typeId === BEAM_ID && beamAxisMatchesDir(b, d.dx, d.dy, d.dz)) return true;
-    if (b.typeId === INPUT_ID || b.typeId === OUTPUT_ID || b.typeId === CRYSTALLIZER_ID) return true;
+    if (isRelayBlock(b.typeId)) return true;
   }
   return false;
 }
 
-function prismHasRelaySource(dim, loc) {
-  if (prismHasDirectSource(dim, loc)) return true;
+function prismHasDirectSource(dim, loc) {
+  return relayHasDirectSource(dim, loc);
+}
+
+function relayHasRelaySource(dim, loc) {
+  if (relayHasDirectSource(dim, loc)) return true;
 
   const dirs = [
     { dx: 1, dy: 0, dz: 0 },
@@ -41,10 +49,14 @@ function prismHasRelaySource(dim, loc) {
   ];
   for (const d of dirs) {
     const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
-    if (b?.typeId !== PRISM_ID && b?.typeId !== CRYSTALLIZER_ID) continue;
-    if (prismHasDirectSource(dim, b.location)) return true;
+    if (!b || !isRelayBlock(b.typeId, b)) continue;
+    if (relayHasDirectSource(dim, b.location)) return true;
   }
   return false;
+}
+
+function prismHasRelaySource(dim, loc) {
+  return relayHasRelaySource(dim, loc);
 }
 
 function beamValidFromInput(dim, inputLoc, dx, dy, dz, beamDist) {
@@ -57,7 +69,7 @@ function beamValidFromInput(dim, inputLoc, dx, dy, dz, beamDist) {
     if (!b) break;
 
     const id = b.typeId;
-    if (id === OUTPUT_ID || id === PRISM_ID || id === CRYSTALLIZER_ID || id === INPUT_ID) {
+    if (isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID) {
       farthestOutput = i;
       break;
     }
@@ -72,19 +84,19 @@ function beamValidFromInput(dim, inputLoc, dx, dy, dz, beamDist) {
   return farthestOutput >= beamDist;
 }
 
-function beamValidFromPrism(dim, prismLoc, dx, dy, dz, beamDist) {
-  if (!prismHasRelaySource(dim, prismLoc)) return false;
+function beamValidFromRelay(dim, relayLoc, dx, dy, dz, beamDist) {
+  if (!relayHasRelaySource(dim, relayLoc)) return false;
 
   let farthestNode = 0;
   for (let i = 1; i <= MAX_BEAM_LEN; i++) {
-    const x = prismLoc.x + dx * i;
-    const y = prismLoc.y + dy * i;
-    const z = prismLoc.z + dz * i;
+    const x = relayLoc.x + dx * i;
+    const y = relayLoc.y + dy * i;
+    const z = relayLoc.z + dz * i;
     const b = dim.getBlock({ x, y, z });
     if (!b) break;
 
     const id = b.typeId;
-    if (id === OUTPUT_ID || id === PRISM_ID || id === CRYSTALLIZER_ID || id === INPUT_ID) {
+    if (isRelayBlock(id)) {
       farthestNode = i;
       break;
     }
@@ -98,6 +110,10 @@ function beamValidFromPrism(dim, prismLoc, dx, dy, dz, beamDist) {
   return farthestNode >= beamDist;
 }
 
+function beamValidFromPrism(dim, prismLoc, dx, dy, dz, beamDist) {
+  return beamValidFromRelay(dim, prismLoc, dx, dy, dz, beamDist);
+}
+
 export function isBeamStillValid(dim, loc) {
   const b = dim.getBlock(loc);
   if (!b || b.typeId !== BEAM_ID) return false;
@@ -105,7 +121,12 @@ export function isBeamStillValid(dim, loc) {
   const axis = getBeamAxis(b);
   const dirs = beamDirsForAxis(axis);
 
+  // Check both directions along the beam axis
   for (const d of dirs) {
+    let foundValidSource = false;
+    let foundValidTarget = false;
+    
+    // Check forward direction
     for (let i = 1; i <= MAX_BEAM_LEN; i++) {
       const x = loc.x + d.dx * i;
       const y = loc.y + d.dy * i;
@@ -114,12 +135,19 @@ export function isBeamStillValid(dim, loc) {
       if (!scan) break;
 
       const id = scan.typeId;
-      if (id === INPUT_ID) {
-        if (beamValidFromInput(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) return true;
+      // All prisms are valid sources/targets
+      if (isPrismBlock({ typeId: id })) {
+        if (beamValidFromRelay(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) {
+          foundValidTarget = true;
+          break;
+        }
         break;
       }
-      if (id === PRISM_ID || id === CRYSTALLIZER_ID) {
-        if (beamValidFromPrism(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) return true;
+      if (isRelayBlock(id)) {
+        if (beamValidFromRelay(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) {
+          foundValidTarget = true;
+          break;
+        }
         break;
       }
       if (id === BEAM_ID) {
@@ -129,9 +157,43 @@ export function isBeamStillValid(dim, loc) {
       if (isPassThrough(id)) continue;
       break;
     }
+    
+    // Check backward direction
+    for (let i = 1; i <= MAX_BEAM_LEN; i++) {
+      const x = loc.x - d.dx * i;
+      const y = loc.y - d.dy * i;
+      const z = loc.z - d.dz * i;
+      const scan = dim.getBlock({ x, y, z });
+      if (!scan) break;
+
+      const id = scan.typeId;
+      // All prisms are valid sources/targets
+      if (isPrismBlock({ typeId: id })) {
+        if (beamValidFromRelay(dim, scan.location, d.dx, d.dy, d.dz, i)) {
+          foundValidSource = true;
+          break;
+        }
+        break;
+      }
+      if (isRelayBlock(id)) {
+        if (beamValidFromRelay(dim, scan.location, d.dx, d.dy, d.dz, i)) {
+          foundValidSource = true;
+          break;
+        }
+        break;
+      }
+      if (id === BEAM_ID) {
+        if (beamAxisMatchesDir(scan, -d.dx, -d.dy, -d.dz)) continue;
+        break;
+      }
+      if (isPassThrough(id)) continue;
+      break;
+    }
+    
+    if (foundValidSource && foundValidTarget) return true;
   }
 
   return false;
 }
 
-export { prismHasRelaySource, prismHasDirectSource };
+export { prismHasRelaySource, prismHasDirectSource, relayHasRelaySource, relayHasDirectSource, isRelayBlock };

@@ -6,11 +6,9 @@ import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 import { getCrystalState } from "../crystallizer.js";
+import { isPrismBlock, getPrismTierFromTypeId } from "../features/links/transfer/config.js";
 
 const WAND_ID = "chaos:wand";
-const INPUT_ID = "chaos:input_node";
-const OUTPUT_ID = "chaos:output_node";
-const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
@@ -160,7 +158,7 @@ function showWandStats(player) {
   if (!block) return;
 
   const id = block.typeId;
-  if (id !== INPUT_ID && id !== OUTPUT_ID && id !== PRISM_ID && id !== CRYSTALLIZER_ID) return;
+  if (!isPrismBlock({ typeId: id }) && id !== CRYSTALLIZER_ID) return;
 
   const loc = block.location;
   const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
@@ -177,23 +175,18 @@ function showWandStats(player) {
     }
     return;
   }
+  // Unified system - all prisms use prism counts
   let count = null;
-  if (id === INPUT_ID) {
-    const counts = getInputCountsCached();
-    count = (counts && counts[key] != null) ? Number(counts[key]) : null;
-  } else if (id === OUTPUT_ID) {
-    const counts = getOutputCountsCached();
-    count = (counts && counts[key] != null) ? Number(counts[key]) : null;
-  } else if (id === PRISM_ID) {
+  if (isPrismBlock({ typeId: id })) {
     const counts = getPrismCountsCached();
     count = (counts && counts[key] != null) ? Number(counts[key]) : null;
   }
 
   const level = Number.isFinite(count)
     ? getLevelForCount(count)
-    : (block.permutation?.getState("chaos:level") || 1);
+    : (isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1);
 
-  const typeLabel = (id === INPUT_ID) ? "Input" : (id === OUTPUT_ID ? "Output" : "Prism");
+  const typeLabel = "Prism";
   const countLabel = Number.isFinite(count) ? `${count}` : "n/a";
   const nextLabel = Number.isFinite(count)
     ? (getNextTierDelta(count) > 0 ? `${getNextTierDelta(count)}` : "max")

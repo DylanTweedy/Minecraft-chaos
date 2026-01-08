@@ -64,7 +64,8 @@ export function filterOutputsByWhitelist(options, typeId, resolveBlockInfo, getF
         allowAll.push(opt);
         continue;
       }
-      if (outInfo.block.typeId !== ids.OUTPUT_ID) continue;
+      // Target prisms (unified system)
+      if (!ids.isPrismBlock(outInfo.block)) continue;
       const filter = (typeof getFilterForBlock === "function")
         ? getFilterForBlock(outInfo.block)
         : getFilterContainer(outInfo.block);

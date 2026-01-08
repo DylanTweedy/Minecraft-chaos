@@ -1,5 +1,6 @@
 // scripts/chaos/features/links/beam/events.js
-import { INPUT_ID, OUTPUT_ID, PRISM_ID, CRYSTALLIZER_ID, BEAM_ID, isPassThrough, EMIT_RETRY_TICKS } from "./config.js";
+import { CRYSTALLIZER_ID, BEAM_ID, isPassThrough, EMIT_RETRY_TICKS } from "./config.js";
+import { isPrismBlock } from "../transfer/config.js";
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 import { key, loadBeamsMap, saveBeamsMap } from "./storage.js";
 import { bumpNetworkStamp } from "../networkStamp.js";
@@ -7,8 +8,8 @@ import {
   enqueueAdjacentBeams,
   enqueueAdjacentPrisms,
   enqueueBeamsInLine,
-  enqueueInputForRescan,
   enqueueRelayForRescan,
+  enqueueInputForRescan,
 } from "./queue.js";
 import { clearBeamsFromBreak, removeRecordedBeams } from "./rebuild.js";
 
@@ -37,9 +38,10 @@ function scheduleEmitAt(world, system, dim, loc, attempt) {
 
     const placed = dim.getBlock(loc);
 
-    if (placed && placed.typeId === INPUT_ID) {
+    // Handle prism placement
+    if (placed && isPrismBlock(placed)) {
       pendingEmit.delete(k);
-      handleInputPlaced(world, placed);
+      handlePrismPlaced(world, placed);
       return;
     }
 
@@ -63,12 +65,15 @@ function handleBlockChanged(world, dim, loc, prevId, nextId) {
   const self = dim.getBlock(loc);
   const selfId = nextId || self?.typeId;
   const beamChanged = (prevId === BEAM_ID || selfId === BEAM_ID);
-  if (beamChanged) enqueueAdjacentPrisms(dim, loc);
+  
+  // Always enqueue adjacent prisms when blocks change - they need to rebuild beams
+  enqueueAdjacentPrisms(dim, loc);
 
-  if (selfId === PRISM_ID || prevId === PRISM_ID || selfId === CRYSTALLIZER_ID || prevId === CRYSTALLIZER_ID) {
+  const isRelay = (id) => isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID;
+  if (isRelay(selfId) || isRelay(prevId)) {
     enqueueRelayForRescan(key(dim.id, loc.x, loc.y, loc.z));
   }
-  if (prevId === PRISM_ID || prevId === CRYSTALLIZER_ID) {
+  if (isRelay(prevId)) {
     const map = loadBeamsMap(world);
     const prismKey = key(dim.id, loc.x, loc.y, loc.z);
     const entry = map[prismKey];
@@ -85,11 +90,18 @@ function handleBlockChanged(world, dim, loc, prevId, nextId) {
   const nonPassThroughNext = !!(selfId && !isPassThrough(selfId));
   if (nonPassThroughPrev || nonPassThroughNext) {
     enqueueBeamsInLine(dim, loc);
-    if (selfId !== OUTPUT_ID && selfId !== INPUT_ID && selfId !== PRISM_ID && selfId !== CRYSTALLIZER_ID) {
+    const isRelay = (id, block = null) => {
+      if (block && isPrismBlock(block)) return true;
+      if (isPrismBlock({ typeId: id })) return true;
+      return id === CRYSTALLIZER_ID;
+    };
+    if (!isRelay(selfId)) {
       clearBeamsFromBreak(world, dim, loc);
     }
   }
 
+  // Only scan adjacent blocks - don't scan full beam length to reduce cascading updates
+  // This prevents excessive rebuilds when blocks change
   const dirs = [
     { dx: 1, dy: 0, dz: 0 },
     { dx: -1, dy: 0, dz: 0 },
@@ -99,30 +111,24 @@ function handleBlockChanged(world, dim, loc, prevId, nextId) {
     { dx: 0, dy: -1, dz: 0 },
   ];
 
+  // Always enqueue adjacent prisms/crystallizers when blocks change - they need to rebuild beams
   for (const d of dirs) {
-    for (let i = 1; i <= MAX_BEAM_LEN; i++) {
-      const x = loc.x + d.dx * i;
-      const y = loc.y + d.dy * i;
-      const z = loc.z + d.dz * i;
-      const b = dim.getBlock({ x, y, z });
-      if (!b) break;
+    const x = loc.x + d.dx;
+    const y = loc.y + d.dy;
+    const z = loc.z + d.dz;
+    const b = dim.getBlock({ x, y, z });
+    if (!b) continue;
 
-      const id = b.typeId;
-      if (id === INPUT_ID) {
-        enqueueInputForRescan(key(dim.id, x, y, z));
-        break;
-      }
-      if (id === PRISM_ID || id === CRYSTALLIZER_ID) {
-        enqueueRelayForRescan(key(dim.id, x, y, z));
-        break;
-      }
-      if (isPassThrough(id)) continue;
-      break;
+    const id = b.typeId;
+    // Enqueue adjacent prisms/crystallizers - they'll handle their own beam rebuilding
+    if (isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID) {
+      enqueueRelayForRescan(key(dim.id, x, y, z));
     }
   }
 }
 
-function handleInputPlaced(world, block) {
+function handlePrismPlaced(world, block) {
+  // Register any tier prism block
   try {
     if (!block) return;
 
@@ -131,22 +137,58 @@ function handleInputPlaced(world, block) {
     if (!dim || !loc) return;
 
     const placed = dim.getBlock(loc);
-    if (!placed || placed.typeId !== INPUT_ID) return;
+    if (!placed || !isPrismBlock(placed)) return;
 
     const dimId = placed.dimension.id;
-    const { x, y, z } = placed.location;
-    const inputKey = key(dimId, x, y, z);
+    // Floor coordinates to ensure integer block positions
+    const x = Math.floor(placed.location.x);
+    const y = Math.floor(placed.location.y);
+    const z = Math.floor(placed.location.z);
+    const prismKey = key(dimId, x, y, z);
 
     const map = loadBeamsMap(world);
-    const entry = { dimId, x, y, z, beams: [], kind: "input" };
-    map[inputKey] = entry;
+    // Store connections (prism keys this prism connects to), not individual beam block locations
+    const entry = { dimId, x, y, z, connections: [], kind: "prism" };
+    map[prismKey] = entry;
     saveBeamsMap(world, map);
 
-    enqueueInputForRescan(inputKey);
+    // Debug: log prism registration and verify it can be found
+    try {
+      const players = world.getAllPlayers();
+      // Verify the block exists at the registered location
+      const verifyBlock = dim.getBlock({ x, y, z });
+      const verifyMsg = verifyBlock && isPrismBlock(verifyBlock)
+        ? `[Beam] Prism registered: ${prismKey} at ${x},${y},${z} ✓`
+        : `[Beam] Prism registered: ${prismKey} at ${x},${y},${z} ⚠ (verify failed: ${verifyBlock?.typeId || "null"})`;
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(verifyMsg);
+        }
+      }
+    } catch {}
+
+    // Enqueue prism for initial beam building (uses pendingInputs queue)
+    enqueueInputForRescan(prismKey);
+    // Also enqueue as relay so adjacent prisms rebuild beams to this new prism
+    enqueueRelayForRescan(prismKey);
+    // Enqueue adjacent prisms to rebuild their beams
+    enqueueAdjacentPrisms(dim, loc);
     handleBlockChanged(world, dim, loc);
-  } catch {
-    // ignore
+  } catch (err) {
+    // Log error for debugging
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`[Beam] Error registering prism: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
   }
+}
+
+function handleInputPlaced(world, block) {
+  return handlePrismPlaced(world, block);
 }
 
 export function registerBeamEvents(world, system) {
@@ -195,7 +237,8 @@ export function registerBeamEvents(world, system) {
     world.afterEvents.itemUseOn.subscribe((ev) => {
       try {
         const itemId = ev?.itemStack?.typeId;
-        if (itemId !== INPUT_ID) return;
+        // Handle prism placement via item use
+        if (!isPrismBlock({ typeId: itemId })) return;
 
         const clicked = ev?.block;
         const face = ev?.blockFace;
@@ -222,11 +265,12 @@ export function registerBeamEvents(world, system) {
       const loc = ev.block?.location;
       if (!dim || !loc) return;
 
-      if (brokenId === INPUT_ID) {
-        const inputKey = key(dim.id, loc.x, loc.y, loc.z);
+      // Clean up prism entry on break
+      if (isPrismBlock({ typeId: brokenId })) {
+        const prismKey = key(dim.id, loc.x, loc.y, loc.z);
         const map = loadBeamsMap(world);
-        if (map[inputKey]) {
-          delete map[inputKey];
+        if (map[prismKey]) {
+          delete map[prismKey];
           saveBeamsMap(world, map);
         }
       }

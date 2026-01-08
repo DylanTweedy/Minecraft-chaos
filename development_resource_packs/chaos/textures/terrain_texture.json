@@ -2,21 +2,17 @@
   "format_version": "1.19.30",
   "texture_name": "atlas.terrain",
   "texture_data": {
-    "input_node_top":    { "textures": "textures/blocks/input_node_top" },
-    "input_node_bottom": { "textures": "textures/blocks/input_node_bottom" },
-    "input_node_side":   { "textures": "textures/blocks/input_node_side" },
-    "input_node_side2":  { "textures": "textures/blocks/input_node_side2" },
-    "input_node_side3":  { "textures": "textures/blocks/input_node_side3" },
-    "input_node_side4":  { "textures": "textures/blocks/input_node_side4" },
-    "input_node_side5":  { "textures": "textures/blocks/input_node_side5" },
+    "input_node":   { "textures": "textures/blocks/input_node_side" },
+    "input_node2":  { "textures": "textures/blocks/input_node_side2" },
+    "input_node3":  { "textures": "textures/blocks/input_node_side3" },
+    "input_node4":  { "textures": "textures/blocks/input_node_side4" },
+    "input_node5":  { "textures": "textures/blocks/input_node_side5" },
 
-    "output_node_top":    { "textures": "textures/blocks/output_node_top" },
-    "output_node_bottom": { "textures": "textures/blocks/output_node_bottom" },
-    "output_node_side":   { "textures": "textures/blocks/output_node_side" },
-    "output_node_side2":  { "textures": "textures/blocks/output_node_side2" },
-    "output_node_side3":  { "textures": "textures/blocks/output_node_side3" },
-    "output_node_side4":  { "textures": "textures/blocks/output_node_side4" },
-    "output_node_side5":  { "textures": "textures/blocks/output_node_side5" },
+    "output_node":   { "textures": "textures/blocks/output_node_side" },
+    "output_node2":  { "textures": "textures/blocks/output_node_side2" },
+    "output_node3":  { "textures": "textures/blocks/output_node_side3" },
+    "output_node4":  { "textures": "textures/blocks/output_node_side4" },
+    "output_node5":  { "textures": "textures/blocks/output_node_side5" },
 
     "crucible_top":    { "textures": "textures/blocks/crucible_top" },
     "crucible_bottom": { "textures": "textures/blocks/crucible_bottom" },
@@ -30,14 +26,16 @@
     "crystalizer_bottom": { "textures": "textures/blocks/crystalizer_bottom" },
     "crystalizer_side":   { "textures": "textures/blocks/crystalizer_side" },
 
-    "prism_top":    { "textures": "textures/blocks/prism_top" },
-    "prism_bottom": { "textures": "textures/blocks/prism_bottom" },
-    "prism_side":   { "textures": "textures/blocks/prism_side" },
-    "prism_side2":  { "textures": "textures/blocks/prism_side2" },
-    "prism_side3":  { "textures": "textures/blocks/prism_side3" },
-    "prism_side4":  { "textures": "textures/blocks/prism_side4" },
-    "prism_side5":  { "textures": "textures/blocks/prism_side5" },
+    "prism":   { "textures": "textures/blocks/prism_side" },
+    "prism2":  { "textures": "textures/blocks/prism_side2" },
+    "prism3":  { "textures": "textures/blocks/prism_side3" },
+    "prism4":  { "textures": "textures/blocks/prism_side4" },
+    "prism5":  { "textures": "textures/blocks/prism_side5" },
 
-    "chaos_beam": { "textures": "textures/blocks/chaos_beam" }
+    "chaos_beam": { "textures": "textures/blocks/chaos_beam" },
+    "chaos_beam2": { "textures": "textures/blocks/chaos_beam2" },
+    "chaos_beam3": { "textures": "textures/blocks/chaos_beam3" },
+    "chaos_beam4": { "textures": "textures/blocks/chaos_beam4" },
+    "chaos_beam5": { "textures": "textures/blocks/chaos_beam5" }
   }
 }
