@@ -1,9 +1,9 @@
-// scripts/chaos/features/links/transfer/inflight.js
-import { MAX_STEPS } from "./config.js";
-import { loadInflight, saveInflight } from "./persistence/storage.js";
-import { resolveBlockInfoStatic } from "./utils.js";
-import { getAttachedInventoryInfo } from "./inventory/inventory.js";
-import { getContainerKey, getContainerKeyFromInfo } from "./keys.js";
+// scripts/chaos/features/links/transfer/persistence/inflight.js
+import { MAX_STEPS } from "../config.js";
+import { loadInflight, saveInflight } from "./storage.js";
+import { resolveBlockInfoStatic } from "../utils.js";
+import { getAttachedInventoryInfo } from "../inventory/inventory.js";
+import { getContainerKey, getContainerKeyFromInfo } from "../keys.js";
 
 function sanitizeInflightEntry(entry) {
   try {
@@ -20,6 +20,8 @@ function sanitizeInflightEntry(entry) {
     if (entry.prismKey && typeof entry.prismKey !== "string") entry.prismKey = null;
     if (!entry.outputKey || typeof entry.outputKey !== "string") return null;
     if (!entry.startPos || !Number.isFinite(entry.startPos.x)) entry.startPos = null;
+    // Initialize countedPrisms array if not present (for saved/loaded state)
+    if (!Array.isArray(entry.countedPrisms)) entry.countedPrisms = [];
     return entry;
   } catch {
     return null;

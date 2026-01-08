@@ -1,6 +1,7 @@
 // scripts/chaos/features/links/beam/queue.js
 import {
   BEAM_ID,
+  PRISM_ID,
   CRYSTALLIZER_ID,
 } from "./config.js";
 import { isPrismBlock } from "../transfer/config.js";
@@ -101,7 +102,7 @@ export function enqueueAdjacentPrisms(dim, loc) {
     const y = loc.y + d.dy;
     const z = loc.z + d.dz;
     const b = dim.getBlock({ x, y, z });
-    if ((b && isPrismBlock(b)) || b?.typeId === CRYSTALLIZER_ID) {
+    if (isPrismBlock(b) || b?.typeId === CRYSTALLIZER_ID) {
       enqueueRelayForRescan(key(dim.id, x, y, z));
     }
   }
@@ -128,7 +129,8 @@ export function enqueueBeamsInLine(dim, loc) {
         enqueueBeamValidation(key(dim.id, x, y, z));
         continue;
       }
-      if (isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID) continue; // Prisms and crystallizers are pass-through
+      if (id === PRISM_ID) continue; // Prisms are pass-through
+      if (id === CRYSTALLIZER_ID) break; // Crystallizers stop
       if (id === "minecraft:air") break;
       break;
     }

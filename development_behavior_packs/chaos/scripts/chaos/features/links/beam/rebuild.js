@@ -1,13 +1,13 @@
 // scripts/chaos/features/links/beam/rebuild.js
 import { BlockPermutation } from "@minecraft/server";
 import {
+  PRISM_ID,
   CRYSTALLIZER_ID,
   BEAM_ID,
   AXIS_X,
   AXIS_Y,
   AXIS_Z,
 } from "./config.js";
-import { getPrismTierFromTypeId, isPrismBlock } from "../transfer/config.js";
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 import { key, parseKey, getDimensionById, loadBeamsMap, saveBeamsMap } from "./storage.js";
 import { axisForDir, beamAxisMatchesDir } from "./axis.js";
@@ -18,18 +18,24 @@ import {
   enqueueRelayForRescan,
   enqueueInputForRescan,
 } from "./queue.js";
+import { getPrismTierFromTypeId, isPrismBlock } from "../transfer/config.js";
 
 function getTierFromBlock(block) {
-  try {
-    if (!block) return 1;
-    // Extract tier from block typeId
-    if (isPrismBlock(block)) {
-      return getPrismTierFromTypeId(block.typeId);
+  if (!block) return 1;
+  
+  // Beams use chaos:level state, prisms use separate block IDs
+  if (block.typeId === BEAM_ID) {
+    try {
+      const level = block?.permutation?.getState("chaos:level");
+      if (Number.isFinite(level)) return Math.max(1, Math.min(5, level | 0));
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
+    return 1;
   }
-  return 1;
+  
+  // Prisms now use separate block IDs (prism_1, prism_2, etc.) instead of state
+  return getPrismTierFromTypeId(block);
 }
 
 function placeBeamIfAir(dim, x, y, z, axis, tier = 1) {
@@ -52,73 +58,33 @@ export function removeRecordedBeams(world, entry) {
     const dim = getDimensionById(world, entry?.dimId);
     if (!dim) return;
 
-    // Remove beams on-demand from connections
-    const connections = Array.isArray(entry?.connections) ? entry.connections : [];
-    for (const targetKey of connections) {
-      const targetPos = parseKey(targetKey);
-      if (!targetPos || targetPos.dimId !== entry.dimId) continue;
-      
-      // Remove beams between this prism and target (rebuild on-demand to remove)
-      removeBeamsBetweenPrisms(world, entry, targetPos);
-    }
-  } catch {
-    // ignore
-  }
-}
-
-// Remove beams on-demand between two prisms
-function removeBeamsBetweenPrisms(world, sourceEntry, targetPos) {
-  try {
-    const dim = getDimensionById(world, sourceEntry?.dimId);
-    if (!dim || sourceEntry.dimId !== targetPos.dimId) return;
-    
-    const dx = targetPos.x - sourceEntry.x;
-    const dy = targetPos.y - sourceEntry.y;
-    const dz = targetPos.z - sourceEntry.z;
-    
-    // Only handle straight lines (one axis only)
-    const absDx = Math.abs(dx);
-    const absDy = Math.abs(dy);
-    const absDz = Math.abs(dz);
-    
-    let dirX = 0, dirY = 0, dirZ = 0;
-    let dist = 0;
-    
-    if (absDx > 0 && absDy === 0 && absDz === 0) {
-      dirX = dx > 0 ? 1 : -1;
-      dist = absDx;
-    } else if (absDy > 0 && absDx === 0 && absDz === 0) {
-      dirY = dy > 0 ? 1 : -1;
-      dist = absDy;
-    } else if (absDz > 0 && absDx === 0 && absDy === 0) {
-      dirZ = dz > 0 ? 1 : -1;
-      dist = absDz;
-    } else {
-      // Not a straight line - skip
-      return;
-    }
-    
-    if (dist <= 1) return; // Adjacent blocks, no beams to remove
-    
-    // Remove beams along the path (excluding source and target positions)
-    for (let i = 1; i < dist; i++) {
-      const x = sourceEntry.x + dirX * i;
-      const y = sourceEntry.y + dirY * i;
-      const z = sourceEntry.z + dirZ * i;
-      
-      const b = dim.getBlock({ x, y, z });
-      if (!b) break;
-      
-      if (b.typeId === BEAM_ID) {
+    const recorded = Array.isArray(entry?.beams) ? entry.beams : [];
+    for (const bk of recorded) {
+      const p = parseKey(bk);
+      if (!p) continue;
+      if (p.dimId !== entry.dimId) continue;
+      const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
+      if (b?.typeId === BEAM_ID) {
         b.setType("minecraft:air");
-        enqueueAdjacentBeams(dim, { x, y, z });
-        enqueueAdjacentPrisms(dim, { x, y, z });
-      } else if (isPrismBlock(b) || b.typeId === CRYSTALLIZER_ID) {
-        // Pass through prisms and crystallizers (both are relays)
-        continue;
-      } else {
-        // Obstacle - stop
-        break;
+        enqueueAdjacentBeams(dim, p);
+        enqueueAdjacentPrisms(dim, p);
+      }
+    }
+
+    // legacy cleanup (rays.blocks)
+    const rays = Array.isArray(entry?.rays) ? entry.rays : [];
+    for (const r of rays) {
+      const blocks = Array.isArray(r?.blocks) ? r.blocks : [];
+      for (const bk of blocks) {
+        const p = parseKey(bk);
+        if (!p) continue;
+        if (p.dimId !== entry.dimId) continue;
+        const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
+        if (b?.typeId === BEAM_ID) {
+          b.setType("minecraft:air");
+          enqueueAdjacentBeams(dim, p);
+          enqueueAdjacentPrisms(dim, p);
+        }
       }
     }
   } catch {
@@ -138,11 +104,16 @@ function scanPrismsInDir(dim, loc, dx, dy, dz) {
     if (!b) break;
 
     const id = b.typeId;
-    // All prisms and crystallizers are valid connection points
-    if (isPrismBlock(b) || id === CRYSTALLIZER_ID) {
+    // All prisms are valid connection points
+    if (isPrismBlock(b)) {
       prismDists.push(i);
       if (closestPrismDist === 0) closestPrismDist = i;
-      continue; // Continue scanning - there might be more prisms/crystallizers
+      continue; // Continue scanning - there might be more prisms
+    }
+    if (id === CRYSTALLIZER_ID) {
+      prismDists.push(i);
+      if (closestPrismDist === 0) closestPrismDist = i;
+      break; // Crystallizers stop scanning
     }
     if (id === "minecraft:air") continue;
     if (id === BEAM_ID) {
@@ -155,96 +126,64 @@ function scanPrismsInDir(dim, loc, dx, dy, dz) {
   return { prismDists, closestPrismDist };
 }
 
-// Rebuild beams on-demand between two prisms (visual only, not stored)
-function rebuildBeamsBetweenPrisms(world, sourceEntry, targetPos, sourceTier) {
-  try {
-    const dim = getDimensionById(world, sourceEntry?.dimId);
-    if (!dim || sourceEntry.dimId !== targetPos.dimId) return;
-    
-    const dx = targetPos.x - sourceEntry.x;
-    const dy = targetPos.y - sourceEntry.y;
-    const dz = targetPos.z - sourceEntry.z;
-    
-    // Only handle straight lines (one axis only)
-    const absDx = Math.abs(dx);
-    const absDy = Math.abs(dy);
-    const absDz = Math.abs(dz);
-    
-    let dirX = 0, dirY = 0, dirZ = 0;
-    let dist = 0;
-    
-    if (absDx > 0 && absDy === 0 && absDz === 0) {
-      dirX = dx > 0 ? 1 : -1;
-      dist = absDx;
-    } else if (absDy > 0 && absDx === 0 && absDz === 0) {
-      dirY = dy > 0 ? 1 : -1;
-      dist = absDy;
-    } else if (absDz > 0 && absDx === 0 && absDy === 0) {
-      dirZ = dz > 0 ? 1 : -1;
-      dist = absDz;
-    } else {
-      // Not a straight line - skip
-      return;
+function recordBeamKey(recorded, recordedSet, dimId, x, y, z) {
+  const k = key(dimId, x, y, z);
+  if (recordedSet.has(k)) return;
+  recordedSet.add(k);
+  recorded.push(k);
+}
+
+function fillBeamsToDistance(dim, loc, dx, dy, dz, dist, axis, recorded, recordedSet, tier = 1) {
+  for (let i = 1; i < dist; i++) {
+    const x = loc.x + dx * i;
+    const y = loc.y + dy * i;
+    const z = loc.z + dz * i;
+    const b = dim.getBlock({ x, y, z });
+    if (!b) break;
+
+    const id = b.typeId;
+    if (id === "minecraft:air") {
+      if (placeBeamIfAir(dim, x, y, z, axis, tier)) recordBeamKey(recorded, recordedSet, dim.id, x, y, z);
+      continue;
     }
-    
-    if (dist <= 1) return; // Adjacent blocks, no beams needed
-    
-    const axis = axisForDir(dirX, dirY, dirZ);
-    
-    // Place/update beams along the path (excluding source and target positions)
-    for (let i = 1; i < dist; i++) {
-      const x = sourceEntry.x + dirX * i;
-      const y = sourceEntry.y + dirY * i;
-      const z = sourceEntry.z + dirZ * i;
-      
-      const b = dim.getBlock({ x, y, z });
-      if (!b) break;
-      
-      const id = b.typeId;
-      if (id === "minecraft:air") {
-        // Place new beam
-        placeBeamIfAir(dim, x, y, z, axis, sourceTier);
-      } else if (id === BEAM_ID) {
-        // Update existing beam tier if needed (use higher tier)
-        if (beamAxisMatchesDir(b, dirX, dirY, dirZ)) {
-          const beamTier = getTierFromBlock(b);
-          const newTier = Math.max(beamTier, sourceTier);
-          if (newTier !== beamTier) {
-            try {
-              // Beams don't have tiers - this code shouldn't run for beams
-              // If we need to update beam tier, we'd need to replace the beam block
-              // For now, skip this as beams are not tiered
-            } catch {
-              // ignore
-            }
+
+    if (id === BEAM_ID) {
+      if (beamAxisMatchesDir(b, dx, dy, dz)) {
+        // Higher tier beams override lower tier beams
+        const beamTier = getTierFromBlock(b);
+        const newTier = Math.max(beamTier, tier); // Use the higher tier
+        if (newTier !== beamTier) {
+          try {
+            const perm = b.permutation.withState("chaos:level", newTier);
+            b.setPermutation(perm);
+          } catch {
+            // ignore
           }
         }
-      } else if (isPrismBlock(b) || id === CRYSTALLIZER_ID) {
-        // Pass through prisms and crystallizers (both are relays)
+        recordBeamKey(recorded, recordedSet, dim.id, x, y, z);
         continue;
-      } else {
-        // Obstacle - stop
-        break;
       }
+      break;
     }
-  } catch {
-    // ignore
+
+    if (isPrismBlock(b)) continue; // Prisms are pass-through for beam placement
+    if (id === CRYSTALLIZER_ID) break; // Crystallizers stop beam placement
+
+    break;
   }
 }
 
-// Rebuild beams for a prism or crystallizer - they both emit beams to nearby prisms/crystallizers
-export function rebuildPrismBeams(world, entry) {
+// Rebuild beams for a prism - each prism emits beams of its tier to nearby prisms
+export function rebuildPrismBeams(world, entry, providedMap = null) {
   const dim = getDimensionById(world, entry?.dimId);
   if (!dim) return;
 
-  const block = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-  if (!block || (!isPrismBlock(block) && block.typeId !== CRYSTALLIZER_ID)) return;
+  const prismBlock = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
+  if (!prismBlock || !isPrismBlock(prismBlock)) return;
 
   removeRecordedBeams(world, entry);
 
-  // Crystallizers are treated as tier 1 for beam purposes
-  const sourceTier = isPrismBlock(block) ? getTierFromBlock(block) : 1;
-  const isCrystallizer = block.typeId === CRYSTALLIZER_ID;
+  const sourceTier = getTierFromBlock(prismBlock);
 
   const dirs = [
     { dx: 1, dy: 0, dz: 0 },
@@ -255,50 +194,49 @@ export function rebuildPrismBeams(world, entry) {
     { dx: 0, dy: -1, dz: 0 },
   ];
 
-  // Store connections (target prism/crystallizer keys), not individual beam block locations
-  const connections = [];
-  const connectionsSet = new Set();
+  const recorded = [];
+  const recordedSet = new Set();
+  const map = providedMap || loadBeamsMap(world);
+  let mapChanged = false;
   
   for (const d of dirs) {
     const res = scanPrismsInDir(dim, { x: entry.x, y: entry.y, z: entry.z }, d.dx, d.dy, d.dz);
     
-    // Connect to the closest prism or crystallizer in this direction
+    // Place beams to the closest prism (or to each prism if multiple)
+    // Higher tier beams will override lower tier beams during placement
     const targetDist = res.closestPrismDist;
     if (targetDist > 0) {
+      const axis = axisForDir(d.dx, d.dy, d.dz);
+      fillBeamsToDistance(dim, { x: entry.x, y: entry.y, z: entry.z }, d.dx, d.dy, d.dz, targetDist, axis, recorded, recordedSet, sourceTier);
+      
+      // Ensure target prism is in the map (discover existing prisms)
       const targetX = entry.x + d.dx * targetDist;
       const targetY = entry.y + d.dy * targetDist;
       const targetZ = entry.z + d.dz * targetDist;
       const targetKey = key(entry.dimId, targetX, targetY, targetZ);
-      
-      // Verify target is actually a prism or crystallizer
-      const targetBlock = dim.getBlock({ x: targetX, y: targetY, z: targetZ });
-      if (targetBlock && (isPrismBlock(targetBlock) || targetBlock.typeId === CRYSTALLIZER_ID)) {
-        // Store connection (prism/crystallizer key, not beam block locations)
-        if (!connectionsSet.has(targetKey)) {
-          connectionsSet.add(targetKey);
-          connections.push(targetKey);
-        }
-        
-        // Rebuild beams visually between this block and target (on-demand)
-        // Use the maximum tier of both blocks to prevent tier conflicts
-        // Crystallizers are treated as tier 1 for beam purposes
-        const targetTier = isPrismBlock(targetBlock) ? getTierFromBlock(targetBlock) : 1;
-        const beamTier = Math.max(sourceTier, targetTier);
-        rebuildBeamsBetweenPrisms(world, entry, { dimId: entry.dimId, x: targetX, y: targetY, z: targetZ }, beamTier);
-        
-        // If source tier is higher, enqueue target for rescan to update its beams
-        if (sourceTier > targetTier) {
-          enqueueRelayForRescan(targetKey);
+      if (!map[targetKey]) {
+        const targetBlock = dim.getBlock({ x: targetX, y: targetY, z: targetZ });
+        if (targetBlock && isPrismBlock(targetBlock)) {
+          map[targetKey] = { dimId: entry.dimId, x: targetX, y: targetY, z: targetZ, beams: [], kind: "prism" };
+          mapChanged = true;
+          enqueueInputForRescan(targetKey);
         }
       }
+      
+      // Enqueue the target prism for rescan (it may need to update its beams with higher tier)
+      enqueueRelayForRescan(targetKey);
     }
   }
+  
+  // Only save if we loaded the map ourselves (not if it was provided)
+  if (mapChanged && !providedMap) saveBeamsMap(world, map);
 
-  // Store connections instead of beam block locations
-  entry.connections = connections;
-  entry.kind = isCrystallizer ? "crystallizer" : "prism";
+  entry.beams = recorded;
+  entry.kind = "prism";
+  delete entry.rays;
 }
 
+// Legacy function name for backwards compatibility with existing code
 export function rebuildInputBeams(world, entry) {
   return rebuildPrismBeams(world, entry);
 }
@@ -308,32 +246,28 @@ export function rebuildRelayBeams(world, entry, map) {
   if (!dim) return;
 
   const pb = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-  if (!pb) {
-    // Block doesn't exist - clean up entry if it exists
-    if (entry) {
-      removeRecordedBeams(world, entry);
-      delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
-    }
-    return;
-  }
-
-  // Handle prisms and crystallizers - they both emit beams
-  if (isPrismBlock(pb) || pb.typeId === CRYSTALLIZER_ID) {
-    // In unified system, rebuildRelayBeams is called when adjacent blocks change
-    // Use the same logic as rebuildPrismBeams - rebuild beams to nearby prisms/crystallizers
-    // Both prisms and crystallizers can emit beams
-    rebuildPrismBeams(world, entry);
-    
-    // Update the map entry
-    map[key(entry.dimId, entry.x, entry.y, entry.z)] = entry;
-    return;
-  }
-
-  // Unknown block type - clean up entry if it exists
-  if (entry) {
+  // Only prisms now (crystallizers are handled separately)
+  if (!pb || !isPrismBlock(pb)) {
     removeRecordedBeams(world, entry);
-    delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
+    const entryKey = key(entry.dimId, entry.x, entry.y, entry.z);
+    delete map[entryKey];
+    return;
   }
+
+  // Ensure entry is in map (in case it was just discovered)
+  const entryKey = key(entry.dimId, entry.x, entry.y, entry.z);
+  if (!map[entryKey]) {
+    map[entryKey] = entry;
+  }
+
+  // In unified system, rebuildRelayBeams is called when adjacent prisms change
+  // Use the same logic as rebuildPrismBeams - rebuild beams to nearby prisms
+  // No source check needed - all prisms can emit beams
+  // Pass the map so rebuildPrismBeams can discover and add new prisms
+  rebuildPrismBeams(world, entry, map);
+  
+  // Update the map entry (rebuildPrismBeams may have modified entry.beams)
+  map[entryKey] = entry;
 }
 
 export function rebuildOrRemoveAllDeterministically(world) {
@@ -358,41 +292,16 @@ export function rebuildOrRemoveAllDeterministically(world) {
     removeRecordedBeams(world, entry);
 
     const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-    // Only prisms and crystallizers are valid now
-    if (!ib || (!isPrismBlock(ib) && ib.typeId !== CRYSTALLIZER_ID)) {
+    // Only prisms are valid now
+    if (!ib || !isPrismBlock(ib)) {
       delete map[inputKey];
       changed = true;
       continue;
     }
 
-    // Migrate old beams array to connections if needed
-    if (Array.isArray(entry.beams)) {
-      delete entry.beams;
-      changed = true;
-    }
-    
-    // Ensure connections array exists and validate connections
-    if (!Array.isArray(entry.connections)) {
-      entry.connections = [];
-      changed = true;
-    } else {
-      // Validate connections - remove invalid ones
-      const validConnections = [];
-      for (const connKey of entry.connections) {
-        const connPos = parseKey(connKey);
-        if (!connPos || connPos.dimId !== entry.dimId) continue;
-        const connBlock = dim.getBlock({ x: connPos.x, y: connPos.y, z: connPos.z });
-        if (connBlock && (isPrismBlock(connBlock) || connBlock.typeId === CRYSTALLIZER_ID)) {
-          validConnections.push(connKey);
-        }
-      }
-      if (validConnections.length !== entry.connections.length) {
-        entry.connections = validConnections;
-        changed = true;
-      }
-    }
-    
+    entry.beams = [];
     entry.kind = "prism";
+    delete entry.rays;
     map[inputKey] = entry;
     changed = true;
 
@@ -427,7 +336,7 @@ export function clearBeamsFromBreak(world, dim, loc) {
         continue;
       }
       if (id === "minecraft:air") break;
-      if (isPrismBlock(b) || id === CRYSTALLIZER_ID) break;
+      if (id === PRISM_ID || id === CRYSTALLIZER_ID) break;
       break;
     }
   }

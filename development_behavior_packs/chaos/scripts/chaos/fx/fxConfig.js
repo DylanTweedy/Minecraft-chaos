@@ -1,5 +1,6 @@
 // scripts/chaos/fx/fxConfig.js
 import { MolangVariableMap } from "@minecraft/server";
+
 import {
   SFX_SELECT_INPUT,
   SFX_PAIR_SUCCESS,
@@ -15,25 +16,6 @@ import {
   PARTICLE_UNPAIR_SUCCESS,
   PARTICLE_UNPAIR_BEAM,
 } from "../core/constants.js";
-// TEMP: Comment out to test if this import breaks loading
-// import { isPrismBlock, getPrismTierFromTypeId } from "../features/links/transfer/config.js";
-
-// TEMP: Define locally to test
-function isPrismBlock(block) {
-  if (!block) return false;
-  const typeId = block.typeId;
-  return typeId === "chaos:prism_1" || typeId === "chaos:prism_2" || typeId === "chaos:prism_3" || typeId === "chaos:prism_4" || typeId === "chaos:prism_5";
-}
-
-function getPrismTierFromTypeId(typeId) {
-  if (!typeId) return 1;
-  const match = typeId.match(/^chaos:prism_(\d+)$/);
-  if (match) {
-    const tier = parseInt(match[1], 10);
-    return Math.max(1, Math.min(5, tier));
-  }
-  return 1;
-}
 
 function makeColorMolang(r, g, b, a) {
   const m = new MolangVariableMap();
@@ -72,8 +54,7 @@ function applyBeamMotion(m, dir, dist, speed) {
 
 function getBlockLevel(block) {
   try {
-    // Get tier from block typeId
-    const level = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
+    const level = block?.permutation?.getState("chaos:level");
     if (Number.isFinite(level)) return level | 0;
   } catch {
     // ignore

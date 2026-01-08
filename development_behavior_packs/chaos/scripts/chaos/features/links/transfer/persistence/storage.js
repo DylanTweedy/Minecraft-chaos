@@ -1,11 +1,11 @@
-// scripts/chaos/features/links/transfer/storage.js
+// scripts/chaos/features/links/transfer/persistence/storage.js
 import {
   DP_BEAMS,
   DP_TRANSFERS,
   DP_INPUT_LEVELS,
   DP_OUTPUT_LEVELS,
   DP_PRISM_LEVELS,
-} from "./config.js";
+} from "../config.js";
 
 function safeJsonParse(s) {
   try {

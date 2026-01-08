@@ -6,19 +6,7 @@
   "chaos:foundry": {
     "sound": "amethyst_block"
   },
-  "chaos:prism_1": {
-    "sound": "amethyst_block"
-  },
-  "chaos:prism_2": {
-    "sound": "amethyst_block"
-  },
-  "chaos:prism_3": {
-    "sound": "amethyst_block"
-  },
-  "chaos:prism_4": {
-    "sound": "amethyst_block"
-  },
-  "chaos:prism_5": {
+  "chaos:prism": {
     "sound": "amethyst_block"
   },
   "chaos:crystallizer": {

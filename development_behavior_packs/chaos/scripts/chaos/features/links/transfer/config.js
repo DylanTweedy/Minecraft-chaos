@@ -1,32 +1,12 @@
 // scripts/chaos/features/links/transfer/config.js
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 
-// CENTRALIZED PRISM ID LIST - Single source of truth for all prism block types
-const PRISM_IDS = ["chaos:prism_1", "chaos:prism_2", "chaos:prism_3", "chaos:prism_4", "chaos:prism_5"];
+const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
-
-// Helper functions for prism tier system
-function isPrismBlock(block) {
-  if (!block) return false;
-  const typeId = block.typeId;
-  return PRISM_IDS.includes(typeId);
-}
-
-function getPrismTierFromTypeId(typeId) {
-  if (!typeId) return 1;
-  const match = typeId.match(/^chaos:prism_(\d+)$/);
-  if (match) {
-    const tier = parseInt(match[1], 10);
-    return Math.max(1, Math.min(5, tier)); // Clamp to 1-5
-  }
-  return 1; // Default to tier 1
-}
-
-function getPrismTypeIdForTier(tier) {
-  const safeTier = Math.max(1, Math.min(5, Math.floor(tier || 1)));
-  return PRISM_IDS[safeTier - 1] || PRISM_IDS[0];
-}
+// Legacy IDs for migration (will be removed eventually)
+const INPUT_ID = "chaos:extractor"; // Deprecated - use PRISM_ID
+const OUTPUT_ID = "chaos:inserter"; // Deprecated - use PRISM_ID
 const FURNACE_BLOCK_IDS = new Set([
   "minecraft:furnace",
   "minecraft:lit_furnace",
@@ -60,18 +40,59 @@ const PATH_WEIGHT_LEN_EXP = 0.6;
 const PATH_WEIGHT_RANDOM_MIN = 0.5;
 const PATH_WEIGHT_RANDOM_MAX = 2.0;
 const CRYSTAL_FLUX_WEIGHT = 6.0;
-const CRYSTAL_ROUTE_MAX_NODES = 128; // Optimization #2: Reduced from 256 to 128 (50% reduction) - most networks don't need 256 nodes
+const CRYSTAL_ROUTE_MAX_NODES = 256;
 const SPEED_SCALE_MAX = 1.8;
 const PRISM_SPEED_BOOST_BASE = 0.0; // Tier 1 has no boost
 const PRISM_SPEED_BOOST_PER_TIER = 0.05; // Each tier adds 5% boost (tier 2 = 5%, tier 5 = 20%)
+
+// Prism tier IDs (5 separate blocks, one per tier)
+const PRISM_IDS = [
+  "chaos:prism_1",
+  "chaos:prism_2",
+  "chaos:prism_3",
+  "chaos:prism_4",
+  "chaos:prism_5",
+];
+
+// Helper function to check if a block is a prism (any tier)
+function isPrismBlock(block) {
+  if (!block) return false;
+  const typeId = block.typeId || (typeof block === "string" ? block : null);
+  if (!typeId) return false;
+  return PRISM_IDS.includes(typeId) || typeId === PRISM_ID; // Also support legacy PRISM_ID
+}
+
+// Helper to get prism tier from typeId (1-5, or 1 if not a prism)
+// Accepts either a block object or a typeId string
+function getPrismTierFromTypeId(blockOrTypeId) {
+  let typeId;
+  if (typeof blockOrTypeId === "string") {
+    typeId = blockOrTypeId;
+  } else if (blockOrTypeId && blockOrTypeId.typeId) {
+    typeId = blockOrTypeId.typeId;
+  } else {
+    return 1;
+  }
+  
+  const index = PRISM_IDS.indexOf(typeId);
+  if (index >= 0) return index + 1; // Return 1-5 based on array index
+  if (typeId === PRISM_ID) return 1; // Legacy support
+  return 1; // Default tier 1 if not a prism
+}
+
+// Helper to get prism typeId for a given tier (1-5)
+function getPrismTypeIdForTier(tier) {
+  const t = Math.max(1, Math.min(5, Math.floor(tier || 1)));
+  return PRISM_IDS[t - 1] || PRISM_IDS[0];
+}
 
 const DEFAULTS = {
   maxTransfersPerTick: 4, // Budget for item transfers started per tick
   maxSearchesPerTick: 8, // Budget for pathfinding searches per tick
   perPrismIntervalTicks: 10, // Base interval between prism scans
-  cacheTicks: 20, // Performance #3: Increased from 10 to 20 ticks (paths don't change frequently)
+  cacheTicks: 10,
   cacheTicksWithStamp: 60,
-  maxVisitedPerSearch: 150, // Increased from 120 to 150 to allow finding more distant nodes while still limiting performance impact
+  maxVisitedPerSearch: 200,
   orbStepTicks: 20,
   maxOutputOptions: 6,
   levelStep: 2000, // Massively increased for natural progression
@@ -96,15 +117,17 @@ const DEFAULTS = {
   backoffMaxTicks: 200,
   backoffMaxLevel: 6,
   maxFluxFxInFlight: 24,
-  maxInflight: 50, // Reduced from 60 to further lower processing overhead
-  inflightSaveIntervalTicks: 40, // Increased from 20 - saves less frequently but still safe (forced save every 200 ticks)
+  inflightSaveIntervalTicks: 40,
   // Legacy - kept for compatibility
   perInputIntervalTicks: 10,
-  maxInputsScannedPerTick: 24, // Legacy - not used, only maxPrismsScannedPerTick is used
+  maxInputsScannedPerTick: 24,
 };
 
 export {
-  PRISM_IDS, // CENTRALIZED: Single source of truth for all prism block IDs
+  INPUT_ID,
+  OUTPUT_ID,
+  PRISM_ID,
+  PRISM_IDS,
   CRYSTALLIZER_ID,
   BEAM_ID,
   FURNACE_BLOCK_IDS,
@@ -126,8 +149,8 @@ export {
   SPEED_SCALE_MAX,
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
+  isPrismBlock,
+  getPrismTierFromTypeId,
+  getPrismTypeIdForTier,
   DEFAULTS,
-  isPrismBlock, // CENTRALIZED: Use this function to check if a block is a prism
-  getPrismTierFromTypeId, // CENTRALIZED: Use this to get tier from typeId
-  getPrismTypeIdForTier, // CENTRALIZED: Use this to get typeId from tier
 };

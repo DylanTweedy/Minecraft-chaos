@@ -1,13 +1,14 @@
 // scripts/chaos/beamSim.js
 import { world, system } from "@minecraft/server";
-import { isPrismBlock } from "./transfer/config.js";
 import {
+  PRISM_ID,
   BEAM_ID,
   INPUTS_PER_TICK,
   RELAYS_PER_TICK,
   VALIDATIONS_PER_TICK,
   TICK_INTERVAL,
 } from "./beam/config.js";
+import { isPrismBlock } from "./transfer/config.js";
 import { loadBeamsMap, saveBeamsMap, parseKey, getDimensionById } from "./beam/storage.js";
 import { isBeamStillValid } from "./beam/validation.js";
 import { rebuildOrRemoveAllDeterministically, rebuildPrismBeams, rebuildRelayBeams } from "./beam/rebuild.js";
@@ -65,8 +66,8 @@ export function startBeamSimV0() {
       if (!dim) continue;
 
       const pb = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-      // Only prisms and crystallizers now
-      if (!pb || (!isPrismBlock(pb) && pb.typeId !== CRYSTALLIZER_ID)) {
+      // Only prisms now
+      if (!pb || !isPrismBlock(pb)) {
         delete map[prismKey];
         changed = true;
         continue;

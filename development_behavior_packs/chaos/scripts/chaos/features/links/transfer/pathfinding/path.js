@@ -1,14 +1,14 @@
-// scripts/chaos/features/links/transfer/path.js
+// scripts/chaos/features/links/transfer/pathfinding/path.js
 import {
   BEAM_ID,
-  PRISM_ID,
   CRYSTALLIZER_ID,
   PATH_WEIGHT_MAX_LEN,
   PATH_WEIGHT_LEN_EXP,
   PATH_WEIGHT_RANDOM_MIN,
   PATH_WEIGHT_RANDOM_MAX,
-} from "./config.js";
-import { key } from "./keys.js";
+  isPrismBlock,
+} from "../config.js";
+import { key } from "../keys.js";
 
 export function validatePathStart(dim, path) {
   try {
@@ -26,19 +26,19 @@ export function validatePathStart(dim, path) {
 export function isPathBlock(block) {
   if (!block) return false;
   const id = block.typeId;
-  return id === BEAM_ID || id === PRISM_ID || id === CRYSTALLIZER_ID;
+  return id === BEAM_ID || isPrismBlock(block) || id === CRYSTALLIZER_ID;
 }
 
 export function isRelayBlock(block) {
   if (!block) return false;
   const id = block.typeId;
-  return id === PRISM_ID || id === CRYSTALLIZER_ID;
+  return isPrismBlock(block) || id === CRYSTALLIZER_ID;
 }
 
 export function isNodeBlock(block) {
   if (!block) return false;
   const id = block.typeId;
-  return id === PRISM_ID || id === CRYSTALLIZER_ID;
+  return isPrismBlock(block) || id === CRYSTALLIZER_ID;
 }
 
 export function findFirstPrismKeyInPath(dim, dimId, path) {
@@ -46,7 +46,7 @@ export function findFirstPrismKeyInPath(dim, dimId, path) {
     if (!dim || !Array.isArray(path) || path.length === 0) return null;
     for (const p of path) {
       const b = dim.getBlock({ x: p.x, y: p.y, z: p.z });
-      if (b?.typeId === PRISM_ID) return key(dimId, p.x, p.y, p.z);
+      if (b && isPrismBlock(b)) return key(dimId, p.x, p.y, p.z);
     }
     return null;
   } catch {
@@ -65,10 +65,22 @@ export function buildNodePathSegments(dim, path, startPos) {
     }
     if (nodeIndices.length === 0) return null;
     if (!startPos) return null;
+    
+    // Check if path already starts with startPos (or very close to it)
+    const pathStartMatches = nodeIndices.length > 0 && nodeIndices[0] === 0;
+    let pathStartPos = pathStartMatches ? path[0] : null;
+    const startPosMatches = pathStartPos && 
+      Math.abs(pathStartPos.x - startPos.x) < 0.1 &&
+      Math.abs(pathStartPos.y - startPos.y) < 0.1 &&
+      Math.abs(pathStartPos.z - startPos.z) < 0.1;
+    
     const points = [{ x: startPos.x, y: startPos.y, z: startPos.z }];
     const lengths = [];
     let prev = -1;
-    for (const idx of nodeIndices) {
+    // Skip first node if it matches startPos (avoid duplicate)
+    const startIdx = startPosMatches ? 1 : 0;
+    for (let i = startIdx; i < nodeIndices.length; i++) {
+      const idx = nodeIndices[i];
       if (idx <= prev) continue;
       const p = path[idx];
       points.push({ x: p.x, y: p.y, z: p.z });

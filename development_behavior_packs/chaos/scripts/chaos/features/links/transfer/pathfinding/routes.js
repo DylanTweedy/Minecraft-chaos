@@ -1,11 +1,12 @@
-// scripts/chaos/features/links/transfer/routes.js
-import { PRISM_ID, CRYSTALLIZER_ID, CRYSTAL_ROUTE_MAX_NODES } from "./config.js";
-import { key, parseKey, getContainerKey, getContainerKeyFromInfo } from "./keys.js";
-import { makeDirs, scanEdgeFromNode } from "./pathfinding/graph.js";
-import { getAllAdjacentInventories } from "./inventory/inventory.js";
+// scripts/chaos/features/links/transfer/pathfinding/routes.js
+import { CRYSTALLIZER_ID, CRYSTAL_ROUTE_MAX_NODES, isPrismBlock } from "../config.js";
+import { key, parseKey, getContainerKey, getContainerKeyFromInfo } from "../keys.js";
+import { makeDirs, scanEdgeFromNode } from "./graph.js";
+import { getAllAdjacentInventories } from "../inventory/inventory.js";
 
 // Find route from a prism to another prism (or crystallizer) that can accept items
-export function findPrismRouteFromNode(startBlock, dimId) {
+// Optional getPrismInventoriesCached function for cached inventory checks (from cache manager)
+export function findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCached = null) {
   try {
     if (!startBlock || !dimId) return null;
     const dim = startBlock.dimension;
@@ -39,10 +40,13 @@ export function findPrismRouteFromNode(startBlock, dimId) {
         // Check if target prism has inventories (can accept items)
         if (edge.nodeType === "prism") {
           const targetBlock = dim.getBlock(edge.nodePos);
-          if (!targetBlock || targetBlock.typeId !== PRISM_ID) {
+          if (!targetBlock || !isPrismBlock(targetBlock)) {
             continue;
           }
-          const inventories = getAllAdjacentInventories(targetBlock, dim);
+          // Use cached inventory check if available, otherwise fall back to direct check
+          const inventories = (typeof getPrismInventoriesCached === "function")
+            ? getPrismInventoriesCached(nextKey, targetBlock, dim)
+            : getAllAdjacentInventories(targetBlock, dim);
           if (inventories && inventories.length > 0) {
             return buildPrismRoute(startKey, nextKey, parent);
           }
@@ -64,8 +68,8 @@ export function findPrismRouteFromNode(startBlock, dimId) {
 }
 
 // Legacy function name
-export function findOutputRouteFromNode(startBlock, dimId) {
-  return findPrismRouteFromNode(startBlock, dimId);
+export function findOutputRouteFromNode(startBlock, dimId, getPrismInventoriesCached = null) {
+  return findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCached);
 }
 
 function buildPrismRoute(startKey, targetKey, parent) {

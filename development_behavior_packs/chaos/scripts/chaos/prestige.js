@@ -12,8 +12,8 @@ import {
   parseKey,
   resolveBlockForKey,
 } from "./crystallizer.js";
-import { isPrismBlock, getPrismTierFromTypeId, getPrismTypeIdForTier } from "./features/links/transfer/config.js";
 
+const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
 
@@ -75,7 +75,7 @@ function makeDirs() {
 
 function getNodeType(id) {
   // Unified system - only prisms and crystallizers
-  if (isPrismBlock({ typeId: id })) return "prism";
+  if (id === PRISM_ID) return "prism";
   if (id === CRYSTALLIZER_ID) return "crystal";
   return null;
 }
@@ -171,24 +171,13 @@ function traverseNetworkFromStart(dim, dimId, startNodes) {
 
 function setTierToOne(block) {
   try {
-    if (!block) return false;
-    // New system: replace block with tier 1
-    const tier1TypeId = getPrismTypeIdForTier(1);
-    const loc = block.location;
-    const dim = block.dimension;
-    if (!dim || !loc) return false;
-    
-    // Check if already tier 1
-    const currentTier = getPrismTierFromTypeId(block.typeId);
-    if (currentTier === 1) return true;
-    
-    // Replace with tier 1 block
-    try {
-      dim.setBlock(loc, tier1TypeId);
-      return true;
-    } catch {
-      return false;
-    }
+    const perm = block?.permutation;
+    if (!perm) return false;
+    const current = perm.getState("chaos:level");
+    if ((current | 0) === 1) return true;
+    const next = perm.withState("chaos:level", 1);
+    block.setPermutation(next);
+    return true;
   } catch {
     return false;
   }
@@ -301,19 +290,19 @@ function performPrestige(player, entity, crystalKey) {
   const startNodes = getAdjacentStartNodes(block);
   const network = traverseNetworkFromStart(dim, parsed.dimId, startNodes);
 
-    // Unified system - all nodes are prisms
-    for (const key of network.inputs) {
-      const b = resolveBlockForKey(key);
-      if (b && isPrismBlock(b)) setTierToOne(b);
-    }
-    for (const key of network.outputs) {
-      const b = resolveBlockForKey(key);
-      if (b && isPrismBlock(b)) setTierToOne(b);
-    }
-    for (const key of network.prisms) {
-      const b = resolveBlockForKey(key);
-      if (b && isPrismBlock(b)) setTierToOne(b);
-    }
+  // Unified system - all nodes are prisms
+  for (const key of network.inputs) {
+    const b = resolveBlockForKey(key);
+    if (b?.typeId === PRISM_ID) setTierToOne(b);
+  }
+  for (const key of network.outputs) {
+    const b = resolveBlockForKey(key);
+    if (b?.typeId === PRISM_ID) setTierToOne(b);
+  }
+  for (const key of network.prisms) {
+    const b = resolveBlockForKey(key);
+    if (b?.typeId === PRISM_ID) setTierToOne(b);
+  }
 
   resetCountsForKeys(DP_INPUT_LEVELS, network.inputs);
   resetCountsForKeys(DP_OUTPUT_LEVELS, network.outputs);

@@ -2,30 +2,26 @@
 import { ItemStack, MolangVariableMap } from "@minecraft/server";
 import {
   DEFAULTS,
-  PRISM_IDS,
+  PRISM_ID,
   CRYSTALLIZER_ID,
   CRYSTAL_FLUX_WEIGHT,
   MAX_STEPS,
   SPEED_SCALE_MAX,
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
-  DP_BEAMS,
   isPrismBlock,
-  getPrismTierFromTypeId,
-  getPrismTypeIdForTier,
 } from "./config.js";
 import { mergeCfg } from "./utils.js";
 import {
   loadBeamsMap,
-  saveBeamsMap,
   loadInputLevels,
   saveInputLevels,
   loadOutputLevels,
   saveOutputLevels,
   loadPrismLevels,
   savePrismLevels,
-} from "./storage.js";
-import { loadInflightStateFromWorld, persistInflightStateToWorld } from "./inflight.js";
+} from "./persistence/storage.js";
+import { loadInflightStateFromWorld, persistInflightStateToWorld } from "./persistence/inflight.js";
 import { key, parseKey, getContainerKey, getContainerKeyFromInfo } from "./keys.js";
 import {
   getAttachedInventoryInfo,
@@ -40,15 +36,15 @@ import {
   findInputSlotForContainer,
   decrementInputSlotSafe,
   decrementInputSlotsForType,
-} from "./inventory.js";
-import { getFilterContainer, filterOutputsByWhitelist, getFilterSet } from "./filters.js";
+} from "./inventory/inventory.js";
+import { getFilterContainer, filterOutputsByWhitelist, getFilterSet } from "./inventory/filters.js";
 import {
   getInsertCapacityWithReservations,
   getReservedForContainer,
   reserveContainerSlot,
   releaseContainerSlot,
   clearReservations,
-} from "./reservations.js";
+} from "./inventory/reservations.js";
 import {
   validatePathStart,
   isPathBlock,
@@ -58,10 +54,10 @@ import {
   buildFluxFxSegments,
   findDropLocation,
   pickWeightedRandomWithBias,
-} from "./path.js";
-import { findOutputRouteFromNode, findCrystallizerRouteFromOutput, findCrystallizerRouteFromPrism } from "./routes.js";
-import { makeDirs, scanEdgeFromNode } from "./graph.js";
-import { runTransferPipeline } from "./pipeline.js";
+} from "./pathfinding/path.js";
+import { findOutputRouteFromNode, findCrystallizerRouteFromOutput, findCrystallizerRouteFromPrism } from "./pathfinding/routes.js";
+import { makeDirs, scanEdgeFromNode } from "./pathfinding/graph.js";
+import { runTransferPipeline } from "./utils.js";
 import { getFilterSetForBlock } from "../filters.js";
 import { tryGenerateFluxOnTransfer, tryRefineFluxInTransfer, getFluxTier, isFluxTypeId } from "../../../flux.js";
 import { addFluxForItem, getFluxValueForItem } from "../../../crystallizer.js";
@@ -89,36 +85,20 @@ export function createNetworkTransferController(deps, opts) {
   let inflightDirty = false;
   let inflightStepDirty = false;
   let lastSaveTick = 0;
-  
-  // Priority queue: Track items ready to process (ticksUntilStep <= 0)
-  // This avoids iterating all 100 items every tick
-  const readyItems = new Set(); // Items that are ready to move this tick
-  const nearReadyItems = new Set(); // Items that will be ready next tick (ticksUntilStep === 1)
-  let needsRebuild = false; // Flag to rebuild queues when items are added/removed
   const transferCounts = new Map();
   let levelsDirty = false;
+  let lastLevelsSaveTick = 0;
   const outputCounts = new Map();
   let outputLevelsDirty = false;
+  let lastOutputLevelsSaveTick = 0;
   const prismCounts = new Map();
   let prismLevelsDirty = false;
-  // Unified save interval - batch all saves together
-  // Use shorter interval for prism levels to ensure linkVision sees updates quickly
-  const SAVE_INTERVAL_TICKS = 200;
-  const PRISM_LEVELS_SAVE_INTERVAL_TICKS = 20; // Save prism levels more frequently for linkVision
-  const FORCED_SAVE_INTERVAL_TICKS = 200; // Periodic forced save as safety net (bypasses interval checks)
-  let lastForcedSaveTick = 0;
+  let lastPrismLevelsSaveTick = 0;
   const queueByContainer = new Map();
   const fullContainers = new Set();
   let fullCursor = 0;
   let queueCursor = 0;
   const inputBackoff = new Map();
-  
-  // Queuing systems for expensive operations
-  const pathfindingQueue = []; // Queue of prisms needing pathfinding
-  const inventoryScanQueue = []; // Queue of prisms needing inventory validation
-  const activePrisms = new Set(); // Prisms with inventories (pre-filtered)
-  let lastInventoryValidationTick = 0;
-  const INVENTORY_VALIDATION_INTERVAL = 100; // Validate active prisms every 100 ticks
   const debugEnabled = !!(cfg.debugTransferStats || FX?.debugTransferStats);
   const debugInterval = Math.max(20, Number(cfg.debugTransferStatsIntervalTicks || FX?.debugTransferStatsIntervalTicks) || 100);
   let lastDebugTick = 0;
@@ -146,75 +126,25 @@ export function createNetworkTransferController(deps, opts) {
     msScan: 0,
     msPersist: 0,
     msTotal: 0,
-    // Granular timing breakdown
-    msInflightPriorityQueue: 0, // Time updating priority queues
-    msInflightBlockLookups: 0, // Time doing block lookups in tickInFlight
-    msInflightPathValidation: 0, // Time validating paths
-    msInflightPrismLogic: 0, // Time processing prism-specific logic
-    msInflightOrbSpawning: 0, // Time spawning orbs
-    msInflightMovement: 0, // Time for movement/step advancement
-    msPathfinding: 0, // Time in pathfinding operations
-    msInventoryScanning: 0, // Time scanning inventories
-    msCacheOps: 0, // Time in cache operations
-    msFinalizeJob: 0, // Time finalizing jobs
-    // Granular Finalize timings
-    msFinalizeBlockLookups: 0, // Time resolving block info in finalizeJob
-    msFinalizeInventoryLookups: 0, // Time getting inventories in finalizeJob
-    msFinalizeFluxRefine: 0, // Time in flux refinement
-    msFinalizeItemInsertion: 0, // Time inserting items into inventories
-    msFinalizeCrystalRoute: 0, // Time finding crystallizer routes
-    msFinalizeFluxGenerate: 0, // Time generating flux
-    msFinalizeQueueCleanup: 0, // Time cleaning up queues
-    // Granular Scan timings
-    msScanResolveBlock: 0, // Time resolving block info in scan loop
-    msScanGetInventories: 0, // Time getting inventories in scan loop
-    msScanGetItem: 0, // Time getting random item from inventories
-    msScanAttemptTransfer: 0, // Time in attemptTransferForPrism
-    msScanIntervalCalc: 0, // Time calculating intervals in scan loop
+    // Timing stats
+    transferStartTicks: [],
+    transferCompleteTicks: [],
+    stepTicksTotal: 0,
+    stepTicksCount: 0,
+    stepTicksMin: Infinity,
+    stepTicksMax: 0,
+    segmentStepsTotal: 0,
+    segmentStepsCount: 0,
   };
   let cachedInputKeys = null;
   let cachedInputsStamp = null;
   let orbFxBudgetUsed = 0;
   const blockCache = new Map();
-  const blockCacheTimestamps = new Map();
   const containerInfoCache = new Map();
-  const containerInfoCacheTimestamps = new Map();
   const insertCapacityCache = new Map();
-  const insertCapacityCacheTimestamps = new Map();
   const totalCapacityCache = new Map();
-  const totalCapacityCacheTimestamps = new Map();
   const totalCountCache = new Map();
-  const totalCountCacheTimestamps = new Map();
   const dimCache = new Map();
-  const dimCacheTimestamps = new Map();
-  const prismInventoryCache = new Map(); // prismKey -> { hasInventories: bool, timestamp: number }
-  const prismInventoryCacheTimestamps = new Map();
-  const prismInventoryListCache = new Map(); // prismKey -> { inventories: Array, timestamp: number }
-  const prismInventoryListCacheTimestamps = new Map();
-  const containerCapacityCache = new Map(); // containerKey -> { typeId -> capacity, timestamp: number }
-  const containerCapacityCacheTimestamps = new Map();
-  // Cache for crystallizer route lookups (expensive pathfinding operation)
-  const crystallizerRouteCache = new Map(); // prismKey -> { route: object | null, tick: number }
-  const CRYSTALLIZER_ROUTE_CACHE_TTL = 50; // Routes to crystallizers don't change often, cache for 50 ticks
-  
-  // Optimization #4: Track if crystallizers exist in network (skip route lookup if none exist)
-  let hasCrystallizersInNetwork = null; // null = unknown, true = exists, false = doesn't exist
-  let lastCrystallizerCheckTick = -1000; // When we last checked for crystallizers
-  const CRYSTALLIZER_CHECK_INTERVAL = 500; // Check every 500 ticks (25 seconds)
-  
-  // Optimization #3: Batch crystallizer route lookups per tick
-  const pendingRouteLookups = new Map(); // prismKey -> { block, dimId, callback }
-  const routeLookupResults = new Map(); // prismKey -> route (this tick only)
-  
-  // Cache TTL values (in ticks)
-  const BLOCK_CACHE_TTL = 5; // Block lookups are expensive, cache for 5 ticks
-  const CONTAINER_CACHE_TTL = 10; // Container info changes less frequently
-  const CAPACITY_CACHE_TTL = 3; // Capacity can change with items, shorter cache
-  const COUNT_CACHE_TTL = 2; // Item counts change frequently, very short cache
-  const DIM_CACHE_TTL = 1000; // Dimensions never change, cache for a long time
-  const PRISM_INVENTORY_CACHE_TTL = 20; // Inventory status changes when blocks change
-  const PRISM_INVENTORY_LIST_CACHE_TTL = 15; // Performance #2: Increased from 5 to 15 ticks (items move slowly)
-  const CONTAINER_CAPACITY_CACHE_TTL = 5; // Performance #2: Increased from 2 to 5 ticks (capacity doesn't change that frequently)
 
   function getBackoffTicks(level) {
     const safeLevel = Math.max(0, level | 0);
@@ -263,420 +193,50 @@ export function createNetworkTransferController(deps, opts) {
     debugState.msScan = 0;
     debugState.msPersist = 0;
     debugState.msTotal = 0;
-    // Granular timing reset
-    debugState.msInflightPriorityQueue = 0;
-    debugState.msInflightBlockLookups = 0;
-    debugState.msInflightPathValidation = 0;
-    debugState.msInflightPrismLogic = 0;
-    debugState.msInflightOrbSpawning = 0;
-    debugState.msInflightMovement = 0;
-    debugState.msPathfinding = 0;
-    debugState.msInventoryScanning = 0;
-    debugState.msCacheOps = 0;
-    debugState.msFinalizeJob = 0;
-    // Granular Finalize timing reset
-    debugState.msFinalizeBlockLookups = 0;
-    debugState.msFinalizeInventoryLookups = 0;
-    debugState.msFinalizeFluxRefine = 0;
-    debugState.msFinalizeItemInsertion = 0;
-    debugState.msFinalizeCrystalRoute = 0;
-    debugState.msFinalizeFluxGenerate = 0;
-    debugState.msFinalizeQueueCleanup = 0;
-    // Granular Scan timing reset
-    debugState.msScanResolveBlock = 0;
-    debugState.msScanGetInventories = 0;
-    debugState.msScanGetItem = 0;
-    debugState.msScanAttemptTransfer = 0;
-    debugState.msScanIntervalCalc = 0;
   }
 
-  // Cache cleanup state - only clean up periodically to avoid O(n) cost every tick
-  let lastCacheCleanupTick = 0;
-  const CACHE_CLEANUP_INTERVAL = 20; // Clean up every 20 ticks instead of every tick
-  const MAX_CACHE_SIZE = 500; // Maximum entries per cache to prevent unbounded growth
-  
-  // Clear expired cache entries periodically instead of every tick
   function resetTickCaches() {
-    // Only do expensive cleanup every N ticks
-    if ((nowTick - lastCacheCleanupTick) < CACHE_CLEANUP_INTERVAL) {
-      return; // Skip cleanup this tick
-    }
-    lastCacheCleanupTick = nowTick;
-    
-    // Helper to clean cache with size limit
-    function cleanCache(cache, timestamps, ttl, maxSize) {
-      // If cache is too large, clear oldest entries first
-      if (cache.size > maxSize) {
-        const entries = Array.from(timestamps.entries()).sort((a, b) => a[1] - b[1]);
-        const toRemove = cache.size - maxSize;
-        for (let i = 0; i < toRemove; i++) {
-          const key = entries[i][0];
-          cache.delete(key);
-          timestamps.delete(key);
-        }
-      }
-      
-      // Clear expired entries (limit iterations to prevent lag spikes)
-      let cleaned = 0;
-      const maxCleanupPerCycle = 50;
-      for (const [key, timestamp] of timestamps.entries()) {
-        if ((nowTick - timestamp) >= ttl) {
-          cache.delete(key);
-          timestamps.delete(key);
-          if (++cleaned >= maxCleanupPerCycle) break;
-        }
-      }
-    }
-    
-    cleanCache(blockCache, blockCacheTimestamps, BLOCK_CACHE_TTL, MAX_CACHE_SIZE);
-    cleanCache(containerInfoCache, containerInfoCacheTimestamps, CONTAINER_CACHE_TTL, MAX_CACHE_SIZE);
-    cleanCache(insertCapacityCache, insertCapacityCacheTimestamps, CAPACITY_CACHE_TTL, MAX_CACHE_SIZE);
-    cleanCache(totalCapacityCache, totalCapacityCacheTimestamps, CAPACITY_CACHE_TTL, MAX_CACHE_SIZE);
-    cleanCache(totalCountCache, totalCountCacheTimestamps, COUNT_CACHE_TTL, MAX_CACHE_SIZE);
-    cleanCache(prismInventoryCache, prismInventoryCacheTimestamps, PRISM_INVENTORY_CACHE_TTL, MAX_CACHE_SIZE);
-    cleanCache(prismInventoryListCache, prismInventoryListCacheTimestamps, PRISM_INVENTORY_LIST_CACHE_TTL, MAX_CACHE_SIZE);
-    
-    // Clean crystallizer route cache (uses Map with tick field, so custom cleanup)
-    const maxCleanupPerCycle = 50;
-    if (crystallizerRouteCache.size > MAX_CACHE_SIZE) {
-      const entries = Array.from(crystallizerRouteCache.entries()).sort((a, b) => a[1].tick - b[1].tick);
-      const toRemove = crystallizerRouteCache.size - MAX_CACHE_SIZE;
-      for (let i = 0; i < toRemove; i++) {
-        crystallizerRouteCache.delete(entries[i][0]);
-      }
-    }
-    let cleaned = 0;
-    for (const [key, value] of crystallizerRouteCache.entries()) {
-      if ((nowTick - value.tick) >= CRYSTALLIZER_ROUTE_CACHE_TTL) {
-        crystallizerRouteCache.delete(key);
-        if (++cleaned >= maxCleanupPerCycle) break;
-      }
-    }
-    
-    // Dimension cache is small, no size limit needed
-    cleaned = 0;
-    for (const [key, timestamp] of dimCacheTimestamps.entries()) {
-      if ((nowTick - timestamp) >= DIM_CACHE_TTL) {
-        dimCache.delete(key);
-        dimCacheTimestamps.delete(key);
-        if (++cleaned >= maxCleanupPerCycle) break;
-      }
-    }
-  }
-  
-  // Function to invalidate specific cache entries (for block changes)
-  function invalidateCacheForBlock(blockKey) {
-    blockCache.delete(blockKey);
-    blockCacheTimestamps.delete(blockKey);
-    containerInfoCache.delete(blockKey);
-    containerInfoCacheTimestamps.delete(blockKey);
-    // Invalidate prism inventory cache for this block (it might be a prism or adjacent to one)
-    prismInventoryCache.delete(blockKey);
-    prismInventoryCacheTimestamps.delete(blockKey);
-    prismInventoryListCache.delete(blockKey);
-    prismInventoryListCacheTimestamps.delete(blockKey);
-    // Invalidate crystallizer route cache for this block (route might have changed)
-    crystallizerRouteCache.delete(blockKey);
-    
-    // Also invalidate adjacent prisms' inventory cache (they might have lost/gained an adjacent inventory)
-    try {
-      const pos = parseKey(blockKey);
-      if (pos) {
-        const dim = getDimensionCached(pos.dimId);
-        if (dim) {
-          // Check all 6 adjacent positions for prisms
-          const dirs = [
-            { x: 1, y: 0, z: 0 }, { x: -1, y: 0, z: 0 },
-            { x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 },
-            { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }
-          ];
-          for (const d of dirs) {
-            const adjKey = key(pos.dimId, pos.x + d.x, pos.y + d.y, pos.z + d.z);
-            const adjBlock = dim.getBlock({ x: pos.x + d.x, y: pos.y + d.y, z: pos.z + d.z });
-            if (adjBlock && isPrismBlock(adjBlock)) {
-              // Invalidate this adjacent prism's inventory cache
-              prismInventoryCache.delete(adjKey);
-              prismInventoryCacheTimestamps.delete(adjKey);
-            }
-          }
-        }
-      }
-    } catch {
-      // Ignore errors in cache invalidation
-    }
-    
-    // Also clear related capacity/count caches
-    for (const key of insertCapacityCache.keys()) {
-      if (key.includes(blockKey)) {
-        insertCapacityCache.delete(key);
-        insertCapacityCacheTimestamps.delete(key);
-      }
-    }
-    for (const key of totalCapacityCache.keys()) {
-      if (key.includes(blockKey)) {
-        totalCapacityCache.delete(key);
-        totalCapacityCacheTimestamps.delete(key);
-      }
-    }
-    for (const key of totalCountCache.keys()) {
-      if (key.includes(blockKey)) {
-        totalCountCache.delete(key);
-        totalCountCacheTimestamps.delete(key);
-      }
-    }
-  }
-  
-  // Expose cache invalidation function for external use (block change events)
-  function invalidateCachesForBlockChange(blockKey) {
-    invalidateCacheForBlock(blockKey);
-    
-    // Optimization #4: Reset crystallizer existence flag if a crystallizer block was changed
-    try {
-      const pos = parseKey(blockKey);
-      if (pos) {
-        const dim = getDimensionCached(pos.dimId);
-        if (dim) {
-          const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
-          // If a crystallizer was added/removed, reset the flag
-          if (block?.typeId === CRYSTALLIZER_ID || !block) {
-            hasCrystallizersInNetwork = null; // Reset - need to rediscover
-          }
-        }
-      }
-    } catch {
-      // Ignore
-    }
-    
-    // Also invalidate pathfinder cache for affected prisms
-    if (typeof invalidateInput === "function") {
-      invalidateInput(blockKey);
-      // Also invalidate adjacent prisms
-      try {
-        const pos = parseKey(blockKey);
-        if (pos) {
-          const dim = getDimensionCached(pos.dimId);
-          if (dim) {
-            const dirs = [
-              { x: 1, y: 0, z: 0 }, { x: -1, y: 0, z: 0 },
-              { x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 },
-              { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }
-            ];
-            for (const d of dirs) {
-              const adjKey = key(pos.dimId, pos.x + d.x, pos.y + d.y, pos.z + d.z);
-              const adjBlock = dim.getBlock({ x: pos.x + d.x, y: pos.y + d.y, z: pos.z + d.z });
-              if (adjBlock && isPrismBlock(adjBlock)) {
-                invalidateInput(adjKey);
-              }
-            }
-          }
-        }
-      } catch {
-        // Ignore
-      }
-    }
-  }
-  
-  // Get cached inventory list for a prism (with TTL and invalidation)
-  function getPrismInventoriesCached(prismKey, prismBlock, dim) {
-    const cached = prismInventoryListCache.get(prismKey);
-    const timestamp = prismInventoryListCacheTimestamps.get(prismKey);
-    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < PRISM_INVENTORY_LIST_CACHE_TTL) {
-      return cached; // Return cached inventory list
-    }
-    
-    // Not cached or expired - scan and cache
-    const inventories = getAllAdjacentInventories(prismBlock, dim);
-    prismInventoryListCache.set(prismKey, inventories);
-    prismInventoryListCacheTimestamps.set(prismKey, nowTick);
-    
-    // Also update the hasInventories cache
-    const hasInventories = inventories && inventories.length > 0;
-    prismInventoryCache.set(prismKey, hasInventories);
-    prismInventoryCacheTimestamps.set(prismKey, nowTick);
-    
-    return inventories;
-  }
-  
-  // Check if a prism has adjacent inventories (cached)
-  function getPrismHasInventories(prismKey) {
-    const cached = prismInventoryCache.get(prismKey);
-    const timestamp = prismInventoryCacheTimestamps.get(prismKey);
-    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < PRISM_INVENTORY_CACHE_TTL) {
-      return cached;
-    }
-    
-    // Queue for validation if not cached
-    if (!inventoryScanQueue.includes(prismKey)) {
-      inventoryScanQueue.push(prismKey);
-    }
-    
-    // Return cached value if available, otherwise return false (will be updated when queue processes)
-    return cached !== undefined ? cached : false;
-  }
-  
-  // Process inventory scan queue (limited per tick)
-  function processInventoryScanQueue() {
-    const maxScansPerTick = 5; // Reduced from 10 to limit expensive inventory scans
-    let processed = 0;
-    const tStart = debugEnabled ? Date.now() : 0;
-
-    while (inventoryScanQueue.length > 0 && processed < maxScansPerTick) {
-      const prismKey = inventoryScanQueue.shift();
-      if (!prismKey) continue;
-
-      const tInfo = debugEnabled ? Date.now() : 0;
-      const info = resolveBlockInfo(prismKey);
-      if (debugEnabled) debugState.msCacheOps += (Date.now() - tInfo);
-      if (!info || !info.block || !isPrismBlock(info.block)) {
-        prismInventoryCache.set(prismKey, false);
-        prismInventoryCacheTimestamps.set(prismKey, nowTick);
-        activePrisms.delete(prismKey);
-        processed++;
-        continue;
-      }
-
-      const tScan = debugEnabled ? Date.now() : 0;
-      const inventories = getAllAdjacentInventories(info.block, info.dim);
-      if (debugEnabled) debugState.msInventoryScanning += (Date.now() - tScan);
-      const hasInventories = inventories && inventories.length > 0;
-      
-      // Update both caches
-      prismInventoryCache.set(prismKey, hasInventories);
-      prismInventoryCacheTimestamps.set(prismKey, nowTick);
-      prismInventoryListCache.set(prismKey, inventories);
-      prismInventoryListCacheTimestamps.set(prismKey, nowTick);
-      
-      if (hasInventories) {
-        activePrisms.add(prismKey);
-      } else {
-        activePrisms.delete(prismKey);
-      }
-      
-      processed++;
-    }
-  }
-  
-  // Process pathfinding queue (limited per tick)
-  function processPathfindingQueue() {
-    const maxSearchesPerTick = Math.max(1, cfg.maxSearchesPerTick | 0); // Use config value
-    let processed = 0;
-    const tStart = debugEnabled ? Date.now() : 0;
-
-    while (pathfindingQueue.length > 0 && processed < maxSearchesPerTick) {
-      const prismKey = pathfindingQueue.shift();
-      if (!prismKey) continue;
-
-      // Trigger pathfinding (will use cache if available)
-      const tPath = debugEnabled ? Date.now() : 0;
-      if (typeof findPathForInput === "function") {
-        findPathForInput(prismKey, nowTick);
-      }
-      if (debugEnabled) debugState.msPathfinding += (Date.now() - tPath);
-
-      processed++;
-    }
-    if (debugEnabled && tStart > 0) {
-      // Already accumulated per-search above, but keep for completeness
-    }
-  }
-  
-  // Get active prisms (only those with inventories) - pre-filtered
-  function getActivePrismKeys() {
-    // Process queued inventory scans first (limited per tick)
-    processInventoryScanQueue();
-    
-    // Validate active prisms periodically (not every tick)
-    if ((nowTick - lastInventoryValidationTick) >= INVENTORY_VALIDATION_INTERVAL) {
-      // Rebuild active prisms list from all prisms (expensive, so only every 100 ticks)
-      const allPrisms = getPrismKeys();
-      activePrisms.clear();
-      // Limit validation to prevent spikes - validate max 10 prisms per validation cycle
-      const maxValidatedPerCycle = 10;
-      let validated = 0;
-      for (const prismKey of allPrisms) {
-        if (validated >= maxValidatedPerCycle) {
-          // Queue remaining for next cycle
-          if (!inventoryScanQueue.includes(prismKey)) {
-            inventoryScanQueue.push(prismKey);
-          }
-          continue;
-        }
-        const hasInventories = getPrismHasInventories(prismKey);
-        if (hasInventories) {
-          activePrisms.add(prismKey);
-        }
-        validated++;
-      }
-      lastInventoryValidationTick = nowTick;
-    }
-    
-    return Array.from(activePrisms);
+    blockCache.clear();
+    containerInfoCache.clear();
+    insertCapacityCache.clear();
+    totalCapacityCache.clear();
+    totalCountCache.clear();
+    dimCache.clear();
   }
 
   function getDimensionCached(dimId) {
     if (!dimId) return null;
-    const cached = dimCache.get(dimId);
-    const timestamp = dimCacheTimestamps.get(dimId);
-    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < DIM_CACHE_TTL) {
-      return cached;
-    }
+    if (dimCache.has(dimId)) return dimCache.get(dimId);
     const dim = world.getDimension(dimId);
     dimCache.set(dimId, dim || null);
-    dimCacheTimestamps.set(dimId, nowTick);
     return dim || null;
   }
 
   function resolveBlockInfoCached(blockKey) {
     try {
       if (!blockKey) return null;
-      const cached = blockCache.get(blockKey);
-      const timestamp = blockCacheTimestamps.get(blockKey);
-      if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < BLOCK_CACHE_TTL) {
-        return cached;
-      }
+      if (blockCache.has(blockKey)) return blockCache.get(blockKey);
       const pos = parseKey(blockKey);
       if (!pos) {
         blockCache.set(blockKey, null);
-        blockCacheTimestamps.set(blockKey, nowTick);
         return null;
       }
       const dim = getDimensionCached(pos.dimId);
       if (!dim) {
         blockCache.set(blockKey, null);
-        blockCacheTimestamps.set(blockKey, nowTick);
         return null;
       }
       const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
       if (!block) {
         blockCache.set(blockKey, null);
-        blockCacheTimestamps.set(blockKey, nowTick);
         return null;
       }
       const info = { dim, block, pos };
       blockCache.set(blockKey, info);
-      blockCacheTimestamps.set(blockKey, nowTick);
       if (debugEnabled) debugState.blockLookups++;
       return info;
-    } catch (err) {
-      blockCache.set(blockKey, null);
-      blockCacheTimestamps.set(blockKey, nowTick);
+    } catch {
       return null;
-    }
-  }
-  
-  // Direct block lookup without cache (for debugging)
-  function resolveBlockInfoDirect(blockKey) {
-    try {
-      if (!blockKey) return null;
-      const pos = parseKey(blockKey);
-      if (!pos) return null;
-      const dim = world.getDimension(pos.dimId);
-      if (!dim) return { error: "dimension_not_found", dimId: pos.dimId };
-      const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
-      if (!block) return { error: "block_not_found", pos };
-      return { dim, block, pos };
-    } catch (err) {
-      return { error: "exception", message: err?.message || String(err) };
     }
   }
 
@@ -693,71 +253,49 @@ export function createNetworkTransferController(deps, opts) {
 
   function resolveContainerInfoCached(containerKey) {
     if (!containerKey) return null;
-    const cached = containerInfoCache.get(containerKey);
-    const timestamp = containerInfoCacheTimestamps.get(containerKey);
-    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < CONTAINER_CACHE_TTL) {
-      return cached;
-    }
+    if (containerInfoCache.has(containerKey)) return containerInfoCache.get(containerKey);
     const info = resolveBlockInfoCached(containerKey);
     if (!info || !info.block) {
       containerInfoCache.set(containerKey, null);
-      containerInfoCacheTimestamps.set(containerKey, nowTick);
       return null;
     }
     const container = getInventoryContainer(info.block);
     if (!container) {
       containerInfoCache.set(containerKey, null);
-      containerInfoCacheTimestamps.set(containerKey, nowTick);
       return null;
     }
     const result = { dim: info.dim, block: info.block, container, pos: info.pos };
     containerInfoCache.set(containerKey, result);
-    containerInfoCacheTimestamps.set(containerKey, nowTick);
     if (debugEnabled) debugState.containerLookups++;
     return result;
   }
 
   function getTotalCountForTypeCached(containerKey, container, typeId) {
     const keyId = `${containerKey}|${typeId}`;
-    const cached = totalCountCache.get(keyId);
-    const timestamp = totalCountCacheTimestamps.get(keyId);
-    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < COUNT_CACHE_TTL) {
-      return cached;
-    }
+    if (totalCountCache.has(keyId)) return totalCountCache.get(keyId);
     if (debugEnabled) debugState.inventoryScans++;
     const total = getTotalCountForType(container, typeId);
     totalCountCache.set(keyId, total);
-    totalCountCacheTimestamps.set(keyId, nowTick);
     return total;
   }
 
   function getInsertCapacityCached(containerKey, container, typeId, stack) {
     const maxStack = Math.max(1, stack?.maxAmount || 64);
     const keyId = `${containerKey}|${typeId}|${maxStack}`;
-    const cached = insertCapacityCache.get(keyId);
-    const timestamp = insertCapacityCacheTimestamps.get(keyId);
-    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < CAPACITY_CACHE_TTL) {
-      return cached;
-    }
+    if (insertCapacityCache.has(keyId)) return insertCapacityCache.get(keyId);
     if (debugEnabled) debugState.inventoryScans++;
     const info = resolveContainerInfoCached(containerKey);
     const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack, info?.block);
     insertCapacityCache.set(keyId, capacity);
-    insertCapacityCacheTimestamps.set(keyId, nowTick);
     return capacity;
   }
 
   function getContainerCapacityCached(containerKey, container) {
-    const cached = totalCapacityCache.get(containerKey);
-    const timestamp = totalCapacityCacheTimestamps.get(containerKey);
-    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < CAPACITY_CACHE_TTL) {
-      return cached;
-    }
+    if (totalCapacityCache.has(containerKey)) return totalCapacityCache.get(containerKey);
     if (debugEnabled) debugState.inventoryScans++;
     const info = resolveContainerInfoCached(containerKey);
     const capacity = getContainerCapacityWithReservations(containerKey, container, info?.block);
     totalCapacityCache.set(containerKey, capacity);
-    totalCapacityCacheTimestamps.set(containerKey, nowTick);
     return capacity;
   }
 
@@ -768,10 +306,7 @@ export function createNetworkTransferController(deps, opts) {
         if (s && typeof s === "object") return s;
       }
     } catch (_) {}
-    // Get tier from block typeId
-    const level = isPrismBlock(block)
-      ? getPrismTierFromTypeId(block.typeId)
-      : 1;
+    const level = (block?.permutation?.getState("chaos:level") | 0) || 1;
     const scale = Math.pow(2, Math.max(0, level - 1));
     const interval = Math.max(1, Math.floor(cfg.perInputIntervalTicks / scale));
     return { intervalTicks: interval, amount: 1 };
@@ -783,25 +318,11 @@ export function createNetworkTransferController(deps, opts) {
     loadLevelsState();
     loadOutputLevelsState();
     loadPrismLevelsState();
-    lastForcedSaveTick = nowTick; // Initialize forced save counter
     tickId = system.runInterval(onTick, 1);
-    
-    // Debug: confirm transfer system started
-    if (debugEnabled) {
-      try {
-        const msg = "[Transfer] Transfer system started! Debug enabled.";
-        for (const player of world.getAllPlayers()) {
-          if (typeof player.sendMessage === "function") player.sendMessage(msg);
-        }
-      } catch {}
-    }
   }
 
   function stop() {
     if (tickId === null) return;
-    // Force save all state before stopping to prevent data loss on reload
-    // This bypasses interval checks to ensure everything is saved
-    forceSaveAll();
     try { system.clearRun(tickId); } catch (_) {}
     tickId = null;
   }
@@ -809,23 +330,28 @@ export function createNetworkTransferController(deps, opts) {
   function loadInflightState() {
     loadInflightStateFromWorld(world, inflight, cfg);
     rebuildReservationsFromInflight();
-    
-    // Rebuild priority queues for loaded items
-    readyItems.clear();
-    nearReadyItems.clear();
-    for (const job of inflight) {
-      if (!job) continue;
-      if (job.ticksUntilStep <= 0) {
-        readyItems.add(job);
-      } else if (job.ticksUntilStep === 1) {
-        nearReadyItems.add(job);
-      }
-    }
-    
     inflightDirty = false;
     lastSaveTick = nowTick;
   }
 
+  function persistInflightIfNeeded() {
+    if (!inflightDirty && !inflightStepDirty) return;
+    if (inflightDirty && inflight.length === 0) {
+      persistInflightStateToWorld(world, inflight);
+      if (debugEnabled) debugState.dpSaves++;
+      inflightDirty = false;
+      inflightStepDirty = false;
+      lastSaveTick = nowTick;
+      return;
+    }
+    const interval = Math.max(1, cfg.inflightSaveIntervalTicks | 0);
+    if ((nowTick - lastSaveTick) < interval) return;
+    persistInflightStateToWorld(world, inflight);
+    if (debugEnabled) debugState.dpSaves++;
+    inflightDirty = false;
+    inflightStepDirty = false;
+    lastSaveTick = nowTick;
+  }
 
   function loadLevelsState() {
     const raw = loadInputLevels(world);
@@ -836,10 +362,17 @@ export function createNetworkTransferController(deps, opts) {
       transferCounts.set(k, n | 0);
     }
     levelsDirty = false;
+    lastLevelsSaveTick = nowTick;
   }
 
   function persistLevelsIfNeeded() {
-    // Now handled by persistAllIfNeeded()
+    if (!levelsDirty && (nowTick - lastLevelsSaveTick) < 200) return;
+    const obj = {};
+    for (const [k, v] of transferCounts.entries()) obj[k] = v;
+    saveInputLevels(world, obj);
+    if (debugEnabled) debugState.dpSaves++;
+    levelsDirty = false;
+    lastLevelsSaveTick = nowTick;
   }
 
   function loadOutputLevelsState() {
@@ -851,10 +384,17 @@ export function createNetworkTransferController(deps, opts) {
       outputCounts.set(k, n | 0);
     }
     outputLevelsDirty = false;
+    lastOutputLevelsSaveTick = nowTick;
   }
 
   function persistOutputLevelsIfNeeded() {
-    // Now handled by persistAllIfNeeded()
+    if (!outputLevelsDirty && (nowTick - lastOutputLevelsSaveTick) < 200) return;
+    const obj = {};
+    for (const [k, v] of outputCounts.entries()) obj[k] = v;
+    saveOutputLevels(world, obj);
+    if (debugEnabled) debugState.dpSaves++;
+    outputLevelsDirty = false;
+    lastOutputLevelsSaveTick = nowTick;
   }
 
   function loadPrismLevelsState() {
@@ -866,124 +406,17 @@ export function createNetworkTransferController(deps, opts) {
       prismCounts.set(k, n | 0);
     }
     prismLevelsDirty = false;
+    lastPrismLevelsSaveTick = nowTick;
   }
 
   function persistPrismLevelsIfNeeded() {
-    // Now handled by persistAllIfNeeded()
-  }
-
-  // Force save all state immediately (used on shutdown/reload)
-  function forceSaveAll() {
-    let savesCount = 0;
-    
-    // Always save inflight state (critical for preventing data loss on reload)
-    // Save even if not dirty to ensure we capture current state
-    if (inflight.length > 0 || inflightDirty || inflightStepDirty) {
-      persistInflightStateToWorld(world, inflight);
-      savesCount++;
-      inflightDirty = false;
-      inflightStepDirty = false;
-    }
-    
-    // Save all other state if dirty
-    if (prismLevelsDirty) {
-      const obj = {};
-      for (const [k, v] of prismCounts.entries()) obj[k] = v;
-      savePrismLevels(world, obj);
-      savesCount++;
-      prismLevelsDirty = false;
-    }
-    
-    if (levelsDirty) {
-      const obj = {};
-      for (const [k, v] of transferCounts.entries()) obj[k] = v;
-      saveInputLevels(world, obj);
-      savesCount++;
-      levelsDirty = false;
-    }
-    
-    if (outputLevelsDirty) {
-      const obj = {};
-      for (const [k, v] of outputCounts.entries()) obj[k] = v;
-      saveOutputLevels(world, obj);
-      savesCount++;
-      outputLevelsDirty = false;
-    }
-    
-    if (savesCount > 0) {
-      lastSaveTick = nowTick;
-      if (debugEnabled) debugState.dpSaves += savesCount;
-    }
-  }
-
-  // Batched save function - saves all dirty data in one operation
-  function persistAllIfNeeded() {
-    // Special case: if inflight is empty and dirty, save immediately (critical for clearing state)
-    if (inflightDirty && inflight.length === 0) {
-      persistInflightStateToWorld(world, inflight);
-      if (debugEnabled) debugState.dpSaves++;
-      inflightDirty = false;
-      inflightStepDirty = false;
-      lastSaveTick = nowTick;
-      return;
-    }
-    
-    // Check if we need to save and if enough time has passed
-    const needsSave = inflightDirty || inflightStepDirty || levelsDirty || outputLevelsDirty || prismLevelsDirty;
-    if (!needsSave) return;
-
-    // Check save interval - use shorter interval for inflight (more critical) or longer for levels
-    const inflightInterval = Math.max(1, cfg.inflightSaveIntervalTicks | 0);
-    const needsInflightSave = (inflightDirty || inflightStepDirty) && (nowTick - lastSaveTick) >= inflightInterval;
-    // Save prism levels more frequently so linkVision sees updates quickly
-    const needsPrismLevelsSave = prismLevelsDirty && (nowTick - lastSaveTick) >= PRISM_LEVELS_SAVE_INTERVAL_TICKS;
-    const needsOtherLevelsSave = (levelsDirty || outputLevelsDirty) && (nowTick - lastSaveTick) >= SAVE_INTERVAL_TICKS;
-    const needsLevelsSave = needsPrismLevelsSave || needsOtherLevelsSave;
-    
-    if (!needsInflightSave && !needsLevelsSave) return;
-    
-    // Batch all saves into one operation
-    let savesCount = 0;
-    
-    // Save inflight state (higher priority, shorter interval)
-    if (needsInflightSave && (inflightDirty || inflightStepDirty)) {
-      persistInflightStateToWorld(world, inflight);
-      savesCount++;
-      inflightDirty = false;
-      inflightStepDirty = false;
-    }
-    
-    // Save prism levels (save more frequently to ensure linkVision sees updates)
-    if (needsPrismLevelsSave && prismLevelsDirty) {
-      const obj = {};
-      for (const [k, v] of prismCounts.entries()) obj[k] = v;
-      savePrismLevels(world, obj);
-      savesCount++;
-      prismLevelsDirty = false;
-    }
-    
-    // Save input/output levels (with normal interval)
-    if (needsOtherLevelsSave && levelsDirty) {
-      const obj = {};
-      for (const [k, v] of transferCounts.entries()) obj[k] = v;
-      saveInputLevels(world, obj);
-      savesCount++;
-      levelsDirty = false;
-    }
-    
-    if (needsOtherLevelsSave && outputLevelsDirty) {
-      const obj = {};
-      for (const [k, v] of outputCounts.entries()) obj[k] = v;
-      saveOutputLevels(world, obj);
-      savesCount++;
-      outputLevelsDirty = false;
-    }
-    
-    // Update last save tick if any save occurred
-    if (savesCount > 0) {
-      lastSaveTick = nowTick;
-      if (debugEnabled) debugState.dpSaves += savesCount;
-    }
+    if (!prismLevelsDirty && (nowTick - lastPrismLevelsSaveTick) < 200) return;
+    const obj = {};
+    for (const [k, v] of prismCounts.entries()) obj[k] = v;
+    savePrismLevels(world, obj);
+    if (debugEnabled) debugState.dpSaves++;
+    prismLevelsDirty = false;
+    lastPrismLevelsSaveTick = nowTick;
   }
 
   function enqueuePendingForContainer(containerKey, itemTypeId, amount, outputKey, reservedTypeId) {
@@ -1076,13 +509,8 @@ export function createNetworkTransferController(deps, opts) {
         queue.shift();
         releaseContainerSlot(containerKey, job.reservedTypeId || job.itemTypeId, job.amount);
         const outInfo = job.outputKey ? resolveBlockInfo(job.outputKey) : null;
-        if (outInfo?.block && isPrismBlock(outInfo.block)) {
-          // For prisms, count transfers (crystallizers don't track transfers)
-          if (!job.countedPrisms) job.countedPrisms = [];
-          if (!job.countedPrisms.includes(job.outputKey)) {
-            job.countedPrisms.push(job.outputKey);
-            notePrismPassage(job.outputKey, outInfo.block);
-          }
+        if (outInfo?.block && (isPrismBlock(outInfo.block) || outInfo.block.typeId === CRYSTALLIZER_ID)) {
+          noteOutputTransfer(job.outputKey, outInfo.block);
         }
         if (queue.length === 0) {
           queueByContainer.delete(containerKey);
@@ -1121,31 +549,6 @@ export function createNetworkTransferController(deps, opts) {
     nowTick++;
     resetTickCaches();
     orbFxBudgetUsed = 0;
-    
-    // Optimization #3: Clear batch route lookup results each tick (only valid for one tick)
-    routeLookupResults.clear();
-    
-    // Optimization #4: Periodically check if crystallizers exist in network
-    // If we've done many route lookups and all returned null, mark as no crystallizers
-    if ((nowTick - lastCrystallizerCheckTick) >= CRYSTALLIZER_CHECK_INTERVAL) {
-      // Check if cache has any non-null routes - if not, maybe no crystallizers exist
-      // But be conservative - only mark as false if we're very confident
-      if (crystallizerRouteCache.size > 20) {
-        let foundAny = false;
-        for (const [key, value] of crystallizerRouteCache.entries()) {
-          if (value && value.route !== null && (nowTick - value.tick) < CRYSTALLIZER_ROUTE_CACHE_TTL) {
-            foundAny = true;
-            break;
-          }
-        }
-        // If we've checked many prisms and never found a route, probably no crystallizers
-        if (!foundAny && hasCrystallizersInNetwork === null) {
-          hasCrystallizersInNetwork = false; // Tentatively mark as no crystallizers
-          // Will be reset if we ever find one
-        }
-      }
-      lastCrystallizerCheckTick = nowTick;
-    }
 
     const tickStart = debugEnabled ? Date.now() : 0;
 
@@ -1155,8 +558,6 @@ export function createNetworkTransferController(deps, opts) {
           const t0 = Date.now();
           tickOutputQueues();
           tickFullContainers();
-          processInventoryScanQueue();
-          processPathfindingQueue();
           debugState.msQueues += (Date.now() - t0);
         },
         () => {
@@ -1172,21 +573,15 @@ export function createNetworkTransferController(deps, opts) {
       ]);
     } else {
       runTransferPipeline([
-        () => {
-          tickOutputQueues();
-          tickFullContainers();
-          processInventoryScanQueue();
-          processPathfindingQueue();
-        },
+        tickOutputQueues,
+        tickFullContainers,
         tickInFlight,
         tickFluxFxInFlight,
       ]);
     }
 
     const scanStart = debugEnabled ? Date.now() : 0;
-    // Use active prisms only (pre-filtered to only include those with inventories)
-    const prismKeys = getActivePrismKeys();
-    // Prism count tracked in aggregated stats (postDebugStats)
+    const prismKeys = getPrismKeys();
     if (prismKeys.length === 0) return;
 
     if (cursor >= prismKeys.length) cursor = 0;
@@ -1208,13 +603,9 @@ export function createNetworkTransferController(deps, opts) {
       if (nowTick < allowedAt) continue;
 
       // Attempt transfer with budgeted searches
-      const tAttempt = debugEnabled ? Date.now() : 0;
       const result = attemptTransferForPrism(prismKey, searchBudget);
-      if (debugEnabled) debugState.msScanAttemptTransfer += (Date.now() - tAttempt);
       const searchesUsed = result?.searchesUsed || 0;
       searchBudget -= searchesUsed;
-      
-      // Track attempts in stats, don't spam chat
 
       const didTransfer = !!result?.ok;
       if (didTransfer) {
@@ -1222,10 +613,7 @@ export function createNetworkTransferController(deps, opts) {
         transferBudget--;
       }
 
-      // Get block info for interval calculation (resolveBlockInfo uses cache internally)
-      const tInterval = debugEnabled ? Date.now() : 0;
       const info = resolveBlockInfo(prismKey);
-      if (debugEnabled) debugState.msScanResolveBlock += (Date.now() - tInterval);
       let interval = cfg.perPrismIntervalTicks;
       if (info && info.block) {
         const s = getSpeed(info.block);
@@ -1241,7 +629,6 @@ export function createNetworkTransferController(deps, opts) {
         clearBackoff(prismKey);
       }
       nextAllowed.set(prismKey, nowTick + interval);
-      if (debugEnabled) debugState.msScanIntervalCalc += (Date.now() - tInterval);
 
       // If we're out of budgets, stop scanning
       if (transferBudget <= 0 && searchBudget <= 0) break;
@@ -1252,259 +639,56 @@ export function createNetworkTransferController(deps, opts) {
       debugState.msScan += (Date.now() - scanStart);
     }
 
-    // Periodic forced save as safety net (bypasses interval checks)
-    if ((nowTick - lastForcedSaveTick) >= FORCED_SAVE_INTERVAL_TICKS) {
-      if (inflight.length > 0 || inflightDirty || inflightStepDirty) {
-        // Force save inflight state periodically to prevent data loss
-        persistInflightStateToWorld(world, inflight);
-        inflightDirty = false;
-        inflightStepDirty = false;
-        lastForcedSaveTick = nowTick;
-      }
-    }
-    
     if (debugEnabled) {
       const t3 = Date.now();
-      persistAllIfNeeded();
+      persistInflightIfNeeded();
+      persistLevelsIfNeeded();
+      persistOutputLevelsIfNeeded();
+      persistPrismLevelsIfNeeded();
       debugState.msPersist += (Date.now() - t3);
       debugState.msTotal += (Date.now() - tickStart);
     } else {
-      persistAllIfNeeded();
+      persistInflightIfNeeded();
+      persistLevelsIfNeeded();
+      persistOutputLevelsIfNeeded();
+      persistPrismLevelsIfNeeded();
     }
     if (debugEnabled) postDebugStats(prismKeys.length);
   }
 
   function getPrismKeys() {
     try {
-      let stamp = null;
       if (typeof getNetworkStamp === "function") {
-        stamp = getNetworkStamp();
+        const stamp = getNetworkStamp();
         if (cachedInputKeys && cachedInputsStamp === stamp) return cachedInputKeys;
-      }
-      
-      // Check raw dynamic property size first
-      let rawSize = 0;
-      let rawData = null;
-      try {
-        rawData = world.getDynamicProperty(DP_BEAMS);
-        rawSize = typeof rawData === "string" ? rawData.length : 0;
-      } catch {}
-      
-      const map = loadBeamsMap(world);
-      // Filter to only return actual prisms from beams map
-      const allKeys = Object.keys(map || {});
-      const prismKeys = [];
-      let foundCount = 0;
-      let missingCount = 0;
-      let invalidCount = 0;
-      let parseFailCount = 0;
-      
-      // Track map stats for aggregated debug output (no per-call messages)
-      
-      for (const k of allKeys) {
-        // Quick filter: check if entry has kind="prism" (faster than block lookup)
-        const entry = map[k];
-        const hasPrismKind = entry && typeof entry === "object" && entry.kind === "prism";
-        
-        // First check if key parses
-        const parsed = parseKey(k);
-        if (!parsed) {
-          parseFailCount++;
-          continue;
-        }
-        
-        // Skip block lookup if entry doesn't have prism kind (but still do lookup if kind is missing for backwards compat)
-        if (entry && typeof entry === "object" && entry.kind && entry.kind !== "prism") {
-          missingCount++;
-          continue;
-        }
-        
-        const info = resolveBlockInfoCached(k);
-        if (!info) {
-          invalidCount++;
-          // Track lookup failures in stats, don't spam chat
-          continue;
-        }
-        if (info && info.block && isPrismBlock(info.block)) {
-          prismKeys.push(k);
-          foundCount++;
-        } else {
-          missingCount++;
-          // Track wrong block types in stats, don't spam chat
-        }
-      }
-      
-      // Track stats for aggregated debug output
-      // Only show warnings for critical issues
-      if (debugEnabled && prismKeys.length === 0 && inflight.length === 0 && nowTick % (debugInterval * 5) === 0) {
-        // Only warn if no prisms AND no inflight transfers for extended period
-        try {
-          const msg = `[Transfer] WARNING: No prisms found in map (${allKeys.length} total keys). Check if prisms are registered.`;
-          for (const player of world.getAllPlayers()) {
-            if (typeof player.sendMessage === "function") player.sendMessage(msg);
-          }
-        } catch {}
-      }
-      
-      // Warn about large map size (potential DP limit issue)
-      if (rawSize > 100000 && nowTick % (debugInterval * 10) === 0) { // 100KB - warn every 10 debug intervals
-        try {
-          const warnMsg = `[Transfer] WARNING: Beams map is ${Math.round(rawSize/1024)}KB - may exceed DP size limit!`;
-          for (const player of world.getAllPlayers()) {
-            if (typeof player.sendMessage === "function") player.sendMessage(warnMsg);
-          }
-        } catch {}
-      }
-      
-      // If no prisms found in beams map but we have inflight transfers, there might be prisms not in the map
-      // This can happen if beams map gets cleared or prisms aren't registered yet
-      if (prismKeys.length === 0 && inflight.length > 0) {
-        // Try to find prisms from inflight transfer output keys
-        const seenKeys = new Set();
-        for (const job of inflight) {
-          if (job.outputKey && !seenKeys.has(job.outputKey)) {
-            seenKeys.add(job.outputKey);
-            const info = resolveBlockInfoCached(job.outputKey);
-            if (info && info.block && isPrismBlock(info.block)) {
-              prismKeys.push(job.outputKey);
-              foundCount++;
-            }
-          }
-          if (job.prismKey && !seenKeys.has(job.prismKey)) {
-            seenKeys.add(job.prismKey);
-            const info = resolveBlockInfoCached(job.prismKey);
-            if (info && info.block && isPrismBlock(info.block)) {
-              prismKeys.push(job.prismKey);
-              foundCount++;
-            }
+        const map = loadBeamsMap(world);
+        // Filter to only return actual prisms
+        const allKeys = Object.keys(map || {});
+        const prismKeys = [];
+        for (const k of allKeys) {
+          const info = resolveBlockInfoCached(k);
+          if (info && info.block && isPrismBlock(info.block)) {
+            prismKeys.push(k);
           }
         }
-      }
-      
-      // Auto-cleanup stale entries if too many lookups are failing
-      // Run cleanup more aggressively if no prisms found (every 100 ticks = 5 seconds)
-      // Otherwise run every 600 ticks (30 seconds) if >50% of entries are stale
-      if (prismKeys.length === 0 && invalidCount > allKeys.length * 0.5 && nowTick % 100 === 0) {
-        cleanupStaleBeamsMapEntries();
-      } else if (invalidCount > allKeys.length * 0.5 && nowTick % 600 === 0) {
-        cleanupStaleBeamsMapEntries();
-      }
-      // Track high invalid count in stats, cleanup happens automatically
-      
-      if (typeof getNetworkStamp === "function" && stamp !== null) {
         cachedInputKeys = prismKeys;
         cachedInputsStamp = stamp;
+        if (debugEnabled) debugState.inputMapReloads++;
+        return cachedInputKeys;
       }
-      if (debugEnabled) debugState.inputMapReloads++;
-      
-      // Prism count tracked in aggregated stats (postDebugStats) - no per-call messages
-      return prismKeys;
-    } catch (e) {
-      // Track errors in stats, don't spam chat (only show critical errors)
-      if (debugEnabled && nowTick % (debugInterval * 10) === 0) {
-        try {
-          const msg = `[Transfer] ERROR loading prisms: ${e?.message || "unknown"}`;
-          for (const player of world.getAllPlayers()) {
-            if (typeof player.sendMessage === "function") player.sendMessage(msg);
-          }
-        } catch {}
-      }
-      // Fallback: return empty array
-      return [];
+    } catch {
+      // ignore
     }
-  }
-
-  // Cleanup function to remove stale entries from beams map
-  function cleanupStaleBeamsMapEntries() {
-    try {
-      const map = loadBeamsMap(world);
-      const allKeys = Object.keys(map || {});
-      if (allKeys.length === 0) return;
-      
-      let removed = 0;
-      let kept = 0;
-      const cleaned = {};
-      
-      for (const k of allKeys) {
-        const entry = map[k];
-        if (!entry || typeof entry !== "object") {
-          removed++;
-          continue;
-        }
-        
-        // Parse key to get coordinates
-        const parsed = parseKey(k);
-        if (!parsed) {
-          removed++;
-          continue;
-        }
-        
-        // Check if block exists and is a prism
-        const info = resolveBlockInfoDirect(k);
-        if (info && info.error) {
-          // Block doesn't exist or dimension invalid - remove entry
-          removed++;
-          continue;
-        }
-        
-        if (info && info.block && isPrismBlock(info.block)) {
-          // Valid prism - ensure connections array exists
-          if (!Array.isArray(entry.connections)) {
-            entry.connections = [];
-          }
-          cleaned[k] = entry;
-          kept++;
-        } else {
-          // Block exists but isn't a prism - remove entry
-          removed++;
-        }
-      }
-      
-      // Save cleaned map
-      if (removed > 0) {
-        saveBeamsMap(world, cleaned);
-        
-        // Clear caches so fresh lookups can happen
-        resetTickCaches();
-        
-        if (debugEnabled) {
-          try {
-            const msg = `[Transfer] Cleanup: Removed ${removed} stale entries, kept ${kept} valid prisms (caches cleared)`;
-            for (const player of world.getAllPlayers()) {
-              if (typeof player.sendMessage === "function") player.sendMessage(msg);
-            }
-          } catch {}
-        }
-      } else if (kept === 0 && allKeys.length > 0) {
-        // Map has entries but none are valid - might be completely stale
-        if (debugEnabled) {
-          try {
-            const msg = `[Transfer] Cleanup: All ${allKeys.length} entries were stale - map cleared`;
-            for (const player of world.getAllPlayers()) {
-              if (typeof player.sendMessage === "function") player.sendMessage(msg);
-            }
-          } catch {}
-        }
-        // Clear the entire map if all entries are invalid
-        saveBeamsMap(world, {});
-        resetTickCaches();
-      }
-    } catch (err) {
-      if (debugEnabled) {
-        try {
-          const msg = `[Transfer] Cleanup error: ${err?.message || String(err)}`;
-          for (const player of world.getAllPlayers()) {
-            if (typeof player.sendMessage === "function") player.sendMessage(msg);
-          }
-        } catch {}
+    const map = loadBeamsMap(world);
+    const allKeys = Object.keys(map || {});
+    const prismKeys = [];
+    for (const k of allKeys) {
+      const info = resolveBlockInfoCached(k);
+      if (info && info.block && info.block.typeId === PRISM_ID) {
+        prismKeys.push(k);
       }
     }
-  }
-
-  // Scan nearby area for prisms (disabled - too expensive, use aggregated stats instead)
-  function scanNearbyPrisms() {
-    // Disabled to reduce lag - use aggregated stats instead
-    return;
+    return prismKeys;
   }
 
   // Legacy function name
@@ -1513,23 +697,7 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function resolveBlockInfo(inputKey) {
-    // Try cached first
-    const cached = resolveBlockInfoCached(inputKey);
-    if (cached) return cached;
-    
-    // Fallback: try direct lookup if cache failed
-    try {
-      if (!inputKey) return null;
-      const pos = parseKey(inputKey);
-      if (!pos) return null;
-      const dim = world.getDimension(pos.dimId);
-      if (!dim) return null;
-      const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
-      if (!block) return null;
-      return { dim, block, pos };
-    } catch {
-      return null;
-    }
+    return resolveBlockInfoCached(inputKey);
   }
 
   function makeResult(ok, reason) {
@@ -1546,66 +714,51 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  // Unified push/pull transfer for prisms with smart mode detection
+  // Unified push/pull transfer for prisms
   function attemptTransferForPrism(prismKey, searchBudget) {
     let searchesUsed = 0;
-    const tResolve = debugEnabled ? Date.now() : 0;
     const prismInfo = resolveBlockInfo(prismKey);
-    if (debugEnabled) debugState.msScanResolveBlock += (Date.now() - tResolve);
     if (!prismInfo) return { ...makeResult(false, "no_prism"), searchesUsed };
 
     const dim = prismInfo.dim;
     const prismBlock = prismInfo.block;
     if (!prismBlock || !isPrismBlock(prismBlock)) return { ...makeResult(false, "no_prism"), searchesUsed };
 
-    // Quick check: does this prism have inventories? (cached)
-    if (!getPrismHasInventories(prismKey)) {
-      return { ...makeResult(false, "no_container"), searchesUsed };
-    }
-
-    // Get all adjacent inventories (multi-inventory support) - cached
-    const tInv = debugEnabled ? Date.now() : 0;
-    const inventories = getPrismInventoriesCached(prismKey, prismBlock, dim);
-    if (debugEnabled) debugState.msScanGetInventories += (Date.now() - tInv);
-    if (!inventories || inventories.length === 0) {
-      // Invalidate cache if we got false positive
-      prismInventoryCache.set(prismKey, false);
-      prismInventoryCacheTimestamps.set(prismKey, nowTick);
-      return { ...makeResult(false, "no_container"), searchesUsed };
-    }
+    // Get all adjacent inventories (multi-inventory support)
+    const inventories = getAllAdjacentInventories(prismBlock, dim);
+    if (!inventories || inventories.length === 0) return { ...makeResult(false, "no_container"), searchesUsed };
 
     // Get filter for this prism (attunement)
     const filter = getFilterForBlock(prismBlock);
     const filterSet = filter ? (filter instanceof Set ? filter : getFilterSet(filter)) : null;
     const hasFilter = filterSet && filterSet.size > 0;
 
-    // PRIORITY: Always prioritize filtered pull transfers (demand-driven)
-    // Then handle push if no pull happened
-    if (hasFilter && searchBudget > 0) {
-      // PULL MODE: Request filtered items from network (highest priority)
-      const result = attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget);
+    // TRY PUSH: Extract items from inventories and send to network
+    // - If unattuned: push random items
+    // - If attuned: push items NOT in filter
+    const randomItem = getRandomItemFromInventories(inventories, filterSet);
+    if (randomItem && searchBudget > 0) {
+      const result = attemptPushTransfer(prismKey, prismBlock, dim, inventories, randomItem, filterSet, searchBudget);
       if (result.ok) return result;
       searchesUsed += result.searchesUsed || 0;
       searchBudget -= result.searchesUsed || 0;
     }
-    
-    // PUSH MODE: Extract items from inventories and send to network (secondary priority)
-    if (searchBudget > 0) {
-      const tItem = debugEnabled ? Date.now() : 0;
-      const randomItem = getRandomItemFromInventories(inventories, filterSet);
-      if (debugEnabled) debugState.msScanGetItem += (Date.now() - tItem);
-      if (randomItem) {
-        const result = attemptPushTransfer(prismKey, prismBlock, dim, inventories, randomItem, filterSet, searchBudget);
-        if (result.ok) {
-          return result;
-        }
-        searchesUsed += result.searchesUsed || 0;
-      }
+
+    // TRY PULL: Request filtered items from network (only if attuned and no push happened)
+    if (hasFilter && searchBudget > 0) {
+      const result = attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget);
+      if (result.ok) return result;
+      searchesUsed += result.searchesUsed || 0;
     }
 
     return { ...makeResult(false, "no_transfer"), searchesUsed };
   }
 
+  // Legacy function name
+  function attemptTransferOne(inputKey) {
+    const result = attemptTransferForPrism(inputKey, cfg.maxSearchesPerTick);
+    return makeResult(result.ok, result.reason);
+  }
 
   // Push transfer: extract items from this prism's inventories and send to other prisms
   function attemptPushTransfer(prismKey, prismBlock, dim, inventories, itemSource, filterSet, searchBudget) {
@@ -1622,36 +775,20 @@ export function createNetworkTransferController(deps, opts) {
     if (!prismInfo) return { ...makeResult(false, "no_prism"), searchesUsed };
 
     // Find path to target prism using pathfinder
-    // Pathfinder has its own caching, so we call directly
     searchesUsed = 1;
+    // Use findPathForInput (legacy name, but now works with prisms via pathfinder update)
     if (typeof findPathForInput !== "function") {
       return { ...makeResult(false, "no_pathfinder"), searchesUsed };
     }
 
     const options = findPathForInput(prismKey, nowTick);
     if (!options || !Array.isArray(options) || options.length === 0) {
-      // Debug: no paths found (show every 100 ticks to reduce spam)
-        // Track path finding failures in stats, don't spam chat
       if (typeof invalidateInput === "function") invalidateInput(prismKey);
       return { ...makeResult(false, "no_options"), searchesUsed };
     }
-    
-    // Debug: paths found (show occasionally)
-    // Path finding stats tracked in aggregated output (no per-search messages)
-    
-    // Optimization #4: Track if crystallizers exist in network during pathfinding
-    // Check if any of the pathfinding options are crystallizers
-    for (const opt of options) {
-      if (opt?.outputType === "crystal") {
-        hasCrystallizersInNetwork = true; // Found a crystallizer in the network
-        break;
-      }
-    }
 
-    // Filter and categorize options: prioritize filtered requests, but include all valid options
-    const prioritizedOptions = []; // Options with matching filters (highest priority)
-    const otherOptions = []; // Options without filters or that don't match
-    
+    // Filter options to prioritize prisms that want this item (matching filters)
+    const filteredOptions = [];
     for (const opt of options) {
       if (!opt || !opt.outputKey) continue;
       const targetInfo = resolveBlockInfo(opt.outputKey);
@@ -1659,48 +796,36 @@ export function createNetworkTransferController(deps, opts) {
 
       // Crystallizers can always accept flux
       if (targetInfo.block.typeId === CRYSTALLIZER_ID) {
-        // Optimization #4: Track crystallizer existence during pathfinding
-        if (hasCrystallizersInNetwork !== true) {
-          hasCrystallizersInNetwork = true; // Found a crystallizer in the network
-        }
         if (isFluxTypeId(sourceStack.typeId)) {
-          prioritizedOptions.push(opt); // Crystallizers are high priority for flux
+          filteredOptions.push(opt);
         }
         continue;
       }
 
       // Prisms - check if they have space and matching filter
       if (isPrismBlock(targetInfo.block)) {
-        const targetPrismKey = opt.outputKey; // Use the outputKey from the pathfinding result
-        const targetInventories = getPrismInventoriesCached(targetPrismKey, targetInfo.block, targetInfo.dim);
+        const targetInventories = getAllAdjacentInventories(targetInfo.block, targetInfo.dim);
         if (!targetInventories || targetInventories.length === 0) continue;
 
         const targetFilter = getFilterForBlock(targetInfo.block);
         const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
         
-        // Prioritize if target has filter AND wants this item (they're requesting it)
-        if (targetFilterSet && targetFilterSet.size > 0 && targetFilterSet.has(sourceStack.typeId)) {
-          prioritizedOptions.push(opt); // High priority: filtered request
-        } else if (!targetFilterSet || targetFilterSet.size === 0) {
-          otherOptions.push(opt); // Lower priority: no filter (can accept anything)
+        // If target has filter, prioritize if this item matches (they want it)
+        // If target has no filter, they can accept any item
+        if (!targetFilterSet || targetFilterSet.size === 0 || targetFilterSet.has(sourceStack.typeId)) {
+          filteredOptions.push(opt);
         }
-        // If target has filter but doesn't want this item, skip it
       }
     }
 
-    // Combine: prioritized first, then others (for random distribution)
-    const allValidOptions = prioritizedOptions.length > 0 
-      ? prioritizedOptions.concat(otherOptions)
-      : otherOptions;
-
-    if (allValidOptions.length === 0) {
+    if (filteredOptions.length === 0) {
       if (typeof invalidateInput === "function") invalidateInput(prismKey);
       return { ...makeResult(false, "no_options"), searchesUsed };
     }
 
     if (debugEnabled) {
-      debugState.outputOptionsTotal += allValidOptions.length;
-      debugState.outputOptionsMax = Math.max(debugState.outputOptionsMax, allValidOptions.length);
+      debugState.outputOptionsTotal += filteredOptions.length;
+      debugState.outputOptionsMax = Math.max(debugState.outputOptionsMax, filteredOptions.length);
     }
 
     const isFlux = isFluxTypeId(sourceStack.typeId);
@@ -1714,7 +839,7 @@ export function createNetworkTransferController(deps, opts) {
     let sawFull = false;
     let outputType = "prism";
 
-    let candidates = allValidOptions.slice();
+    let candidates = filteredOptions.slice();
     if (!isFlux) {
       candidates = candidates.filter((c) => (c?.outputType || "prism") !== "crystal");
     }
@@ -1722,13 +847,10 @@ export function createNetworkTransferController(deps, opts) {
 
     const available = sourceStack.amount;
     while (candidates.length > 0) {
-      // Random selection with bias: prioritize filtered requests (higher weight)
       const pick = pickWeightedRandomWithBias(candidates, (opt) => {
         const type = opt?.outputType || "prism";
         if (isFlux && type === "crystal") return CRYSTAL_FLUX_WEIGHT;
-        // Give higher weight to prioritized options (filtered requests)
-        const isPrioritized = prioritizedOptions.includes(opt);
-        return isPrioritized ? 5.0 : 1.0; // Filtered requests get 5x weight
+        return 1.0;
       });
       if (!pick || !Array.isArray(pick.path) || pick.path.length === 0) break;
       if (pick.path.length > MAX_STEPS) {
@@ -1781,7 +903,7 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      // Check if we can insert into any of the target inventories (capacity check only, don't insert yet)
+      // Check if we can insert into any of the target inventories
       let foundTarget = false;
       for (const targetInv of targetInventories) {
         if (!targetInv.container) continue;
@@ -1797,10 +919,10 @@ export function createNetworkTransferController(deps, opts) {
           continue;
         }
 
-        // Check capacity (don't insert yet - that happens during finalization)
+        // Try to insert
         const desiredAmount = getTransferAmount(previewLevel, sourceStack);
-        const capacity = getInsertCapacityWithReservations(targetContainerKey, targetInv.container, sourceStack.typeId, sourceStack, targetInv.block);
-        if (capacity >= desiredAmount) {
+        const inserted = tryInsertIntoInventories([targetInv], sourceStack.typeId, desiredAmount, null); // No filter check here - already filtered above
+        if (inserted) {
           pathInfo = pick;
           outInfo = info;
           outBlock = info.block;
@@ -1822,18 +944,9 @@ export function createNetworkTransferController(deps, opts) {
       return { ...makeResult(false, sawFull ? "full" : "no_options"), searchesUsed };
     }
 
-    // Debug: validate path before extraction
     if (!validatePathStart(dim, pathInfo.path)) {
-      if (debugEnabled) {
-        try {
-          const msg = `[Transfer] Path validation failed! Path length: ${pathInfo.path?.length || 0}`;
-          for (const player of world.getAllPlayers()) {
-            if (typeof player.sendMessage === "function") player.sendMessage(msg);
-          }
-        } catch {}
-      }
       if (typeof invalidateInput === "function") invalidateInput(prismKey);
-      return { ...makeResult(false, "path_invalid"), searchesUsed };
+      return { ...makeResult(false, "no_options"), searchesUsed };
     }
 
     // Extract item from source inventory
@@ -1864,99 +977,34 @@ export function createNetworkTransferController(deps, opts) {
     const firstStep = pathInfo.path[0];
     const prismPos = prismInfo.pos;
     const firstBlock = getBlockCached(prismPos.dimId, firstStep) || dim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
-    
-    // Use node-based path (segments between prisms) - orbs move between nodes, not block-by-block
-    // Visual speed scales with distance so all segments take the same time
     const nodePath = buildNodePathSegments(dim, pathInfo.path, prismPos);
-    let travelPath = nodePath?.points || pathInfo.path;
+    const travelPath = nodePath?.points || pathInfo.path;
     const segmentLengths = nodePath?.lengths || null;
 
-    // Ensure path has at least 2 points (source and destination)
-    if (!travelPath || travelPath.length < 2) {
-      if (debugEnabled) {
-        try {
-          const msg = `[Transfer] Path too short! Length: ${travelPath?.length || 0}, using fallback`;
-          for (const player of world.getAllPlayers()) {
-            if (typeof player.sendMessage === "function") player.sendMessage(msg);
-          }
-        } catch {}
-      }
-      // Fallback: create a path with at least source and destination
-      const destPos = pathInfo.outputPos || (pathInfo.path && pathInfo.path[pathInfo.path.length - 1]);
-      if (destPos) {
-        travelPath = [
-          { x: prismPos.x, y: prismPos.y, z: prismPos.z },
-          { x: destPos.x, y: destPos.y, z: destPos.z }
-        ];
-        // For fallback, assume segment length of 1
-        if (!segmentLengths) {
-          segmentLengths = [1];
-        }
-      } else {
-        return { ...makeResult(false, "path_too_short"), searchesUsed };
-      }
-    }
-
     const pathPrismKey = findFirstPrismKeyInPath(dim, prismPos.dimId, pathInfo.path);
-    // Note: We track transfers when items arrive at destination, not when they start
-    // For speed calculations, use the current tier of the source prism
-    const sourceTier = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock.typeId) : 1;
-    const level = sourceTier; // Use tier for speed calculation
-    // stepTicks is constant per segment - visual speed scales with distance automatically
-    const stepTicks = getOrbStepTicks(level);
+    const level = noteTransferAndGetLevel(prismKey, prismBlock);
+    const baseStepTicks = getOrbStepTicks(level);
     
-    // Calculate initial speed boost from source prism tier
-    const sourceBoost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, sourceTier) - 1) * PRISM_SPEED_BOOST_PER_TIER);
-    const initialSpeedScale = Math.min(SPEED_SCALE_MAX, 1.0 + sourceBoost);
-    
-    // Track transfer creation in debug stats (no per-transfer messages)
     if (debugEnabled) {
-      debugState.transfersStarted++;
-    }
-    
-    // Calculate initial delay - time scales with segment length
-    // Visual speed is constant, so longer segments take longer
-    // stepTicks is time per block, so multiply by segment length
-    // Speed boost from source prism is already applied
-    const segLen = segmentLengths?.[0] || 1;
-    // Time per segment = time per block * number of blocks
-    // Apply speed boost to make higher tier prisms faster
-    const baseTicksPerBlock = Math.max(1, Math.floor(stepTicks / 4)); // Faster: divide by 4
-    const ticksPerBlock = Math.max(1, Math.floor(baseTicksPerBlock / Math.max(0.1, initialSpeedScale)));
-    const totalTicksForFirstSegment = ticksPerBlock * Math.max(1, segLen | 0);
-    
-    // Hard limit: don't create new transfers if we're already overloaded
-    // Instead, queue the item for later insertion when capacity is available
-    const maxInflight = cfg.maxInflight || 100;
-    if (inflight.length >= maxInflight) {
-      // Too many in-flight transfers - queue item instead of creating new transfer
-      if (containerKey) {
-        enqueuePendingForContainer(containerKey, sourceStack.typeId, transferAmount, pathInfo.outputKey, sourceStack.typeId);
-      } else {
-        // No container key - drop as fallback
-        dropItemAt(dim, prismPos, sourceStack.typeId, transferAmount);
+      debugState.transferStartTicks.push(nowTick);
+      debugState.stepTicksTotal += baseStepTicks;
+      debugState.stepTicksCount++;
+      if (baseStepTicks < debugState.stepTicksMin) debugState.stepTicksMin = baseStepTicks;
+      if (baseStepTicks > debugState.stepTicksMax) debugState.stepTicksMax = baseStepTicks;
+      if (segmentLengths && segmentLengths.length > 0) {
+        debugState.segmentStepsTotal += segmentLengths.length;
+        debugState.segmentStepsCount++;
       }
-      return { ...makeResult(false, "too_many_inflight"), searchesUsed };
     }
     
-    // Track which prisms we've already counted for this transfer (to avoid double-counting)
-    // Use array for serialization compatibility (Sets can't be serialized)
-    const countedPrisms = [];
-    
-    // Count transfer for source prism (input)
-    if (prismKey && isPrismBlock(prismBlock)) {
-      countedPrisms.push(prismKey);
-      notePrismPassage(prismKey, prismBlock);
-    }
-    
-    const newJob = {
+    inflight.push({
       dimId: prismPos.dimId,
       itemTypeId: sourceStack.typeId,
       amount: transferAmount,
       path: travelPath,
       stepIndex: 0,
-      stepTicks: stepTicks,
-      speedScale: initialSpeedScale,
+      stepTicks: baseStepTicks,
+      speedScale: 1.0,
       outputKey: pathInfo.outputKey,
       outputType: outputType,
       suppressOrb: suppressOrb,
@@ -1965,39 +1013,12 @@ export function createNetworkTransferController(deps, opts) {
       startPos: { x: prismPos.x, y: prismPos.y, z: prismPos.z },
       level: level,
       segmentLengths: segmentLengths,
-      ticksUntilStep: Math.max(1, totalTicksForFirstSegment),
+      ticksUntilStep: 0,
+      startTick: debugEnabled ? nowTick : null,
       refinedItems: (outputType === "crystal" && isFluxTypeId(sourceStack.typeId))
         ? [{ typeId: sourceStack.typeId, amount: transferAmount }]
         : null,
-      countedPrisms: countedPrisms, // Track which prisms we've already counted (array for serialization)
-    };
-    
-    inflight.push(newJob);
-    
-    // Spawn orb immediately when item is extracted (at step 0)
-    // Don't wait for ticksUntilStep - visual feedback should be instant
-    if (!suppressOrb && travelPath.length > 1) {
-      const dim = getDimensionCached(prismPos.dimId);
-      if (dim) {
-        const startPos = travelPath[0];
-        const nextPos = travelPath[1];
-        const startBlock = firstBlock || getBlockCached(prismPos.dimId, startPos) || dim.getBlock({ x: startPos.x, y: startPos.y, z: startPos.z });
-        const nextBlock = getBlockCached(prismPos.dimId, nextPos) || dim.getBlock({ x: nextPos.x, y: nextPos.y, z: nextPos.z });
-        const segLen = segmentLengths?.[0] || 1;
-        const baseTicks = stepTicks;
-        const stepTicksCalc = Math.max(1, Math.floor(baseTicks / Math.max(0.1, initialSpeedScale)));
-        const ticksPerBlock = Math.max(1, Math.floor(stepTicksCalc / 4));
-        const logicalTicks = ticksPerBlock * Math.max(1, segLen | 0);
-        spawnOrbStep(dim, startPos, nextPos, level, startBlock, nextBlock, sourceStack.typeId, segLen, logicalTicks, initialSpeedScale);
-      }
-    }
-    
-    // Add to priority queue based on ticksUntilStep
-    if (newJob.ticksUntilStep <= 0) {
-      readyItems.add(newJob);
-    } else if (newJob.ticksUntilStep === 1) {
-      nearReadyItems.add(newJob);
-    }
+    });
     
     if (containerKey) {
       reserveContainerSlot(containerKey, sourceStack.typeId, transferAmount);
@@ -2020,232 +1041,88 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function tickInFlight() {
-    if (inflight.length === 0) {
-      readyItems.clear();
-      nearReadyItems.clear();
-      return;
-    }
+    if (inflight.length === 0) return;
 
-    // Performance optimization: Priority queue - only process ready items
-    const maxInflight = cfg.maxInflight || 50; // Reduced default from 60 to 50
-    const baseLimit = 6; // Reduced from 8 to improve tick time
-    const overloaded = inflight.length > maxInflight * 0.8; // Overloaded if > 80% of max
-    const maxProcessedPerTick = overloaded ? 4 : baseLimit; // Reduced from 5 to 4 when overloaded
-    
-    // Step 1: Process items from nearReadyItems (they become ready this tick)
-    // Move them from nearReadyItems to readyItems and decrement timer
-    const t0 = Date.now();
-    const inflightSet = new Set(inflight); // Create Set once for O(1) lookups
-    for (const job of nearReadyItems) {
-      if (!job || !inflightSet.has(job)) {
-        nearReadyItems.delete(job);
-        continue;
-      }
+    for (let i = inflight.length - 1; i >= 0; i--) {
+      const job = inflight[i];
       job.ticksUntilStep--;
-      if (job.ticksUntilStep <= 0) {
-        nearReadyItems.delete(job);
-        readyItems.add(job);
-      }
-    }
-    
-    // Step 2: Batch-decrement timers for items NOT in ready/nearReady sets
-    // These are items with ticksUntilStep > 1 - just decrement, no other processing
-    for (const job of inflight) {
-      if (!job) continue;
-      // Skip items already in ready/nearReady (they were handled above)
-      if (readyItems.has(job) || nearReadyItems.has(job)) continue;
-      
-      // Fast path: Just decrement timer (cheap operation)
-      job.ticksUntilStep--;
-      
-      // Move to appropriate queue based on new value
-      if (job.ticksUntilStep <= 0) {
-        readyItems.add(job);
-      } else if (job.ticksUntilStep === 1) {
-        nearReadyItems.add(job);
-      }
-    }
-    if (debugEnabled) debugState.msInflightPriorityQueue += (Date.now() - t0);
-    
-    // Step 3: Process items ready to move (from readyItems set)
-    // Only process a limited number per tick
-    const itemsReadyToMove = Array.from(readyItems);
-    readyItems.clear(); // Clear - we'll rebuild as we process
-    
-    let processed = 0;
-    for (const job of itemsReadyToMove) {
-      if (processed >= maxProcessedPerTick) break;
-      
-      // Verify job still exists (might have been removed)
-      if (!inflightSet.has(job)) continue;
-      
-      const cur = job.path[job.stepIndex];
+      if (job.ticksUntilStep > 0) continue;
+
       const nextIdx = job.stepIndex + 1;
       if (nextIdx >= job.path.length) {
-        // Job completing - handle immediately
-        const tFinalize = Date.now();
+        // Track transfer completion time
+        if (debugEnabled && job.startTick != null) {
+          const transferDuration = nowTick - job.startTick;
+          debugState.transferCompleteTicks.push(transferDuration);
+        }
         finalizeJob(job);
-        if (debugEnabled) debugState.msFinalizeJob += (Date.now() - tFinalize);
-        const idx = inflight.indexOf(job); // Only use indexOf when actually removing
-        if (idx >= 0) inflight.splice(idx, 1);
-        inflightSet.delete(job);
-        readyItems.delete(job);
-        nearReadyItems.delete(job);
+        inflight.splice(i, 1);
         inflightDirty = true;
-        processed++;
         continue;
       }
-      
-      const next = job.path[nextIdx];
-      const tDim = Date.now();
-      const dim = getDimensionCached(job.dimId);
-      if (debugEnabled) debugState.msCacheOps += (Date.now() - tDim);
-      if (!dim) {
-        processed++;
-        continue;
-      }
-      
-      processed++;
 
-      // Optimize: Only do expensive block lookups when necessary
-      // In-flight orbs have paths already calculated - minimal validation needed
-      const isFirstStep = job.stepIndex === 0;
-      const isLastStep = nextIdx >= job.path.length - 1;
-      const needsValidation = isFirstStep || isLastStep || (job.stepIndex % 10 === 0); // Validate every 10 steps
-      
-      let curBlock = null;
-      let nextBlock = null;
-      
-      const tBlocks = Date.now();
-      if (needsValidation) {
-        // Validate path occasionally
-        curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-        nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
-        
-        // Only check path validity if we validated
-        if (job.stepIndex < job.path.length - 1 && curBlock && !isPathBlock(curBlock)) {
-          dropItemAt(dim, cur, job.itemTypeId, job.amount);
-          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-          const idx = inflight.indexOf(job);
-          if (idx >= 0) inflight.splice(idx, 1);
-          inflightSet.delete(job);
-          readyItems.delete(job);
-          nearReadyItems.delete(job);
-          inflightDirty = true;
-          if (debugEnabled) debugState.msInflightBlockLookups += (Date.now() - tBlocks);
-          if (debugEnabled) debugState.msInflightPathValidation += (Date.now() - tBlocks);
-          continue;
-        }
-        if (nextIdx < job.path.length - 1 && nextBlock && !isPathBlock(nextBlock)) {
-          dropItemAt(dim, cur, job.itemTypeId, job.amount);
-          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-          const idx = inflight.indexOf(job);
-          if (idx >= 0) inflight.splice(idx, 1);
-          inflightSet.delete(job);
-          readyItems.delete(job);
-          nearReadyItems.delete(job);
-          inflightDirty = true;
-          if (debugEnabled) debugState.msInflightBlockLookups += (Date.now() - tBlocks);
-          if (debugEnabled) debugState.msInflightPathValidation += (Date.now() - tBlocks);
-          continue;
-        }
-        if (debugEnabled) debugState.msInflightPathValidation += (Date.now() - tBlocks);
-      } else {
-        // Fast path: minimal lookups, just get blocks for prism checks
-        curBlock = getBlockCached(job.dimId, cur);
-        nextBlock = getBlockCached(job.dimId, next);
+      const cur = job.path[job.stepIndex];
+      const next = job.path[nextIdx];
+      const dim = getDimensionCached(job.dimId);
+      if (!dim) continue;
+
+      const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+      const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
+      if (isPrismBlock(curBlock) && job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
+        applyPrismRefineToFxJob(job, curBlock);
       }
-      if (debugEnabled) debugState.msInflightBlockLookups += (Date.now() - tBlocks);
-      
-      // Prism-specific logic (only when we have the block)
-      const tPrism = Date.now();
-      if (curBlock && isPrismBlock(curBlock)) {
-        // Count transfer for this prism (input, relay, or output - all count)
-        // Use array to track which prisms we've already counted to avoid double-counting
-        if (!Array.isArray(job.countedPrisms)) job.countedPrisms = [];
-        // Generate key from block to match linkVision format (uses block.dimension.id)
-        const loc = curBlock.location;
-        const dim = curBlock.dimension;
-        const curPrismKey = (dim && dim.id) ? `${dim.id}|${loc.x},${loc.y},${loc.z}` : key(job.dimId, cur.x, cur.y, cur.z);
-        if (!job.countedPrisms.includes(curPrismKey)) {
-          job.countedPrisms.push(curPrismKey);
-          notePrismPassage(curPrismKey, curBlock);
+      if (job.stepIndex < job.path.length - 1) {
+        if (!isPathBlock(curBlock)) {
+          dropItemAt(dim, cur, job.itemTypeId, job.amount);
+          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+          inflight.splice(i, 1);
+          inflightDirty = true;
+          continue;
         }
-        
-        if (job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
-          applyPrismRefineToFxJob(job, curBlock);
+      }
+
+      if (nextIdx < job.path.length - 1) {
+        if (!isPathBlock(nextBlock)) {
+          dropItemAt(dim, cur, job.itemTypeId, job.amount);
+          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+          inflight.splice(i, 1);
+          inflightDirty = true;
+          continue;
         }
-        // Apply speed boost when passing through (not at destination)
-        if (job.stepIndex < job.path.length - 1) {
+      }
+
+      if (job.stepIndex < job.path.length - 1) {
+        if (isPrismBlock(curBlock)) {
+          notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
           applyPrismSpeedBoost(job, curBlock);
           if (isFluxTypeId(job.itemTypeId)) {
             applyPrismRefineToJob(job, curBlock);
           }
         }
       }
-      if (debugEnabled) debugState.msInflightPrismLogic += (Date.now() - tPrism);
 
-      const baseTicks = job.stepTicks || cfg.orbStepTicks;
-      // Apply speed boost to logical speed (faster movement = fewer ticks per segment)
-      const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
-      
-      // Get segment length - determines how long this segment takes
-      // Visual speed is constant, so longer segments take longer
       const segLen = job.segmentLengths?.[job.stepIndex] || 1;
+      const baseTicks = job.stepTicks || cfg.orbStepTicks;
+      const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
+      const totalTicksForSegment = stepTicks * Math.max(1, segLen | 0);
       
-      // Calculate logical time for this segment (in ticks)
-      // Use smaller ticks per block to make movement faster
-      const ticksPerBlock = Math.max(1, Math.floor(stepTicks / 4)); // Faster: divide by 4
-      const logicalTicks = ticksPerBlock * Math.max(1, segLen | 0);
-      
-      // Spawn orb when item moves to next step (ONLY when moving to new segment)
-      const tOrb = Date.now();
-      if (!job.suppressOrb) {
-        const orbCurBlock = curBlock || getBlockCached(job.dimId, cur);
-        const orbNextBlock = nextBlock || getBlockCached(job.dimId, next);
-        if (spawnOrbStep(dim, cur, next, job.level, orbCurBlock, orbNextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0)) {
-          if (debugEnabled) debugState.orbSpawns++;
-        }
+      // Spawn orb only if we have valid blocks and the path is still valid
+      if (!job.suppressOrb && isPathBlock(curBlock) && (nextIdx >= job.path.length || isPathBlock(nextBlock))) {
+        spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, stepTicks);
       }
-      if (debugEnabled) debugState.msInflightOrbSpawning += (Date.now() - tOrb);
       
-      // Advance step
-      const tMove = Date.now();
       job.stepIndex = nextIdx;
-      // Time per segment scales with length (longer segments = more time)
-      // Speed boost already applied via stepTicks reduction
-      job.ticksUntilStep = logicalTicks;
+      job.ticksUntilStep = totalTicksForSegment;
       inflightStepDirty = true;
-      
-      // Update priority queues based on new ticksUntilStep
-      // Job was already removed from readyItems (cleared at start of Step 3)
-      // Add to appropriate queue for next cycle
-      if (job.ticksUntilStep <= 0) {
-        // Edge case: immediately ready again (shouldn't happen but handle it)
-        readyItems.add(job);
-      } else if (job.ticksUntilStep === 1) {
-        nearReadyItems.add(job);
-      }
-      // Otherwise ticksUntilStep > 1, item goes back to "waiting" pool (not in any queue)
-      if (debugEnabled) debugState.msInflightMovement += (Date.now() - tMove);
     }
   }
 
   function tickFluxFxInFlight() {
     if (fluxFxInflight.length === 0) return;
-    
-    // Limit processing per tick to prevent spikes
-    const maxProcessedPerTick = 15; // Process max 15 flux FX jobs per tick
-    let processed = 0;
-    
-    for (let i = fluxFxInflight.length - 1; i >= 0 && processed < maxProcessedPerTick; i--) {
+    for (let i = fluxFxInflight.length - 1; i >= 0; i--) {
       const job = fluxFxInflight[i];
       job.ticksUntilStep--;
-      if (job.ticksUntilStep > 0) {
-        processed++;
-        continue;
-      }
-      processed++;
+      if (job.ticksUntilStep > 0) continue;
 
       const nextIdx = job.stepIndex + 1;
       if (nextIdx >= job.path.length) {
@@ -2273,14 +1150,11 @@ export function createNetworkTransferController(deps, opts) {
       const segLen = job.segmentLengths?.[job.stepIndex] || 1;
       const baseTicks = job.stepTicks || cfg.orbStepTicks;
       const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
-      // Use smaller ticks per block to make movement faster
-      const ticksPerBlock = Math.max(1, Math.floor(stepTicks / 4)); // Faster: divide by 4
-      const logicalTicks = ticksPerBlock * Math.max(1, segLen | 0);
-      if (spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0) && debugEnabled) {
+      if (spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, stepTicks) && debugEnabled) {
         debugState.fluxFxSpawns++;
       }
       job.stepIndex = nextIdx;
-      job.ticksUntilStep = logicalTicks;
+      job.ticksUntilStep = stepTicks * Math.max(1, segLen | 0);
     }
   }
 
@@ -2365,35 +1239,41 @@ export function createNetworkTransferController(deps, opts) {
       }
     }
 
-    // Cleaner, more readable network stats
-    const parts = [];
-    parts.push(`Prisms: ${inputCount}`);
-    parts.push(`Transfers: ${debugState.transfersStarted}`);
-    parts.push(`In-flight: ${inflight.length}`);
-    if (queuedEntries > 0) {
-      parts.push(`Queued: ${queuedEntries} items`);
-    }
-    
-    if (pathStats && pathStats.searches > 0) {
-      parts.push(`Paths: ${pathStats.searches} searches`);
-    }
-    
-    // Show in-flight count as "orbs" since each in-flight item should have one visible orb
-    // The actual spawn count is misleading (shows spawns per interval, not visible count)
-    if (inflight.length > 0) {
-      parts.push(`Orbs: ${inflight.length}`);
-    }
-    
-    if (fluxFxInflight.length > 0) {
-      parts.push(`Flux FX: ${fluxFxInflight.length}`);
-    }
-    
-    // Show total time
-    if (debugState.msTotal > 5) {
-      parts.push(`Time: ${debugState.msTotal}ms`);
-    }
+    const bfsLabel = pathStats
+      ? ` bfs=${pathStats.searches}:${pathStats.visitedTotal}/${pathStats.visitedMax} out=${pathStats.outputsTotal}/${pathStats.outputsMax}`
+      : "";
 
-    const msg = `[Transfer] ${parts.join(" | ")}`;
+    // Calculate timing stats
+    const avgStepTicks = debugState.stepTicksCount > 0 ? Math.round(debugState.stepTicksTotal / debugState.stepTicksCount) : 0;
+    const minStepTicks = debugState.stepTicksMin === Infinity ? 0 : debugState.stepTicksMin;
+    const maxStepTicks = debugState.stepTicksMax;
+    const avgTransferTicks = debugState.transferCompleteTicks.length > 0 
+      ? Math.round(debugState.transferCompleteTicks.reduce((a, b) => a + b, 0) / debugState.transferCompleteTicks.length)
+      : 0;
+    const maxTransferTicks = debugState.transferCompleteTicks.length > 0
+      ? Math.max(...debugState.transferCompleteTicks)
+      : 0;
+    const avgSegments = debugState.segmentStepsCount > 0 
+      ? (debugState.segmentStepsTotal / debugState.segmentStepsCount).toFixed(1)
+      : "0";
+
+    const timingLabel = ` stepTicks=${minStepTicks}/${avgStepTicks}/${maxStepTicks}` +
+      ` xferTicks=${avgTransferTicks}/${maxTransferTicks}` +
+      ` segs=${avgSegments}`;
+
+    const msg =
+      `Chaos Transfer | inputs=${inputCount} scanned=${debugState.inputsScanned} ` +
+      `xfer=${debugState.transfersStarted} inflight=${inflight.length} ` +
+      `fluxFx=${fluxFxInflight.length}/${cfg.maxFluxFxInFlight | 0} ` +
+      `orbFx=${debugState.orbSpawns} orbFxSkip=${debugState.orbFxSkipped} fluxFxSp=${debugState.fluxFxSpawns} ` +
+      `mapReloads=${debugState.inputMapReloads} ` +
+      `fluxGen=${debugState.fluxGenHits}/${debugState.fluxGenChecks} refine=${debugState.fluxRefined}/${debugState.fluxMutated}/${debugState.fluxRefineCalls} ` +
+      `blk=${debugState.blockLookups} cont=${debugState.containerLookups} inv=${debugState.inventoryScans} dp=${debugState.dpSaves} ` +
+      `msQ=${debugState.msQueues} msIn=${debugState.msInflight} msFx=${debugState.msFluxFx} msScan=${debugState.msScan} msSave=${debugState.msPersist} msTot=${debugState.msTotal} ` +
+      `qC=${queuedContainers} qE=${queuedEntries} qI=${queuedItems} qMax=${queuedMax} ` +
+      `full=${fullContainers.size} opts=${debugState.outputOptionsTotal}/${debugState.outputOptionsMax}` +
+      timingLabel +
+      bfsLabel;
 
     for (const player of world.getAllPlayers()) {
       try {
@@ -2405,120 +1285,14 @@ export function createNetworkTransferController(deps, opts) {
       }
     }
 
-    // Detailed timing breakdown on second line (only if total time is significant)
-    if (debugState.msTotal > 10) {
-      const timingParts = [];
-      if (debugState.msInflight > 1) {
-        timingParts.push(`Inflight: ${debugState.msInflight}ms`);
-      }
-      if (debugState.msInflightPriorityQueue > 0.5) {
-        timingParts.push(`PQ: ${debugState.msInflightPriorityQueue.toFixed(1)}ms`);
-      }
-      if (debugState.msInflightBlockLookups > 0.5) {
-        timingParts.push(`Blocks: ${debugState.msInflightBlockLookups.toFixed(1)}ms`);
-      }
-      if (debugState.msInflightPathValidation > 0.5) {
-        timingParts.push(`PathVal: ${debugState.msInflightPathValidation.toFixed(1)}ms`);
-      }
-      if (debugState.msInflightPrismLogic > 0.5) {
-        timingParts.push(`Prism: ${debugState.msInflightPrismLogic.toFixed(1)}ms`);
-      }
-      if (debugState.msInflightOrbSpawning > 0.5) {
-        timingParts.push(`Orbs: ${debugState.msInflightOrbSpawning.toFixed(1)}ms`);
-      }
-      if (debugState.msInflightMovement > 0.5) {
-        timingParts.push(`Move: ${debugState.msInflightMovement.toFixed(1)}ms`);
-      }
-      if (debugState.msPathfinding > 1) {
-        timingParts.push(`Pathfind: ${debugState.msPathfinding}ms`);
-      }
-      if (debugState.msInventoryScanning > 1) {
-        timingParts.push(`InvScan: ${debugState.msInventoryScanning}ms`);
-      }
-      if (debugState.msCacheOps > 1) {
-        timingParts.push(`Cache: ${debugState.msCacheOps}ms`);
-      }
-      if (debugState.msFinalizeJob > 1) {
-        timingParts.push(`Finalize: ${debugState.msFinalizeJob}ms`);
-      }
-      if (debugState.msFinalizeBlockLookups > 1) {
-        timingParts.push(`FinalizeBlocks: ${debugState.msFinalizeBlockLookups.toFixed(1)}ms`);
-      }
-      if (debugState.msFinalizeInventoryLookups > 1) {
-        timingParts.push(`FinalizeInv: ${debugState.msFinalizeInventoryLookups.toFixed(1)}ms`);
-      }
-      if (debugState.msFinalizeFluxRefine > 1) {
-        timingParts.push(`FinalizeRefine: ${debugState.msFinalizeFluxRefine.toFixed(1)}ms`);
-      }
-      if (debugState.msFinalizeItemInsertion > 1) {
-        timingParts.push(`FinalizeInsert: ${debugState.msFinalizeItemInsertion.toFixed(1)}ms`);
-      }
-      if (debugState.msFinalizeCrystalRoute > 1) {
-        timingParts.push(`FinalizeRoute: ${debugState.msFinalizeCrystalRoute.toFixed(1)}ms`);
-      }
-      if (debugState.msFinalizeFluxGenerate > 1) {
-        timingParts.push(`FinalizeFlux: ${debugState.msFinalizeFluxGenerate.toFixed(1)}ms`);
-      }
-      if (debugState.msFinalizeQueueCleanup > 1) {
-        timingParts.push(`FinalizeQueue: ${debugState.msFinalizeQueueCleanup.toFixed(1)}ms`);
-      }
-      if (debugState.msScan > 1) {
-        timingParts.push(`Scan: ${debugState.msScan}ms`);
-      }
-      if (debugState.msScanAttemptTransfer > 1) {
-        timingParts.push(`ScanAttempt: ${debugState.msScanAttemptTransfer.toFixed(1)}ms`);
-      }
-      if (debugState.msScanResolveBlock > 1) {
-        timingParts.push(`ScanResolve: ${debugState.msScanResolveBlock.toFixed(1)}ms`);
-      }
-      if (debugState.msScanGetInventories > 1) {
-        timingParts.push(`ScanInv: ${debugState.msScanGetInventories.toFixed(1)}ms`);
-      }
-      if (debugState.msScanGetItem > 1) {
-        timingParts.push(`ScanItem: ${debugState.msScanGetItem.toFixed(1)}ms`);
-      }
-      if (debugState.msScanIntervalCalc > 1) {
-        timingParts.push(`ScanInterval: ${debugState.msScanIntervalCalc.toFixed(1)}ms`);
-      }
-      if (debugState.msPersist > 1) {
-        timingParts.push(`Persist: ${debugState.msPersist}ms`);
-      }
-      
-      if (timingParts.length > 0) {
-        const timingMsg = `[Transfer] Timings: ${timingParts.join(" | ")}`;
-        for (const player of world.getAllPlayers()) {
-          try {
-            if (typeof player.sendMessage === "function") {
-              player.sendMessage(timingMsg);
-            }
-          } catch {
-            // ignore
-          }
-        }
-      }
-    }
-
     resetDebugState();
   }
 
   function finalizeJob(job) {
-    // Prevent double-finalization
-    if (job._finalized) {
-      // Track double-finalization in stats, don't spam chat
-      return;
-    }
-    job._finalized = true;
-    
-    // Track finalization in debug stats (no per-transfer messages)
-    // Stats are aggregated in postDebugStats()
-    
     if (job?.outputType === "crystal") {
       if (job.skipCrystalAdd) return;
-      const tBlock = debugEnabled ? Date.now() : 0;
       const outInfo = resolveBlockInfo(job.outputKey);
-      if (debugEnabled) debugState.msFinalizeBlockLookups += (Date.now() - tBlock);
       if (!outInfo || !outInfo.block || outInfo.block.typeId !== CRYSTALLIZER_ID) {
-        // Track crystallizer missing in stats, don't spam chat
         const dim = getDimensionCached(job.dimId);
         if (dim) {
           const fallback = job.path[job.path.length - 1] || job.startPos;
@@ -2546,7 +1320,6 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     if (!job.containerKey) {
-      // Track in stats, don't spam chat
       const dim = getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
@@ -2554,11 +1327,8 @@ export function createNetworkTransferController(deps, opts) {
       }
       return;
     }
-    const tBlock1 = debugEnabled ? Date.now() : 0;
     const outInfo = resolveBlockInfo(job.outputKey);
-    if (debugEnabled) debugState.msFinalizeBlockLookups += (Date.now() - tBlock1);
     if (!outInfo) {
-      // Track in stats, don't spam chat
       const dim = getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
@@ -2571,7 +1341,6 @@ export function createNetworkTransferController(deps, opts) {
     const outBlock = outInfo.block;
     // Target is now a prism (or crystallizer)
     if (!outBlock || (!isPrismBlock(outBlock) && outBlock.typeId !== CRYSTALLIZER_ID)) {
-      // Track in stats, don't spam chat
       dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId, job.amount);
       releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       return;
@@ -2579,37 +1348,16 @@ export function createNetworkTransferController(deps, opts) {
 
     // For prisms, use multi-inventory support
     let outInventories = null;
-    let outContainerInfo = null; // Initialize for use in flux generation
     if (isPrismBlock(outBlock)) {
-      const outPrismKey = job.outputKey; // Use the outputKey from the job
-      const tInv = debugEnabled ? Date.now() : 0;
-      outInventories = getPrismInventoriesCached(outPrismKey, outBlock, outInfo.dim);
-      if (debugEnabled) debugState.msFinalizeInventoryLookups += (Date.now() - tInv);
+      outInventories = getAllAdjacentInventories(outBlock, outInfo.dim);
       if (!outInventories || outInventories.length === 0) {
-        // Debug: no inventories
-        if (debugEnabled) {
-          try {
-            const msg = `[Transfer] No inventories adjacent to target prism! Dropping item`;
-            for (const player of world.getAllPlayers()) {
-              if (typeof player.sendMessage === "function") player.sendMessage(msg);
-            }
-          } catch {}
-        }
         dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
         releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
         return;
       }
-      // For prisms, use first inventory for flux generation
-      if (outInventories.length > 0) {
-        outContainerInfo = {
-          container: outInventories[0].container,
-          block: outInventories[0].block,
-          entity: outInventories[0].entity
-        };
-      }
     } else {
       // Crystallizer - use old method for now
-      outContainerInfo = getAttachedInventoryInfo(outBlock, outInfo.dim);
+      const outContainerInfo = getAttachedInventoryInfo(outBlock, outInfo.dim);
       if (!outContainerInfo || !outContainerInfo.container) {
         dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
         releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
@@ -2622,20 +1370,14 @@ export function createNetworkTransferController(deps, opts) {
       ? job.refinedItems
       : [{ typeId: job.itemTypeId, amount: job.amount }];
     if (!job.refinedItems && job.prismKey) {
-      const tRefine = debugEnabled ? Date.now() : 0;
       const prismInfo = resolveBlockInfo(job.prismKey);
-      if (debugEnabled) {
-        debugState.fluxRefineCalls++;
-        debugState.msFinalizeBlockLookups += (Date.now() - tRefine);
-      }
-      const tRefine2 = debugEnabled ? Date.now() : 0;
+      if (debugEnabled) debugState.fluxRefineCalls++;
       const refined = tryRefineFluxInTransfer({
         prismBlock: prismInfo?.block,
         itemTypeId: job.itemTypeId,
         amount: job.amount,
         FX: FX,
       });
-      if (debugEnabled) debugState.msFinalizeFluxRefine += (Date.now() - tRefine2);
       if (debugEnabled && refined) {
         debugState.fluxRefined += Math.max(0, refined.refined | 0);
         debugState.fluxMutated += Math.max(0, refined.mutated | 0);
@@ -2644,183 +1386,77 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     let allInserted = true;
-    const tInsert = debugEnabled ? Date.now() : 0;
     for (const entry of itemsToInsert) {
       // Use multi-inventory insert for prisms
       if (isPrismBlock(outBlock)) {
         // Get filter for target prism to determine if it wants this item
-        // Optimization: Cache filter lookup if same block is used multiple times
         const targetFilter = getFilterForBlock(outBlock);
         const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
-        const inserted = tryInsertIntoInventories(outInventories, entry.typeId, entry.amount, targetFilterSet);
-        if (!inserted) {
-          // Track insertion failures in stats, don't spam chat
+        if (!tryInsertIntoInventories(outInventories, entry.typeId, entry.amount, targetFilterSet)) {
           allInserted = false;
           enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
         }
       } else {
         // Crystallizer - use old method
         const outContainerInfo = { container: outInventories[0].container, block: outInventories[0].block, entity: outInventories[0].entity };
-        const inserted = tryInsertAmountForContainer(outContainerInfo.container, outContainerInfo.block || null, entry.typeId, entry.amount);
-        if (!inserted) {
-          // Track insertion failures in stats, don't spam chat
+        if (!tryInsertAmountForContainer(outContainerInfo.container, outContainerInfo.block || null, entry.typeId, entry.amount)) {
           allInserted = false;
           enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
         }
       }
     }
-    if (debugEnabled) debugState.msFinalizeItemInsertion += (Date.now() - tInsert);
 
-    // Invalidate inventory cache for the destination prism when items are inserted
-    if (isPrismBlock(outBlock) && job.outputKey) {
-      prismInventoryListCache.delete(job.outputKey);
-      prismInventoryListCacheTimestamps.delete(job.outputKey);
-    }
-    
-    // Always release container slot - items arrived even if insertion failed
-    releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-    
-    // Track transfer when items arrive at destination prism (count even if insertion failed - items still arrived)
-    // But only if we haven't already counted it during passage (to avoid double-counting)
-    if (isPrismBlock(outBlock) && job.outputKey) {
-      if (!Array.isArray(job.countedPrisms)) job.countedPrisms = [];
-      if (!job.countedPrisms.includes(job.outputKey)) {
-        job.countedPrisms.push(job.outputKey);
-        notePrismPassage(job.outputKey, outBlock);
-      }
-    }
-    
     if (allInserted) {
-      // Track successful insertions in stats, don't spam chat
-      
-      // Remove any pending queue entries for this container/item to prevent duplicate insertions
-      const tQueue = debugEnabled ? Date.now() : 0;
-      if (job.containerKey && queueByContainer.has(job.containerKey)) {
-        const queue = queueByContainer.get(job.containerKey);
-        if (queue && Array.isArray(queue)) {
-          // Optimization: Use filter + slice instead of splice in reverse loop for better performance
-          // Only remove matching entries, keep rest
-          const beforeLen = queue.length;
-          const filtered = queue.filter(q => 
-            !(q && q.itemTypeId === job.itemTypeId && q.outputKey === job.outputKey)
-          );
-          if (filtered.length !== beforeLen) {
-            queue.length = 0;
-            queue.push(...filtered);
-          }
-          if (queue.length === 0) {
-            queueByContainer.delete(job.containerKey);
-            fullContainers.delete(job.containerKey);
-          }
-        }
-      }
-      if (debugEnabled) debugState.msFinalizeQueueCleanup += (Date.now() - tQueue);
-      
-      if (debugEnabled) debugState.fluxGenChecks++;
-      
-      // Optimization #1 & #4: Skip route lookup if we know no crystallizers exist OR if output is not a prism
-      let crystalRoute = null;
-      const shouldLookupRoute = (() => {
-        // Optimization #4: Skip entirely if we know no crystallizers exist
-        if (hasCrystallizersInNetwork === false) return false;
-        
-        // Optimization #1: Only lookup route if output is a prism (crystallizers don't need routes)
-        if (!isPrismBlock(outBlock)) return false; // Crystallizers don't need routes
-        
-        // Even tier 1 has 1% flux generation chance, so we should still check if crystallizers might exist
-        return true; // Lookup route
-      })();
-      
-      const tCrystalRoute = debugEnabled ? Date.now() : 0;
-      if (shouldLookupRoute) {
-        // Optimization #3: Check if we already looked up route for this prism this tick (batching)
-        const crystalRouteKey = job.outputKey;
-        const batchedResult = routeLookupResults.get(crystalRouteKey);
-        if (batchedResult !== undefined) {
-          crystalRoute = batchedResult;
-        } else {
-          // Not batched this tick - check cache or lookup
-          const cachedRoute = crystallizerRouteCache.get(crystalRouteKey);
-          if (cachedRoute && (nowTick - cachedRoute.tick) <= CRYSTALLIZER_ROUTE_CACHE_TTL) {
-            crystalRoute = cachedRoute.route;
-          } else {
-            // Not cached or expired - find route and cache
-            crystalRoute = isPrismBlock(outBlock) 
-              ? findCrystallizerRouteFromPrism(outBlock, job.dimId)
-              : findCrystallizerRouteFromOutput(outBlock, job.dimId);
-            // Cache the result (even if null, to avoid repeated expensive lookups)
-            crystallizerRouteCache.set(crystalRouteKey, {
-              route: crystalRoute,
-              tick: nowTick,
-            });
-          }
-          
-          // Batch result for this tick (so other jobs finishing same tick can reuse)
-          routeLookupResults.set(crystalRouteKey, crystalRoute);
-          
-          // Update global crystallizer existence flag
-          if (hasCrystallizersInNetwork === null && crystalRoute !== null) {
-            hasCrystallizersInNetwork = true; // Found at least one crystallizer
-          }
-        }
-      } else {
-        crystalRoute = null; // Skip lookup entirely
-      }
-      if (debugEnabled) debugState.msFinalizeCrystalRoute += (Date.now() - tCrystalRoute);
-      
-      // Only generate flux if we have a valid container
-      if (outContainerInfo && outContainerInfo.container) {
-        const tFlux = debugEnabled ? Date.now() : 0;
-        // Optimization: Cache start block lookup - job.startPos might not be needed every time
-        const startBlock = job.startPos ? (getBlockCached(job.dimId, job.startPos) || outInfo.dim.getBlock(job.startPos)) : null;
-        const fluxGenerated = tryGenerateFluxOnTransfer({
-          outputBlock: outBlock,
-          destinationInventory: outContainerInfo.container,
-          inputBlock: startBlock,
-          path: job.path,
-          getAttachedInventoryInfo,
-          getBlockAt: (pos, dim) => {
-            if (!pos) return null;
-            const dimId = dim?.id || job.dimId;
-            return getBlockCached(dimId, pos);
-          },
-          scheduleFluxTransferFx: enqueueFluxTransferFx,
-          scheduleFluxTransferFxPositions: enqueueFluxTransferFxPositions,
-          getContainerKey,
-          transferLevel: job.level,
-          transferStepTicks: job.stepTicks || cfg.orbStepTicks,
-          transferSpeedScale: 1.0,
-          FX: FX,
-          consumeFluxOutput: !!crystalRoute,
-        });
-        if (debugEnabled) debugState.msFinalizeFluxGenerate += (Date.now() - tFlux);
-        if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
-        if (fluxGenerated > 0 && crystalRoute) {
-          if (typeof enqueueFluxTransferFxPositions === "function") {
-            enqueueFluxTransferFxPositions(
-              crystalRoute.path,
-              crystalRoute.outputIndex,
-              crystalRoute.targetIndex,
-              "chaos:flux_1",
-              job.level,
-              {
-                amount: fluxGenerated,
-                dimId: job.dimId,
-                suppressDrop: true,
-                refineOnPrism: true,
-                crystalKey: key(job.dimId, crystalRoute.crystalPos.x, crystalRoute.crystalPos.y, crystalRoute.crystalPos.z),
-                stepTicks: job.stepTicks || cfg.orbStepTicks,
-                speedScale: 1.0,
-              }
-            );
-          }
-        }
-      }
-      return;
-    } else {
-      // Some items failed to insert - they're queued, but we still need to release the reservation
-      // The queued items will be inserted by tickOutputQueues()
       releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+      if (isPrismBlock(outBlock)) {
+        // For prisms, note transfer for leveling
+        noteOutputTransfer(job.outputKey, outBlock);
+      }
+      if (debugEnabled) debugState.fluxGenChecks++;
+      const crystalRoute = isPrismBlock(outBlock) 
+        ? findCrystallizerRouteFromPrism(outBlock, job.dimId)
+        : findCrystallizerRouteFromOutput(outBlock, job.dimId);
+      const fluxGenerated = tryGenerateFluxOnTransfer({
+        outputBlock: outBlock,
+        destinationInventory: outContainerInfo.container,
+        inputBlock: job.startPos ? outInfo.dim.getBlock(job.startPos) : null,
+        path: job.path,
+        getAttachedInventoryInfo,
+        getBlockAt: (pos, dim) => {
+          if (!pos) return null;
+          const dimId = dim?.id || job.dimId;
+          return getBlockCached(dimId, pos);
+        },
+        scheduleFluxTransferFx: enqueueFluxTransferFx,
+        scheduleFluxTransferFxPositions: enqueueFluxTransferFxPositions,
+        getContainerKey,
+        transferLevel: job.level,
+        transferStepTicks: job.stepTicks || cfg.orbStepTicks,
+        transferSpeedScale: 1.0,
+        FX: FX,
+        consumeFluxOutput: !!crystalRoute,
+      });
+      if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
+      if (fluxGenerated > 0 && crystalRoute) {
+        if (typeof enqueueFluxTransferFxPositions === "function") {
+          enqueueFluxTransferFxPositions(
+            crystalRoute.path,
+            crystalRoute.outputIndex,
+            crystalRoute.targetIndex,
+            "chaos:flux_1",
+            job.level,
+            {
+              amount: fluxGenerated,
+              dimId: job.dimId,
+              suppressDrop: true,
+              refineOnPrism: true,
+              crystalKey: key(job.dimId, crystalRoute.crystalPos.x, crystalRoute.crystalPos.y, crystalRoute.crystalPos.z),
+              stepTicks: job.stepTicks || cfg.orbStepTicks,
+              speedScale: 1.0,
+            }
+          );
+        }
+      }
       return;
     }
   }
@@ -2832,7 +1468,7 @@ export function createNetworkTransferController(deps, opts) {
       for (const p of path) {
         if (!p) continue;
         const b = getBlockCached(dimId, p);
-        if (b && isPrismBlock(b)) prisms.push(b);
+        if (isPrismBlock(b)) prisms.push(b);
       }
       return prisms;
     } catch {
@@ -2926,13 +1562,10 @@ export function createNetworkTransferController(deps, opts) {
 
   function applyPrismSpeedBoost(job, prismBlock) {
     try {
-      const level = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock.typeId) : 1;
-      // Calculate additive boost: tier 1 = 0%, tier 2 = 5%, tier 3 = 10%, tier 4 = 15%, tier 5 = 20%
+      const level = (prismBlock?.permutation?.getState("chaos:level") | 0) || 1;
       const boost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, level) - 1) * PRISM_SPEED_BOOST_PER_TIER);
       const current = Math.max(0.1, Number(job.speedScale) || 1.0);
-      // Add boost to current speed (1.0 + boost), not multiply
-      // Tier 1: 1.0 + 0.0 = 1.0, Tier 2: 1.0 + 0.05 = 1.05, etc.
-      job.speedScale = Math.min(SPEED_SCALE_MAX, current + boost);
+      job.speedScale = Math.min(SPEED_SCALE_MAX, current * boost);
     } catch {
       // ignore
     }
@@ -3027,8 +1660,7 @@ export function createNetworkTransferController(deps, opts) {
             
             // For prisms, check if they have inventories
             if (isPrismBlock(outBlock)) {
-              const outPrismKey = nextKey; // Use the key from the search
-              const inventories = getPrismInventoriesCached(outPrismKey, outBlock, dim);
+              const inventories = getAllAdjacentInventories(outBlock, dim);
               if (!inventories || inventories.length === 0) {
                 continue;
               }
@@ -3091,17 +1723,8 @@ export function createNetworkTransferController(deps, opts) {
     return findCrystallizerRouteFromPrism(prismBlock, dimId);
   }
 
-  // Legacy function - deprecated, use notePrismPassage for prisms now
   function noteTransferAndGetLevel(inputKey, block) {
-    // For prisms, use unified prism counts system
-    if (isPrismBlock(block)) {
-      notePrismPassage(inputKey, block);
-      const stored = prismCounts.has(inputKey) ? prismCounts.get(inputKey) : 0;
-      const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
-      return getLevelForCount(stored, prismStep, cfg.maxLevel);
-    }
-    // Legacy behavior for non-prism blocks (shouldn't happen in unified system)
-    const blockLevel = 1;
+    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
     const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
     const stored = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
     const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
@@ -3115,10 +1738,8 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function getNextInputLevel(inputKey) {
-    // Use unified prism counts system
-    const stored = prismCounts.has(inputKey) ? prismCounts.get(inputKey) : 0;
-    const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
-    return getLevelForCount(stored + 1, prismStep, cfg.maxLevel);
+    const current = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
+    return getLevelForCount(current + 1, cfg.levelStep, cfg.maxLevel);
   }
 
   function getLevelForCount(count, step, maxLevel) {
@@ -3167,31 +1788,30 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function updateBlockLevel(block, level) {
-    // This is now handled by updatePrismBlockLevel for unified prisms
-    return updatePrismBlockLevel(block, level);
+    try {
+      // Update level for prisms (was for extractors, now unified)
+      if (!block || !isPrismBlock(block)) return;
+      const perm = block.permutation;
+      if (!perm) return;
+      const current = perm.getState("chaos:level");
+      if ((current | 0) === (level | 0)) return;
+      const next = perm.withState("chaos:level", level | 0);
+      block.setPermutation(next);
+      spawnLevelUpBurst(block);
+    } catch {
+      // ignore
+    }
   }
 
   function notePrismPassage(prismKey, block) {
-    // Ensure we have a valid key in the format "dimId|x,y,z"
-    // If we have a block but the key might be wrong, regenerate it from the block
-    let actualKey = prismKey;
-    if (block && block.location) {
-      const loc = block.location;
-      const dim = block.dimension;
-      if (dim && dim.id) {
-        // Use dimension.id format to match linkVision
-        actualKey = `${dim.id}|${loc.x},${loc.y},${loc.z}`;
-      }
-    }
-    
     const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
-    const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
+    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
     const minCount = getMinCountForLevel(blockLevel, prismStep);
-    const stored = prismCounts.has(actualKey) ? prismCounts.get(actualKey) : 0;
+    const stored = prismCounts.has(prismKey) ? prismCounts.get(prismKey) : 0;
     const storedLevel = getLevelForCount(stored, prismStep, cfg.maxLevel);
     const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
     const next = current + 1;
-    prismCounts.set(actualKey, next);
+    prismCounts.set(prismKey, next);
     prismLevelsDirty = true;
     const level = getLevelForCount(next, prismStep, cfg.maxLevel);
     updatePrismBlockLevel(block, level);
@@ -3200,50 +1820,35 @@ export function createNetworkTransferController(deps, opts) {
   function updatePrismBlockLevel(block, level) {
     try {
       if (!block || !isPrismBlock(block)) return;
-      const safeLevel = Math.max(1, Math.min(5, Math.floor(level || 1)));
-      const newTypeId = getPrismTypeIdForTier(safeLevel);
-      
-      // Check if already at correct tier
-      const currentTier = getPrismTierFromTypeId(block.typeId);
-      if (currentTier === safeLevel) return;
-      
-      // Get current block location and states
-      const loc = block.location;
-      const dim = block.dimension;
-      if (!dim || !loc) return;
-      
-      // Replace block with new tier (no state preservation needed - prisms use same texture on all sides)
-      try {
-        dim.setBlock(loc, newTypeId);
-      } catch {
-        return; // Failed to replace block
-      }
-      
-      // Spawn level up effect on the new block
-      const updatedBlock = dim.getBlock(loc);
-      if (updatedBlock) spawnLevelUpBurst(updatedBlock);
+      const perm = block.permutation;
+      if (!perm) return;
+      const current = perm.getState("chaos:level");
+      if ((current | 0) === (level | 0)) return;
+      const next = perm.withState("chaos:level", level | 0);
+      block.setPermutation(next);
+      spawnLevelUpBurst(block);
     } catch {
       // ignore
     }
   }
 
-  // Legacy function - deprecated, use notePrismPassage for prisms
-  // Crystallizers don't track transfers (they have their own flux/prestige system)
   function noteOutputTransfer(outputKey, block) {
-    // Prisms should use notePrismPassage instead
-    if (isPrismBlock(block)) {
-      return notePrismPassage(outputKey, block);
-    }
-    // Crystallizers don't track transfers, so do nothing
+    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
+    const stored = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
+    const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
+    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
+    const next = current + 1;
+    outputCounts.set(outputKey, next);
+    outputLevelsDirty = true;
+    const level = getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
+    updateOutputBlockLevel(block, level);
   }
 
-  // Legacy function - deprecated, use updatePrismBlockLevel directly
+  // Legacy function - prisms are now handled by updatePrismBlockLevel
   function updateOutputBlockLevel(block, level) {
-    // Deprecated - use updatePrismBlockLevel for prisms
-    if (isPrismBlock(block)) {
-      return updatePrismBlockLevel(block, level);
-    }
-    // Crystallizers don't upgrade, so do nothing
+    // This is now handled by updatePrismBlockLevel for unified prisms
+    return updatePrismBlockLevel(block, level);
   }
 
   function rebuildReservationsFromInflight() {
@@ -3255,7 +1860,7 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  function spawnOrbStep(dim, from, to, level, fromBlock, toBlock, itemTypeId, lengthSteps, logicalTicks, speedScale = 1.0) {
+  function spawnOrbStep(dim, from, to, level, fromBlock, toBlock, itemTypeId, lengthSteps, stepTicksOverride) {
     try {
       if (!FX || !FX.particleTransferItem) return false;
       let fxId = FX.particleTransferItem;
@@ -3271,38 +1876,20 @@ export function createNetworkTransferController(deps, opts) {
       const maxOrbFx = Math.max(0, cfg.maxOrbFxPerTick | 0);
       if (maxOrbFx > 0 && orbFxBudgetUsed >= maxOrbFx) {
         if (debugEnabled) debugState.orbFxSkipped++;
-        return false; // Return false when budget exceeded, not true
+        return true;
       }
       if (maxOrbFx > 0) orbFxBudgetUsed++;
       const dir = normalizeDir(from, to);
       if (!dir) return false;
 
       const molang = new MolangVariableMap();
-      
-      // Calculate distance for this segment
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const dz = to.z - from.z;
-      const dist = Math.max(0.01, Math.sqrt(dx * dx + dy * dy + dz * dz));
-      
-      // Calculate visual lifetime from logical time to keep them in sync
-      // logicalTicks is the time in ticks, convert to seconds (20 ticks = 1 second)
-      const lifetime = Math.max(0.05, logicalTicks / 20);
-      
-      // Calculate visual speed from distance and lifetime
-      // This ensures visual and logical are perfectly in sync
-      // Speed will scale with distance to maintain constant appearance
-      const speed = dist / lifetime;
-      
-      // Get tier from source prism (fromBlock) for orb color tinting
-      // This ensures orbs are colored based on the tier of the prism that fired them
-      const sourceTier = fromBlock && isPrismBlock(fromBlock) 
-        ? getPrismTierFromTypeId(fromBlock.typeId)
-        : level; // Fallback to job level if fromBlock is not a prism
-      
+      const steps = Math.max(1, lengthSteps | 0);
+      const stepTicks = Math.max(1, Number(stepTicksOverride) || getOrbStepTicks(level));
+      const lifetime = Math.max(0.05, (stepTicks * steps) / 20);
+      const speed = getOrbVisualSpeed(from, to, dir, level, lifetime);
       const color = isFluxTypeId(itemTypeId)
         ? { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
-        : getOrbColor(sourceTier);
+        : getOrbColor(level);
       if (typeof molang.setSpeedAndDirection === "function") {
         molang.setSpeedAndDirection("variable.chaos_move", speed, dir);
       }
@@ -3457,6 +2044,26 @@ export function createNetworkTransferController(deps, opts) {
     return { x: dx / len, y: dy / len, z: dz / len };
   }
 
+  function getOrbLifetimeSeconds(level) {
+    const stepTicks = Math.max(1, getOrbStepTicks(Math.max(1, level | 0)));
+    const base = stepTicks / 20;
+    const scale = Math.max(0.1, Number(cfg.orbLifetimeScale) || 0.5);
+    return Math.max(0.03, base * scale);
+  }
+
+  function getOrbVisualSpeed(from, to, dir, level, lifetimeSeconds) {
+    // Keep particle motion visually in sync with step cadence.
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const dist = Math.max(0.01, Math.sqrt(dx * dx + dy * dy + dz * dz));
+    const life = Math.max(0.05, Number(lifetimeSeconds) || 0.05);
+    const baseSpeed = dist / life;
+    const minScale = Math.max(0.1, Number(cfg.orbVisualMinSpeedScale) || 0.6);
+    const maxScale = Math.max(minScale, Number(cfg.orbVisualMaxSpeedScale) || 1.0);
+    return Math.max(0.1, baseSpeed * Math.max(minScale, Math.min(maxScale, 1.0)));
+  }
+
   function getOrbColor(level) {
     const lvl = Math.min(cfg.maxLevel | 0, Math.max(1, level | 0));
     const palette = [
@@ -3489,9 +2096,5 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  return { 
-    start, 
-    stop,
-    invalidateCachesForBlockChange // Expose for block change events
-  };
+  return { start, stop };
 }

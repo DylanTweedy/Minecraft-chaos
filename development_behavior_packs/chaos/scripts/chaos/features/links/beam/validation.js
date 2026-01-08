@@ -1,5 +1,6 @@
 // scripts/chaos/features/links/beam/validation.js
 import {
+  PRISM_ID,
   CRYSTALLIZER_ID,
   BEAM_ID,
   isPassThrough,
@@ -8,10 +9,8 @@ import { isPrismBlock } from "../transfer/config.js";
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 import { beamAxisMatchesDir, getBeamAxis, beamDirsForAxis } from "./axis.js";
 
-function isRelayBlock(typeId, block = null) {
-  if (block && isPrismBlock(block)) return true;
-  if (isPrismBlock({ typeId })) return true;
-  return typeId === CRYSTALLIZER_ID;
+function isRelayBlock(typeId) {
+  return isPrismBlock({ typeId }) || typeId === CRYSTALLIZER_ID;
 }
 
 function relayHasDirectSource(dim, loc) {
@@ -49,7 +48,7 @@ function relayHasRelaySource(dim, loc) {
   ];
   for (const d of dirs) {
     const b = dim.getBlock({ x: loc.x + d.dx, y: loc.y + d.dy, z: loc.z + d.dz });
-    if (!b || !isRelayBlock(b.typeId, b)) continue;
+    if (!b || !isRelayBlock(b.typeId)) continue;
     if (relayHasDirectSource(dim, b.location)) return true;
   }
   return false;
@@ -69,7 +68,7 @@ function beamValidFromInput(dim, inputLoc, dx, dy, dz, beamDist) {
     if (!b) break;
 
     const id = b.typeId;
-    if (isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID) {
+    if (isPrismBlock(b) || id === CRYSTALLIZER_ID) {
       farthestOutput = i;
       break;
     }
@@ -136,7 +135,7 @@ export function isBeamStillValid(dim, loc) {
 
       const id = scan.typeId;
       // All prisms are valid sources/targets
-      if (isPrismBlock({ typeId: id })) {
+      if (isPrismBlock(scan)) {
         if (beamValidFromRelay(dim, scan.location, -d.dx, -d.dy, -d.dz, i)) {
           foundValidTarget = true;
           break;
@@ -168,7 +167,7 @@ export function isBeamStillValid(dim, loc) {
 
       const id = scan.typeId;
       // All prisms are valid sources/targets
-      if (isPrismBlock({ typeId: id })) {
+      if (isPrismBlock(scan)) {
         if (beamValidFromRelay(dim, scan.location, d.dx, d.dy, d.dz, i)) {
           foundValidSource = true;
           break;

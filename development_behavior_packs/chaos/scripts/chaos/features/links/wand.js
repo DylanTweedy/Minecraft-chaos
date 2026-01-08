@@ -6,7 +6,7 @@ export function handleWandUseOn(e, deps) {
   try {
     const {
       WAND_ID,
-      isPrismBlock,
+      PRISM_ID,
 
       // state
       getPending,
@@ -48,7 +48,7 @@ export function handleWandUseOn(e, deps) {
 
     const typeId = block.typeId;
     // In unified system, all prisms work the same - wand can link any prism to any prism
-    const clickedType = isPrismBlock({ typeId }) ? "prism" : null;
+    const clickedType = (typeId === PRISM_ID) ? "prism" : null;
 
     if (!clickedType) return;
 

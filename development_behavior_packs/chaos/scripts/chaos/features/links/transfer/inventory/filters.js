@@ -1,4 +1,4 @@
-// scripts/chaos/features/links/transfer/filters.js
+// scripts/chaos/features/links/transfer/inventory/filters.js
 export function getFilterContainer(block) {
   try {
     if (!block) return null;
@@ -65,7 +65,7 @@ export function filterOutputsByWhitelist(options, typeId, resolveBlockInfo, getF
         continue;
       }
       // Target prisms (unified system)
-      if (outInfo.block.typeId !== ids.PRISM_ID) continue;
+      if (!ids.isPrismBlock(outInfo.block)) continue;
       const filter = (typeof getFilterForBlock === "function")
         ? getFilterForBlock(outInfo.block)
         : getFilterContainer(outInfo.block);

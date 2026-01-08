@@ -1,4 +1,4 @@
-// scripts/chaos/features/links/transfer/reservations.js
+// scripts/chaos/features/links/transfer/inventory/reservations.js
 import { getFurnaceSlots, isFuelStack, getSlotInsertCapacity, makeProbeStack } from "./inventory.js";
 
 const reservedByContainer = new Map();

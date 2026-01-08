@@ -1,7 +1,7 @@
-// scripts/chaos/features/links/transfer/inventory.js
+// scripts/chaos/features/links/transfer/inventory/inventory.js
 import { ItemStack } from "@minecraft/server";
-import { FURNACE_BLOCK_IDS, FURNACE_FUEL_FALLBACK_IDS, FURNACE_SLOTS } from "./config.js";
-import { filterAllows, isFilterEmpty, getFilterSet } from "./inventory/filters.js";
+import { FURNACE_BLOCK_IDS, FURNACE_FUEL_FALLBACK_IDS, FURNACE_SLOTS } from "../config.js";
+import { filterAllows, isFilterEmpty, getFilterSet } from "./filters.js";
 
 export function getAttachedInventoryContainer(nodeBlock, dimension) {
   const info = getAttachedInventoryInfo(nodeBlock, dimension);

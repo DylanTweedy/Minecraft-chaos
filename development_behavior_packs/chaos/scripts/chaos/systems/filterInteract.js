@@ -7,8 +7,9 @@ import { isPrismBlock } from "../features/links/transfer/config.js";
 
 const WAND_ID = "chaos:wand";
 
-function isNodeBlock(id, block = null) {
-  if (block) return isPrismBlock(block);
+function isNodeBlock(blockOrId) {
+  if (!blockOrId) return false;
+  const id = typeof blockOrId === "string" ? blockOrId : blockOrId.typeId;
   return isPrismBlock({ typeId: id });
 }
 
@@ -34,7 +35,7 @@ export function startFilterInteract() {
       if (!player || player.typeId !== "minecraft:player") return;
 
       const block = ev?.block;
-      if (!block || !isNodeBlock(block.typeId, block)) return;
+      if (!block || !isNodeBlock(block)) return;
 
       const item = ev?.itemStack;
       const itemId = item?.typeId;
@@ -86,7 +87,7 @@ export function startFilterInteract() {
   world.afterEvents.playerBreakBlock.subscribe((ev) => {
     try {
       const brokenId = ev?.brokenBlockPermutation?.type?.id;
-      if (!isNodeBlock(brokenId, block)) return;
+      if (!isNodeBlock({ typeId: brokenId })) return;
       const block = ev?.block;
       if (!block) return;
       clearFilterForBlock(world, block);

@@ -1,6 +1,10 @@
 // scripts/chaos/features/links/beam/config.js
+const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
+// Legacy IDs for migration (will be removed eventually)
+const INPUT_ID = "chaos:extractor"; // Deprecated - use PRISM_ID
+const OUTPUT_ID = "chaos:inserter"; // Deprecated - use PRISM_ID
 
 const INPUTS_PER_TICK = 1;
 const RELAYS_PER_TICK = 1;
@@ -14,14 +18,16 @@ const AXIS_Z = "z";
 const DP_BEAMS = "chaos:beams_v0_json";
 const EMIT_RETRY_TICKS = 4;
 
-// Note: PASS_THROUGH_IDS doesn't include prisms - use isPrismBlock() from transfer/config
-const PASS_THROUGH_IDS = new Set(["minecraft:air", BEAM_ID]);
+const PASS_THROUGH_IDS = new Set(["minecraft:air", BEAM_ID, PRISM_ID]);
 
 function isPassThrough(id) {
   return PASS_THROUGH_IDS.has(id);
 }
 
 export {
+  INPUT_ID,
+  OUTPUT_ID,
+  PRISM_ID,
   CRYSTALLIZER_ID,
   BEAM_ID,
   INPUTS_PER_TICK,
