@@ -15,7 +15,7 @@
       "minecraft:particle_lifetime_expression": { "max_lifetime": "variable.chaos_lifetime" },
 
       "minecraft:particle_appearance_billboard": {
-        "size": [0.3, 0.3],
+        "size": [0.2, 0.2],
         "facing_camera_mode": "rotate_xyz"
       },
       "minecraft:particle_initial_spin": {

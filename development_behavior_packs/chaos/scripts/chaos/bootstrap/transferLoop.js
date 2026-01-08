@@ -39,10 +39,10 @@ export function startTransferLoop(ctx) {
       const pathfinder = createTransferPathfinder(
         { world, getNetworkStamp },
         {
-          cacheTicks: 30,
-          cacheTicksWithStamp: 120,
-          maxVisitedPerSearch: 120,
-          maxOutputOptions: 4,
+          cacheTicks: 40, // Increased from 30 to cache longer
+          cacheTicksWithStamp: 150, // Increased from 120
+          maxVisitedPerSearch: 60, // Aggressively reduced from 100 to limit search depth
+          maxOutputOptions: 3, // Reduced from 4 to limit pathfinding work
         }
       );
       const controller = createNetworkTransferController(
@@ -56,12 +56,14 @@ export function startTransferLoop(ctx) {
           FX: FX,
         },
         {
-          maxTransfersPerTick: 4,
-          perInputIntervalTicks: 20,
+          maxTransfersPerTick: 1, // Reduced from 2 - only 1 transfer per tick to minimize scan work
+          maxSearchesPerTick: 2, // Reduced from 3 to limit pathfinding overhead
+          perInputIntervalTicks: 100, // Increased from 60 to spread scans over many more ticks
           orbStepTicks: 60,
           maxOrbFxPerTick: 160,
           debugTransferStats: true,
-          maxInputsScannedPerTick: 12,
+          maxPrismsScannedPerTick: 2, // Aggressively reduced from 4 - only scan 2 prisms per tick
+          maxInflight: 50, // Reduced from 60 to further lower processing overhead
           maxQueuedInsertsPerTick: 2,
           maxFullChecksPerTick: 2,
         }

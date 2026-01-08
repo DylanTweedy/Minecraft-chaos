@@ -6,7 +6,7 @@ import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 import { getCrystalState } from "../crystallizer.js";
-import { isPrismBlock, getPrismTierFromTypeId } from "../features/links/transfer/config.js";
+import { isPrismBlock } from "../features/links/transfer/config.js";
 
 const WAND_ID = "chaos:wand";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
@@ -14,7 +14,8 @@ const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
 const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
 
-const LEVEL_STEP = 100;
+// Match the values from transfer/config.js DEFAULTS
+const PRISM_LEVEL_STEP = 4000; // Matches cfg.prismLevelStep in transfer controller
 const MAX_LEVEL = 5;
 
 // ---------- Perf knobs ----------
@@ -22,14 +23,12 @@ const TICK_INTERVAL = 10;              // interval ticks (we budget inside)
 const REBUILD_CACHE_EVERY_TICKS = 20; // refresh flattened link list sometimes
 const COUNTS_CACHE_TICKS = 20;
 const MAX_LOOK_DISTANCE = 16;
-const ACTIONBAR_TICKS = 2;
 
 // ---------- Internal state ----------
 let _tick = 0;
 let _cacheSig = "";
 let _flatLinks = []; // [{ dimId, inPos:{x,y,z}, outPos:{x,y,z} }]
 const _rrIndexByPlayer = new Map(); // playerId -> cursor
-const _lastActionBarByPlayer = new Map(); // playerId -> tick
 let _countsTick = -9999;
 let _inputCounts = {};
 let _outputCounts = {};
@@ -100,6 +99,7 @@ function getOutputCountsCached() {
 
 function getPrismCountsCached() {
   if ((_tick - _countsTick) <= COUNTS_CACHE_TICKS) return _prismCounts;
+  _countsTick = _tick; // Update cache timestamp
   try {
     const raw = world.getDynamicProperty(DP_PRISM_LEVELS);
     const parsed = safeJsonParse(raw);
@@ -116,7 +116,8 @@ function getPrismCountsCached() {
 }
 
 function getLevelForCount(count) {
-  const base = Math.max(1, LEVEL_STEP | 0);
+  // Use same calculation as transfer controller for consistency
+  const base = Math.max(1, PRISM_LEVEL_STEP | 0);
   let needed = base;
   let total = 0;
   const c = Math.max(0, count | 0);
@@ -131,7 +132,7 @@ function getLevelForCount(count) {
 function getNextTierDelta(count) {
   const lvl = getLevelForCount(count);
   if (lvl >= MAX_LEVEL) return 0;
-  let needed = Math.max(1, LEVEL_STEP | 0);
+  let needed = Math.max(1, PRISM_LEVEL_STEP | 0);
   let total = 0;
   for (let i = 1; i < (lvl + 1); i++) {
     total += needed;
@@ -150,52 +151,60 @@ function getTargetBlock(player) {
 }
 
 function showWandStats(player) {
-  const last = _lastActionBarByPlayer.get(player.id) ?? -9999;
-  if ((_tick - last) < ACTIONBAR_TICKS) return;
-  _lastActionBarByPlayer.set(player.id, _tick);
-
   const block = getTargetBlock(player);
-  if (!block) return;
-
-  const id = block.typeId;
-  if (!isPrismBlock({ typeId: id }) && id !== CRYSTALLIZER_ID) return;
-
-  const loc = block.location;
-  const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
-  if (id === CRYSTALLIZER_ID) {
-    const state = getCrystalState(key);
-    const stored = Math.max(0, Number(state?.fluxStored) || 0);
-    const prestige = Math.max(0, Number(state?.prestigeCount) || 0);
+  
+  if (!block) {
+    // Clear action bar if not looking at a relevant block
     try {
-      player.onScreenDisplay.setActionBar(
-        `Chaos Crystallizer | Stored: ${stored} | Prestige: ${prestige}`
-      );
+      if (player.onScreenDisplay && typeof player.onScreenDisplay.setActionBar === "function") {
+        player.onScreenDisplay.setActionBar("");
+      }
     } catch {
       // ignore
     }
     return;
   }
-  // Unified system - all prisms use prism counts
-  let count = null;
-  if (isPrismBlock({ typeId: id })) {
-    const counts = getPrismCountsCached();
-    count = (counts && counts[key] != null) ? Number(counts[key]) : null;
+
+  const id = block.typeId;
+  if (!isPrismBlock({ typeId: id }) && id !== CRYSTALLIZER_ID) {
+    // Clear action bar if looking at unrelated block
+    try {
+      if (player.onScreenDisplay && typeof player.onScreenDisplay.setActionBar === "function") {
+        player.onScreenDisplay.setActionBar("");
+      }
+    } catch {
+      // ignore
+    }
+    return;
   }
 
-  const level = Number.isFinite(count)
-    ? getLevelForCount(count)
-    : (isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1);
+  const loc = block.location;
+  const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
+  
+  let text = "";
+  if (id === CRYSTALLIZER_ID) {
+    const state = getCrystalState(key);
+    const stored = Math.max(0, Number(state?.fluxStored) || 0);
+    const prestige = Math.max(0, Number(state?.prestigeCount) || 0);
+    text = `Stored: ${stored} | Prestige: ${prestige}`;
+  } else {
+    // Prism - show "Transfers: x / y" format
+    const counts = getPrismCountsCached();
+    const count = (counts && counts[key] != null) ? Number(counts[key]) : 0;
+    const nextDelta = getNextTierDelta(count);
+    const nextTotal = count + nextDelta;
+    if (nextDelta > 0) {
+      text = `Transfers: ${count} / ${nextTotal}`;
+    } else {
+      text = `Transfers: ${count} / max`;
+    }
+  }
 
-  const typeLabel = "Prism";
-  const countLabel = Number.isFinite(count) ? `${count}` : "n/a";
-  const nextLabel = Number.isFinite(count)
-    ? (getNextTierDelta(count) > 0 ? `${getNextTierDelta(count)}` : "max")
-    : "n/a";
-
+  // Display in action bar
   try {
-    player.onScreenDisplay.setActionBar(
-      `Chaos ${typeLabel} | L${level} | Transfers: ${countLabel} | Next: ${nextLabel}`
-    );
+    if (player.onScreenDisplay && typeof player.onScreenDisplay.setActionBar === "function") {
+      player.onScreenDisplay.setActionBar(text);
+    }
   } catch {
     // ignore
   }
@@ -321,12 +330,23 @@ export function startLinkVision() {
         }
       }
     }
+
     const maxDist = Number(FX.linkVisionDistance) || 32;
     const maxDistSq = maxDist * maxDist;
     const perTick = Math.max(1, Number(FX.linksPerTickBudget) || 24);
 
     for (const player of world.getAllPlayers()) {
-      if (!isHoldingWand(player)) continue;
+      if (!isHoldingWand(player)) {
+        // Clear action bar when not holding wand
+        try {
+          if (player.onScreenDisplay && typeof player.onScreenDisplay.setActionBar === "function") {
+            player.onScreenDisplay.setActionBar("");
+          }
+        } catch {
+          // ignore
+        }
+        continue;
+      }
 
       showWandStats(player);
 

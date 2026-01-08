@@ -102,7 +102,11 @@ export function createNetworkTransferController(deps, opts) {
   const prismCounts = new Map();
   let prismLevelsDirty = false;
   // Unified save interval - batch all saves together
+  // Use shorter interval for prism levels to ensure linkVision sees updates quickly
   const SAVE_INTERVAL_TICKS = 200;
+  const PRISM_LEVELS_SAVE_INTERVAL_TICKS = 20; // Save prism levels more frequently for linkVision
+  const FORCED_SAVE_INTERVAL_TICKS = 200; // Periodic forced save as safety net (bypasses interval checks)
+  let lastForcedSaveTick = 0;
   const queueByContainer = new Map();
   const fullContainers = new Set();
   let fullCursor = 0;
@@ -512,7 +516,7 @@ export function createNetworkTransferController(deps, opts) {
   
   // Process inventory scan queue (limited per tick)
   function processInventoryScanQueue() {
-    const maxScansPerTick = 10; // Limit expensive inventory scans
+    const maxScansPerTick = 5; // Reduced from 10 to limit expensive inventory scans
     let processed = 0;
     const tStart = debugEnabled ? Date.now() : 0;
 
@@ -554,7 +558,7 @@ export function createNetworkTransferController(deps, opts) {
   
   // Process pathfinding queue (limited per tick)
   function processPathfindingQueue() {
-    const maxSearchesPerTick = 5; // Limit expensive pathfinding searches
+    const maxSearchesPerTick = Math.max(1, cfg.maxSearchesPerTick | 0); // Use config value
     let processed = 0;
     const tStart = debugEnabled ? Date.now() : 0;
 
@@ -779,6 +783,7 @@ export function createNetworkTransferController(deps, opts) {
     loadLevelsState();
     loadOutputLevelsState();
     loadPrismLevelsState();
+    lastForcedSaveTick = nowTick; // Initialize forced save counter
     tickId = system.runInterval(onTick, 1);
     
     // Debug: confirm transfer system started
@@ -794,8 +799,9 @@ export function createNetworkTransferController(deps, opts) {
 
   function stop() {
     if (tickId === null) return;
-    // Save all state before stopping to prevent data loss
-    persistAllIfNeeded();
+    // Force save all state before stopping to prevent data loss on reload
+    // This bypasses interval checks to ensure everything is saved
+    forceSaveAll();
     try { system.clearRun(tickId); } catch (_) {}
     tickId = null;
   }
@@ -866,6 +872,50 @@ export function createNetworkTransferController(deps, opts) {
     // Now handled by persistAllIfNeeded()
   }
 
+  // Force save all state immediately (used on shutdown/reload)
+  function forceSaveAll() {
+    let savesCount = 0;
+    
+    // Always save inflight state (critical for preventing data loss on reload)
+    // Save even if not dirty to ensure we capture current state
+    if (inflight.length > 0 || inflightDirty || inflightStepDirty) {
+      persistInflightStateToWorld(world, inflight);
+      savesCount++;
+      inflightDirty = false;
+      inflightStepDirty = false;
+    }
+    
+    // Save all other state if dirty
+    if (prismLevelsDirty) {
+      const obj = {};
+      for (const [k, v] of prismCounts.entries()) obj[k] = v;
+      savePrismLevels(world, obj);
+      savesCount++;
+      prismLevelsDirty = false;
+    }
+    
+    if (levelsDirty) {
+      const obj = {};
+      for (const [k, v] of transferCounts.entries()) obj[k] = v;
+      saveInputLevels(world, obj);
+      savesCount++;
+      levelsDirty = false;
+    }
+    
+    if (outputLevelsDirty) {
+      const obj = {};
+      for (const [k, v] of outputCounts.entries()) obj[k] = v;
+      saveOutputLevels(world, obj);
+      savesCount++;
+      outputLevelsDirty = false;
+    }
+    
+    if (savesCount > 0) {
+      lastSaveTick = nowTick;
+      if (debugEnabled) debugState.dpSaves += savesCount;
+    }
+  }
+
   // Batched save function - saves all dirty data in one operation
   function persistAllIfNeeded() {
     // Special case: if inflight is empty and dirty, save immediately (critical for clearing state)
@@ -881,11 +931,14 @@ export function createNetworkTransferController(deps, opts) {
     // Check if we need to save and if enough time has passed
     const needsSave = inflightDirty || inflightStepDirty || levelsDirty || outputLevelsDirty || prismLevelsDirty;
     if (!needsSave) return;
-    
+
     // Check save interval - use shorter interval for inflight (more critical) or longer for levels
     const inflightInterval = Math.max(1, cfg.inflightSaveIntervalTicks | 0);
     const needsInflightSave = (inflightDirty || inflightStepDirty) && (nowTick - lastSaveTick) >= inflightInterval;
-    const needsLevelsSave = (levelsDirty || outputLevelsDirty || prismLevelsDirty) && (nowTick - lastSaveTick) >= SAVE_INTERVAL_TICKS;
+    // Save prism levels more frequently so linkVision sees updates quickly
+    const needsPrismLevelsSave = prismLevelsDirty && (nowTick - lastSaveTick) >= PRISM_LEVELS_SAVE_INTERVAL_TICKS;
+    const needsOtherLevelsSave = (levelsDirty || outputLevelsDirty) && (nowTick - lastSaveTick) >= SAVE_INTERVAL_TICKS;
+    const needsLevelsSave = needsPrismLevelsSave || needsOtherLevelsSave;
     
     if (!needsInflightSave && !needsLevelsSave) return;
     
@@ -900,8 +953,17 @@ export function createNetworkTransferController(deps, opts) {
       inflightStepDirty = false;
     }
     
-    // Save input levels
-    if (needsLevelsSave && levelsDirty) {
+    // Save prism levels (save more frequently to ensure linkVision sees updates)
+    if (needsPrismLevelsSave && prismLevelsDirty) {
+      const obj = {};
+      for (const [k, v] of prismCounts.entries()) obj[k] = v;
+      savePrismLevels(world, obj);
+      savesCount++;
+      prismLevelsDirty = false;
+    }
+    
+    // Save input/output levels (with normal interval)
+    if (needsOtherLevelsSave && levelsDirty) {
       const obj = {};
       for (const [k, v] of transferCounts.entries()) obj[k] = v;
       saveInputLevels(world, obj);
@@ -909,22 +971,12 @@ export function createNetworkTransferController(deps, opts) {
       levelsDirty = false;
     }
     
-    // Save output levels
-    if (needsLevelsSave && outputLevelsDirty) {
+    if (needsOtherLevelsSave && outputLevelsDirty) {
       const obj = {};
       for (const [k, v] of outputCounts.entries()) obj[k] = v;
       saveOutputLevels(world, obj);
       savesCount++;
       outputLevelsDirty = false;
-    }
-    
-    // Save prism levels
-    if (needsLevelsSave && prismLevelsDirty) {
-      const obj = {};
-      for (const [k, v] of prismCounts.entries()) obj[k] = v;
-      savePrismLevels(world, obj);
-      savesCount++;
-      prismLevelsDirty = false;
     }
     
     // Update last save tick if any save occurred
@@ -1024,8 +1076,13 @@ export function createNetworkTransferController(deps, opts) {
         queue.shift();
         releaseContainerSlot(containerKey, job.reservedTypeId || job.itemTypeId, job.amount);
         const outInfo = job.outputKey ? resolveBlockInfo(job.outputKey) : null;
-        if (outInfo?.block && (isPrismBlock(outInfo.block) || outInfo.block.typeId === CRYSTALLIZER_ID)) {
-          noteOutputTransfer(job.outputKey, outInfo.block);
+        if (outInfo?.block && isPrismBlock(outInfo.block)) {
+          // For prisms, count transfers (crystallizers don't track transfers)
+          if (!job.countedPrisms) job.countedPrisms = [];
+          if (!job.countedPrisms.includes(job.outputKey)) {
+            job.countedPrisms.push(job.outputKey);
+            notePrismPassage(job.outputKey, outInfo.block);
+          }
         }
         if (queue.length === 0) {
           queueByContainer.delete(containerKey);
@@ -1195,6 +1252,17 @@ export function createNetworkTransferController(deps, opts) {
       debugState.msScan += (Date.now() - scanStart);
     }
 
+    // Periodic forced save as safety net (bypasses interval checks)
+    if ((nowTick - lastForcedSaveTick) >= FORCED_SAVE_INTERVAL_TICKS) {
+      if (inflight.length > 0 || inflightDirty || inflightStepDirty) {
+        // Force save inflight state periodically to prevent data loss
+        persistInflightStateToWorld(world, inflight);
+        inflightDirty = false;
+        inflightStepDirty = false;
+        lastForcedSaveTick = nowTick;
+      }
+    }
+    
     if (debugEnabled) {
       const t3 = Date.now();
       persistAllIfNeeded();
@@ -1830,12 +1898,14 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     const pathPrismKey = findFirstPrismKeyInPath(dim, prismPos.dimId, pathInfo.path);
-    const level = noteTransferAndGetLevel(prismKey, prismBlock);
+    // Note: We track transfers when items arrive at destination, not when they start
+    // For speed calculations, use the current tier of the source prism
+    const sourceTier = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock.typeId) : 1;
+    const level = sourceTier; // Use tier for speed calculation
     // stepTicks is constant per segment - visual speed scales with distance automatically
     const stepTicks = getOrbStepTicks(level);
     
     // Calculate initial speed boost from source prism tier
-    const sourceTier = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock.typeId) : 1;
     const sourceBoost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, sourceTier) - 1) * PRISM_SPEED_BOOST_PER_TIER);
     const initialSpeedScale = Math.min(SPEED_SCALE_MAX, 1.0 + sourceBoost);
     
@@ -1869,6 +1939,16 @@ export function createNetworkTransferController(deps, opts) {
       return { ...makeResult(false, "too_many_inflight"), searchesUsed };
     }
     
+    // Track which prisms we've already counted for this transfer (to avoid double-counting)
+    // Use array for serialization compatibility (Sets can't be serialized)
+    const countedPrisms = [];
+    
+    // Count transfer for source prism (input)
+    if (prismKey && isPrismBlock(prismBlock)) {
+      countedPrisms.push(prismKey);
+      notePrismPassage(prismKey, prismBlock);
+    }
+    
     const newJob = {
       dimId: prismPos.dimId,
       itemTypeId: sourceStack.typeId,
@@ -1889,9 +1969,28 @@ export function createNetworkTransferController(deps, opts) {
       refinedItems: (outputType === "crystal" && isFluxTypeId(sourceStack.typeId))
         ? [{ typeId: sourceStack.typeId, amount: transferAmount }]
         : null,
+      countedPrisms: countedPrisms, // Track which prisms we've already counted (array for serialization)
     };
     
     inflight.push(newJob);
+    
+    // Spawn orb immediately when item is extracted (at step 0)
+    // Don't wait for ticksUntilStep - visual feedback should be instant
+    if (!suppressOrb && travelPath.length > 1) {
+      const dim = getDimensionCached(prismPos.dimId);
+      if (dim) {
+        const startPos = travelPath[0];
+        const nextPos = travelPath[1];
+        const startBlock = firstBlock || getBlockCached(prismPos.dimId, startPos) || dim.getBlock({ x: startPos.x, y: startPos.y, z: startPos.z });
+        const nextBlock = getBlockCached(prismPos.dimId, nextPos) || dim.getBlock({ x: nextPos.x, y: nextPos.y, z: nextPos.z });
+        const segLen = segmentLengths?.[0] || 1;
+        const baseTicks = stepTicks;
+        const stepTicksCalc = Math.max(1, Math.floor(baseTicks / Math.max(0.1, initialSpeedScale)));
+        const ticksPerBlock = Math.max(1, Math.floor(stepTicksCalc / 4));
+        const logicalTicks = ticksPerBlock * Math.max(1, segLen | 0);
+        spawnOrbStep(dim, startPos, nextPos, level, startBlock, nextBlock, sourceStack.typeId, segLen, logicalTicks, initialSpeedScale);
+      }
+    }
     
     // Add to priority queue based on ticksUntilStep
     if (newJob.ticksUntilStep <= 0) {
@@ -1928,10 +2027,10 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     // Performance optimization: Priority queue - only process ready items
-    const maxInflight = cfg.maxInflight || 100;
-    const baseLimit = 15; // Base limit for movement processing
+    const maxInflight = cfg.maxInflight || 50; // Reduced default from 60 to 50
+    const baseLimit = 6; // Reduced from 8 to improve tick time
     const overloaded = inflight.length > maxInflight * 0.8; // Overloaded if > 80% of max
-    const maxProcessedPerTick = overloaded ? 10 : baseLimit; // Reduce to 10 when overloaded
+    const maxProcessedPerTick = overloaded ? 4 : baseLimit; // Reduced from 5 to 4 when overloaded
     
     // Step 1: Process items from nearReadyItems (they become ready this tick)
     // Move them from nearReadyItems to readyItems and decrement timer
@@ -2061,11 +2160,23 @@ export function createNetworkTransferController(deps, opts) {
       // Prism-specific logic (only when we have the block)
       const tPrism = Date.now();
       if (curBlock && isPrismBlock(curBlock)) {
+        // Count transfer for this prism (input, relay, or output - all count)
+        // Use array to track which prisms we've already counted to avoid double-counting
+        if (!Array.isArray(job.countedPrisms)) job.countedPrisms = [];
+        // Generate key from block to match linkVision format (uses block.dimension.id)
+        const loc = curBlock.location;
+        const dim = curBlock.dimension;
+        const curPrismKey = (dim && dim.id) ? `${dim.id}|${loc.x},${loc.y},${loc.z}` : key(job.dimId, cur.x, cur.y, cur.z);
+        if (!job.countedPrisms.includes(curPrismKey)) {
+          job.countedPrisms.push(curPrismKey);
+          notePrismPassage(curPrismKey, curBlock);
+        }
+        
         if (job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
           applyPrismRefineToFxJob(job, curBlock);
         }
+        // Apply speed boost when passing through (not at destination)
         if (job.stepIndex < job.path.length - 1) {
-          notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
           applyPrismSpeedBoost(job, curBlock);
           if (isFluxTypeId(job.itemTypeId)) {
             applyPrismRefineToJob(job, curBlock);
@@ -2566,6 +2677,19 @@ export function createNetworkTransferController(deps, opts) {
       prismInventoryListCacheTimestamps.delete(job.outputKey);
     }
     
+    // Always release container slot - items arrived even if insertion failed
+    releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+    
+    // Track transfer when items arrive at destination prism (count even if insertion failed - items still arrived)
+    // But only if we haven't already counted it during passage (to avoid double-counting)
+    if (isPrismBlock(outBlock) && job.outputKey) {
+      if (!Array.isArray(job.countedPrisms)) job.countedPrisms = [];
+      if (!job.countedPrisms.includes(job.outputKey)) {
+        job.countedPrisms.push(job.outputKey);
+        notePrismPassage(job.outputKey, outBlock);
+      }
+    }
+    
     if (allInserted) {
       // Track successful insertions in stats, don't spam chat
       
@@ -2592,11 +2716,6 @@ export function createNetworkTransferController(deps, opts) {
       }
       if (debugEnabled) debugState.msFinalizeQueueCleanup += (Date.now() - tQueue);
       
-      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-      if (isPrismBlock(outBlock)) {
-        // For prisms, note transfer for leveling
-        noteOutputTransfer(job.outputKey, outBlock);
-      }
       if (debugEnabled) debugState.fluxGenChecks++;
       
       // Optimization #1 & #4: Skip route lookup if we know no crystallizers exist OR if output is not a prism
@@ -2972,8 +3091,17 @@ export function createNetworkTransferController(deps, opts) {
     return findCrystallizerRouteFromPrism(prismBlock, dimId);
   }
 
+  // Legacy function - deprecated, use notePrismPassage for prisms now
   function noteTransferAndGetLevel(inputKey, block) {
-    const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
+    // For prisms, use unified prism counts system
+    if (isPrismBlock(block)) {
+      notePrismPassage(inputKey, block);
+      const stored = prismCounts.has(inputKey) ? prismCounts.get(inputKey) : 0;
+      const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
+      return getLevelForCount(stored, prismStep, cfg.maxLevel);
+    }
+    // Legacy behavior for non-prism blocks (shouldn't happen in unified system)
+    const blockLevel = 1;
     const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
     const stored = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
     const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
@@ -2987,8 +3115,10 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function getNextInputLevel(inputKey) {
-    const current = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
-    return getLevelForCount(current + 1, cfg.levelStep, cfg.maxLevel);
+    // Use unified prism counts system
+    const stored = prismCounts.has(inputKey) ? prismCounts.get(inputKey) : 0;
+    const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
+    return getLevelForCount(stored + 1, prismStep, cfg.maxLevel);
   }
 
   function getLevelForCount(count, step, maxLevel) {
@@ -3042,14 +3172,26 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function notePrismPassage(prismKey, block) {
+    // Ensure we have a valid key in the format "dimId|x,y,z"
+    // If we have a block but the key might be wrong, regenerate it from the block
+    let actualKey = prismKey;
+    if (block && block.location) {
+      const loc = block.location;
+      const dim = block.dimension;
+      if (dim && dim.id) {
+        // Use dimension.id format to match linkVision
+        actualKey = `${dim.id}|${loc.x},${loc.y},${loc.z}`;
+      }
+    }
+    
     const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
     const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
     const minCount = getMinCountForLevel(blockLevel, prismStep);
-    const stored = prismCounts.has(prismKey) ? prismCounts.get(prismKey) : 0;
+    const stored = prismCounts.has(actualKey) ? prismCounts.get(actualKey) : 0;
     const storedLevel = getLevelForCount(stored, prismStep, cfg.maxLevel);
     const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
     const next = current + 1;
-    prismCounts.set(prismKey, next);
+    prismCounts.set(actualKey, next);
     prismLevelsDirty = true;
     const level = getLevelForCount(next, prismStep, cfg.maxLevel);
     updatePrismBlockLevel(block, level);
@@ -3085,23 +3227,23 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
+  // Legacy function - deprecated, use notePrismPassage for prisms
+  // Crystallizers don't track transfers (they have their own flux/prestige system)
   function noteOutputTransfer(outputKey, block) {
-    const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block.typeId) : 1;
-    const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
-    const stored = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
-    const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
-    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
-    const next = current + 1;
-    outputCounts.set(outputKey, next);
-    outputLevelsDirty = true;
-    const level = getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
-    updateOutputBlockLevel(block, level);
+    // Prisms should use notePrismPassage instead
+    if (isPrismBlock(block)) {
+      return notePrismPassage(outputKey, block);
+    }
+    // Crystallizers don't track transfers, so do nothing
   }
 
-  // Legacy function - prisms are now handled by updatePrismBlockLevel
+  // Legacy function - deprecated, use updatePrismBlockLevel directly
   function updateOutputBlockLevel(block, level) {
-    // This is now handled by updatePrismBlockLevel for unified prisms
-    return updatePrismBlockLevel(block, level);
+    // Deprecated - use updatePrismBlockLevel for prisms
+    if (isPrismBlock(block)) {
+      return updatePrismBlockLevel(block, level);
+    }
+    // Crystallizers don't upgrade, so do nothing
   }
 
   function rebuildReservationsFromInflight() {

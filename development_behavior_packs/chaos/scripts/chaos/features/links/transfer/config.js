@@ -96,11 +96,11 @@ const DEFAULTS = {
   backoffMaxTicks: 200,
   backoffMaxLevel: 6,
   maxFluxFxInFlight: 24,
-  maxInflight: 100, // Hard limit on total in-flight transfers to prevent unbounded growth
-  inflightSaveIntervalTicks: 40,
+  maxInflight: 50, // Reduced from 60 to further lower processing overhead
+  inflightSaveIntervalTicks: 40, // Increased from 20 - saves less frequently but still safe (forced save every 200 ticks)
   // Legacy - kept for compatibility
   perInputIntervalTicks: 10,
-  maxInputsScannedPerTick: 24,
+  maxInputsScannedPerTick: 24, // Legacy - not used, only maxPrismsScannedPerTick is used
 };
 
 export {
