@@ -1,274 +1,210 @@
-# Agent Handoff: Minecraft Bedrock Chaos Prism Transfer System
+# Agent Handoff: Minecraft Bedrock Chaos Prism Transfer System - Performance Optimization
 
-## Current Status: ❌ CRITICAL ISSUE - "No Prisms Found"
+## Current Status: ⚠️ PERFORMANCE ISSUES - High Tick Times
 
-**The Problem**: The transfer system is not working because `getPrismKeys()` returns 0 prisms, even though prisms are visible in-game and should be registered in the beams map.
+**The Problem**: The transfer system is experiencing significant lag spikes with tick times of **1900-2000ms** (nearly 2 seconds per tick). The system is functional but needs optimization.
 
-**Debug Output**: The debug messages show:
-- `[Transfer] Inflight: 4 active transfers`
-- `[Transfer] No prisms found! Tick: 300` (and similar for other ticks)
+**Current Performance Metrics** (from debug output):
+- `[Transfer] Prisms: 32 | Transfers: 22 | In-flight: 23 | Queued: 2 items | Paths: 571 searches | Orbs: 26 | Time: 1941ms`
+- `Time: 1962ms` - This is the total time for the transfer system tick, which is extremely high
 
-This indicates that:
-1. There ARE inflight transfers (so prisms existed at some point)
-2. But `getPrismKeys()` cannot find any prisms in the beams map right now
+**System Status**:
+- ✅ Prisms are being detected (32 prisms found)
+- ✅ Transfers are working (22 transfers completed, 23 in-flight)
+- ✅ Visual system is active (26 orbs visible)
+- ✅ Debug messages have been cleaned up (only aggregated stats remain)
+- ⚠️ **Performance is the critical issue** - 2 second ticks cause severe lag spikes
 
-## Root Cause Investigation
+## Optimization Recommendations
 
-The issue is in `getPrismKeys()` (controller.js, line ~680). This function:
-1. Loads the beams map from world dynamic properties (`DP_BEAMS`)
-2. Iterates through all keys in the map
-3. Uses `resolveBlockInfoCached()` to look up each block
-4. Filters to only return keys where `block.typeId === PRISM_ID`
+### Priority 1: DP Save Batching and Throttling
 
-**Hypothesis**: Either:
-- The beams map is empty (prisms not being registered)
-- Block lookups are failing (blocks removed, dimension issues, cache issues)
-- Keys in map don't correspond to actual prisms (wrong block types)
-- Key format mismatch between beam system and transfer system
+**Current State**: Multiple DP saves happen independently:
+- `persistInflightIfNeeded()` - saves inflight transfers
+- `persistLevelsIfNeeded()` - saves input levels (every 200 ticks)
+- `persistOutputLevelsIfNeeded()` - saves output levels (every 200 ticks)
+- `persistPrismLevelsIfNeeded()` - saves prism levels (every 200 ticks)
+- `saveBeamsMap()` - saves beam map (from beam system)
 
-## Recent Debugging Attempts
+**Problem**: Each save operation is expensive. Multiple saves per tick can cause lag spikes.
 
-1. **Fixed `'stamp' is not defined` error** - moved `stamp` variable declaration outside if block
-2. **Added fallback to `resolveBlockInfo()`** - direct block lookup if cache fails
-3. **Enhanced debug messages in `getPrismKeys()`** - now shows:
-   - Total keys in beams map
-   - Number of prisms found
-   - Number with wrong block type
-   - Number of failed lookups
-   - Number of parse failures
-   - Sample debug for first 3 failures (every 200 ticks)
+**Recommendation**:
+1. **Batch all DP saves** into a single operation per tick (or every N ticks)
+2. **Increase save intervals** - 200 ticks may be too frequent for level saves
+3. **Use a save queue** - accumulate changes and save them all at once
+4. **Throttle saves** - Only save if changes have accumulated (dirty flags are already in place)
 
-**But**: User reports "nothing" - either debug messages aren't showing or showing empty results.
+**Files to Modify**:
+- `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/controller.js`
+  - Lines ~362-445: All `persist*IfNeeded()` functions
+  - Lines ~680-691: Where saves are called in `onTick()`
 
-## Architecture Overview
-
-### Two Storage Systems (Potential Issue?)
-
-There are TWO separate storage modules that both use `DP_BEAMS`:
-1. **Beam System**: `beam/storage.js` - has `loadBeamsMap()`, `saveBeamsMap()`, `key()`, `parseKey()`
-2. **Transfer System**: `transfer/storage.js` - also has `loadBeamsMap()` (imports `DP_BEAMS` from config)
-
-Both should be loading from the same dynamic property, but they use different `key()` and `parseKey()` functions from different modules. The format appears identical (`dimId|x,y,z`), but worth verifying.
-
-### Key Functions
-
-**`getPrismKeys()`** (controller.js ~680):
-- Loads beams map via `loadBeamsMap(world)` from `transfer/storage.js`
-- Gets all keys from map: `Object.keys(map || {})`
-- For each key:
-  - Parses with `parseKey()` from `transfer/keys.js`
-  - Looks up block with `resolveBlockInfoCached()` (uses cache)
-  - Checks if `block.typeId === PRISM_ID`
-- Returns array of prism keys
-
-**`resolveBlockInfoCached()`** (controller.js ~205):
-- Uses `blockCache` Map (cleared each tick)
-- Parses key with `parseKey()` from `transfer/keys.js`
-- Gets dimension with `getDimensionCached()` (also cached)
-- Gets block with `dim.getBlock({ x, y, z })`
-- Caches result (even null failures) for the tick
-
-**`handlePrismPlaced()`** (beam/events.js ~123):
-- Called when prism placed
-- Creates key with `key()` from `beam/storage.js`
-- Creates entry: `{ dimId, x, y, z, beams: [], kind: "prism" }`
-- Saves to map: `map[prismKey] = entry`
-- Calls `saveBeamsMap(world, map)` from `beam/storage.js`
-
-### Cache System
-
-**Cache Clearing**: `resetTickCaches()` (controller.js ~188) clears:
-- `blockCache`
-- `dimCache`
-- `containerInfoCache`
-- `containerCountCache`
-- `cachedInputKeys` (if network stamp changed)
-
-**Cache Issue**: Once a key fails lookup (returns null), it's cached as null for that tick. This means if a block lookup fails once, it won't retry until next tick. However, blocks might be valid but lookups might be failing due to timing, dimension issues, or coordinate rounding.
-
-## Files to Investigate
-
-### Primary Files
-
-1. **`development_behavior_packs/chaos/scripts/chaos/features/links/transfer/controller.js`**
-   - Line ~680: `getPrismKeys()` - the function returning 0
-   - Line ~205: `resolveBlockInfoCached()` - block lookup function
-   - Line ~188: `resetTickCaches()` - cache clearing
-   - Line ~538: `onTick()` - main loop (calls `getPrismKeys()`)
-
-2. **`development_behavior_packs/chaos/scripts/chaos/features/links/beam/storage.js`**
-   - `key()`, `parseKey()` - key format for beam system
-   - `loadBeamsMap()`, `saveBeamsMap()` - beam system storage
-
-3. **`development_behavior_packs/chaos/scripts/chaos/features/links/transfer/storage.js`**
-   - `loadBeamsMap()` - transfer system storage (loads from same `DP_BEAMS`)
-
-4. **`development_behavior_packs/chaos/scripts/chaos/features/links/transfer/keys.js`**
-   - `key()`, `parseKey()` - key format for transfer system
-   - **CHECK**: Do these match beam/storage.js format?
-
-5. **`development_behavior_packs/chaos/scripts/chaos/features/links/beam/events.js`**
-   - Line ~123: `handlePrismPlaced()` - registers prisms in map
-   - Line ~160: `registerBeamEvents()` - event subscriptions
-
-### Config Files
-
-6. **`development_behavior_packs/chaos/scripts/chaos/features/links/transfer/config.js`**
-   - `DP_BEAMS` constant - verify matches beam system
-   - `PRISM_ID = "chaos:prism"` - verify block ID
-
-7. **`development_behavior_packs/chaos/scripts/chaos/features/links/beam/config.js`**
-   - `DP_BEAMS` constant - verify matches transfer system
-   - `PRISM_ID = "chaos:prism"` - verify block ID
-
-## Investigation Steps
-
-### Step 1: Verify Key Format Consistency
-
-**Check**: Do `beam/storage.js` and `transfer/keys.js` use the same key format?
-
+**Implementation Suggestion**:
 ```javascript
-// beam/storage.js
-export function key(dimId, x, y, z) {
-  return `${dimId}|${x},${y},${z}`;
+function persistAllIfNeeded() {
+  const saveInterval = 200; // Only save every 200 ticks
+  if ((nowTick - lastSaveTick) < saveInterval) return;
+  
+  // Batch all saves into one operation
+  const allData = {
+    inflight: inflightDirty ? inflight : null,
+    inputLevels: levelsDirty ? Object.fromEntries(transferCounts) : null,
+    outputLevels: outputLevelsDirty ? Object.fromEntries(outputCounts) : null,
+    prismLevels: prismLevelsDirty ? Object.fromEntries(prismCounts) : null,
+  };
+  
+  // Save all at once (or in sequence but throttled)
+  if (allData.inflight) persistInflightStateToWorld(world, allData.inflight);
+  if (allData.inputLevels) saveInputLevels(world, allData.inputLevels);
+  // ... etc
+  
+  // Reset all dirty flags
+  inflightDirty = false;
+  levelsDirty = false;
+  // ... etc
+  lastSaveTick = nowTick;
 }
+```
 
-// transfer/keys.js
-export function key(dimId, x, y, z) {
-  return `${dimId}|${x},${y},${z}`;
+### Priority 2: Cache Improvements
+
+**Current State**: Caches are cleared every tick, which is good, but:
+- Block lookups may be happening redundantly
+- Container info lookups may be repeated
+- Pathfinding results may not be cached effectively
+
+**Recommendation**:
+1. **Extend cache lifetime** - Don't clear caches every tick, use TTL-based expiration
+2. **Cache pathfinding results** - Paths between prisms don't change often
+3. **Cache inventory lookups** - Adjacent inventories don't change unless blocks are placed/removed
+4. **Invalidate caches on block changes** - Use event system to clear relevant caches
+
+**Files to Modify**:
+- `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/controller.js`
+  - Lines ~188-200: `resetTickCaches()` function
+  - Lines ~220-280: `resolveBlockInfoCached()` and related cache functions
+  - `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/pathfinder.js` - Add path caching
+
+**Implementation Suggestion**:
+```javascript
+// Instead of clearing every tick, use TTL
+const blockCacheTTL = 5; // Cache for 5 ticks
+const cacheTimestamps = new Map();
+
+function resolveBlockInfoCached(blockKey) {
+  const cached = blockCache.get(blockKey);
+  const timestamp = cacheTimestamps.get(blockKey);
+  
+  if (cached && timestamp && (nowTick - timestamp) < blockCacheTTL) {
+    return cached;
+  }
+  
+  // ... lookup and cache with timestamp
+  cacheTimestamps.set(blockKey, nowTick);
 }
 ```
 
-They should match. If they don't, prisms registered by beam system won't be found by transfer system.
+### Priority 3: Reduce Redundant Operations
 
-### Step 2: Verify Beams Map is Being Populated
+**Current State**: 
+- `getPrismKeys()` is called every tick and does full map scan
+- Pathfinding searches are happening frequently (571 searches shown in stats)
+- Block lookups are happening for every prism every tick
 
-**Add debug to `handlePrismPlaced()`**:
-- Log when prism is registered
-- Log the key format being used
-- Log the entry being saved
+**Recommendation**:
+1. **Cache prism keys** - Only recalculate when network stamp changes (already partially implemented)
+2. **Limit pathfinding searches** - Reduce `maxSearchesPerTick` or improve search efficiency
+3. **Skip prisms that can't transfer** - Don't scan prisms that are on cooldown or have no items
+4. **Batch block lookups** - Do multiple lookups in one operation if possible
 
-**Add debug to `getPrismKeys()` start**:
-- Log `Object.keys(map || {})` count BEFORE filtering
-- Log first few keys in map (to see format)
-- This will show if map is empty or keys exist but aren't prisms
+**Files to Modify**:
+- `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/controller.js`
+  - Lines ~695-847: `getPrismKeys()` - improve caching
+  - Lines ~573-703: `onTick()` - optimize scanning loop
+  - `development_behavior_packs/chaos/scripts/chaos/bootstrap/transferLoop.js` - Adjust `maxSearchesPerTick` config
 
-### Step 3: Verify Block Lookups Are Working
+### Priority 4: Code Organization (Lower Priority)
 
-**Add direct block lookup test**:
-- In `getPrismKeys()`, before using `resolveBlockInfoCached()`, try a direct lookup:
-  ```javascript
-  const testBlock = world.getDimension(parsed.dimId)?.getBlock({ x: parsed.x, y: parsed.y, z: parsed.z });
-  ```
-- Compare with cached lookup result
-- This will show if cache is the problem
+**Current State**: `controller.js` is a very large file (~2600 lines) with many responsibilities.
 
-### Step 4: Check Debug Output
+**Recommendation**:
+1. **Split into modules**:
+   - `transferCore.js` - Core transfer logic
+   - `transferInventory.js` - Inventory operations
+   - `transferPathfinding.js` - Pathfinding integration
+   - `transferPersistence.js` - Save/load operations
+   - `transferDebug.js` - Debug stats and messages
+2. **Extract constants** - Move all magic numbers to config
+3. **Improve function organization** - Group related functions together
 
-**The debug messages added should show**:
-- Every 100 ticks: Count of keys, prisms found, wrong types, failed lookups
-- Every 200 ticks: Sample failure messages (first 3)
+**Files to Create**:
+- `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/transferCore.js`
+- `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/transferInventory.js`
+- `development_behavior_packs/chaos/scripts/chaos/features/links/transfer/transferPersistence.js`
 
-**If debug shows nothing**, check:
-- Is `debugEnabled` true? (from `transferLoop.js`)
-- Are messages being sent to players? (should use `player.sendMessage()`)
+## Key Files
 
-### Step 5: Verify Prism Registration
+### Primary File (Main Optimization Target)
+- **`development_behavior_packs/chaos/scripts/chaos/features/links/transfer/controller.js`** (~2600 lines)
+  - Lines 362-445: DP save functions (Priority 1)
+  - Lines 188-200: Cache clearing (Priority 2)
+  - Lines 220-280: Block/container caching (Priority 2)
+  - Lines 573-703: Main tick loop (Priority 3)
+  - Lines 695-847: `getPrismKeys()` (Priority 3)
 
-**Check if prisms are actually being registered**:
-- Place a new prism
-- Check if `handlePrismPlaced()` is called (add debug)
-- Check if entry is saved to map (add debug after `saveBeamsMap`)
-- Immediately check if `getPrismKeys()` finds it
+### Configuration
+- **`development_behavior_packs/chaos/scripts/chaos/bootstrap/transferLoop.js`**
+  - Line 59: `maxTransfersPerTick: 4`
+  - Line 64: `maxInputsScannedPerTick: 12`
+  - Line 61: `orbStepTicks: 60`
+  - Consider reducing these if performance is still an issue
 
-## Potential Issues
+### Related Systems
+- **`development_behavior_packs/chaos/scripts/chaos/features/links/transfer/pathfinder.js`**
+  - Pathfinding logic - consider adding result caching here
 
-### Issue 1: Key Format Mismatch
-**Symptom**: Beams map has entries, but `parseKey()` fails or keys don't match.
-**Fix**: Ensure both systems use identical key format, or convert keys when loading.
+## Performance Profiling
 
-### Issue 2: Cache Poisoning
-**Symptom**: First lookup fails (maybe timing), then cached as null for rest of tick.
-**Fix**: Don't cache null results, or retry failed lookups with direct lookup fallback (already added, but verify it's working).
+**Current Debug Stats Show**:
+- `Time: 1941ms` - Total tick time (TARGET: <100ms)
+- `Paths: 571 searches` - Pathfinding operations (high)
+- `Orbs: 26` - Active visual orbs (reasonable)
+- `In-flight: 23` - Active transfers (reasonable)
 
-### Issue 3: Coordinate Rounding
-**Symptom**: Keys saved with one precision, parsed with another.
-**Fix**: Both systems use `x | 0` to floor coordinates, should match.
+**Breakdown Needed**:
+The debug stats already track:
+- `msQueues` - Queue processing time
+- `msInflight` - In-flight processing time
+- `msFluxFx` - Flux FX time
+- `msScan` - Scanning time
+- `msPersist` - Persistence time
+- `msTotal` - Total time
 
-### Issue 4: Dimension ID Format
-**Symptom**: Dimension IDs don't match between systems.
-**Fix**: Verify both use `dimension.id` consistently.
+**Next Steps for Profiling**:
+1. Check which component is taking the most time (likely `msPersist` or `msScan`)
+2. Add more granular timing to identify bottlenecks
+3. Focus optimization on the slowest component
 
-### Issue 5: Beams Map Not Persisting
-**Symptom**: Prisms registered but map is empty on next tick.
-**Fix**: Check `saveBeamsMap()` is actually saving, and `loadBeamsMap()` is loading correctly.
+## Implementation Order
 
-### Issue 6: Debug Not Enabled
-**Symptom**: No debug output at all.
-**Fix**: Check `transferLoop.js` - `debugTransferStats` should be `true`.
+1. **Start with DP Save Batching** (Priority 1) - Likely biggest impact
+2. **Add pathfinding result caching** (Priority 2) - 571 searches is very high
+3. **Improve cache TTL** (Priority 2) - Reduce redundant lookups
+4. **Optimize scanning loop** (Priority 3) - Skip unnecessary prisms
+5. **Code organization** (Priority 4) - For maintainability
 
-## Code Changes Made
+## Testing
 
-1. **Fixed `stamp` scope error** in `getPrismKeys()` - moved declaration outside if block
-2. **Added fallback in `resolveBlockInfo()`** - direct lookup if cache fails (but `getPrismKeys()` uses `resolveBlockInfoCached()`, not `resolveBlockInfo()`)
-3. **Enhanced debug in `getPrismKeys()`**:
-   - Added `parseFailCount` tracking
-   - Added sample failure messages (every 200 ticks, first 3)
-   - Enhanced main debug message with all counts
+After each optimization:
+1. Check debug stats for `Time` value - should decrease
+2. Monitor for lag spikes - should be smoother
+3. Verify transfers still work correctly
+4. Check that no functionality is broken
 
-## Next Steps
+## Notes
 
-1. **Verify debug is enabled**: Check `transferLoop.js` has `debugTransferStats: true`
-2. **Check beams map directly**: Add debug to log raw map contents and key count
-3. **Test key format**: Log keys from both systems side-by-side
-4. **Test direct lookup**: Bypass cache and do direct block lookups
-5. **Verify prism registration**: Add debug to `handlePrismPlaced()` to confirm prisms are being saved
-
-## Key Questions to Answer
-
-1. **Is the beams map empty?** - Check `Object.keys(map || {}).length` at start of `getPrismKeys()`
-2. **Are keys being parsed correctly?** - Check `parseFailCount` in debug output
-3. **Are block lookups failing?** - Check `invalidCount` in debug output
-4. **Are wrong block types in map?** - Check `missingCount` in debug output
-5. **Are prisms being registered?** - Add debug to `handlePrismPlaced()`
-6. **Is debug actually enabled?** - Check `transferLoop.js` and verify messages appear
-
-## Files Structure
-
-```
-development_behavior_packs/chaos/scripts/chaos/
-├── bootstrap/
-│   └── transferLoop.js (starts transfer system, sets debug flag)
-├── features/links/
-│   ├── beam/
-│   │   ├── config.js (PRISM_ID, DP_BEAMS for beam system)
-│   │   ├── storage.js (key, parseKey, loadBeamsMap for beam system)
-│   │   └── events.js (handlePrismPlaced - registers prisms)
-│   └── transfer/
-│       ├── config.js (PRISM_ID, DP_BEAMS for transfer system)
-│       ├── keys.js (key, parseKey for transfer system)
-│       ├── storage.js (loadBeamsMap for transfer system)
-│       └── controller.js (getPrismKeys, resolveBlockInfoCached) ⭐ MAIN FILE
-```
-
-## Important Notes
-
-- **Both systems use `DP_BEAMS`**: Beam and transfer systems should be loading from the same dynamic property
-- **Key format must match**: Both `beam/storage.js` and `transfer/keys.js` use `dimId|x,y,z` format
-- **Cache is cleared each tick**: Failed lookups are cached as null for that tick only
-- **Debug uses `player.sendMessage()`**: Must iterate `world.getAllPlayers()` to send messages
-- **Prisms are registered on placement**: `handlePrismPlaced()` should be called automatically via events
-
-## Debug Commands
-
-To check if debug is working, the code should output messages every 100 ticks like:
-```
-[Transfer] DEBUG: 2 keys in beams map, 0 prisms found, 0 wrong type, 2 lookup failed, 0 parse failed. Inflight: 4
-```
-
-If no messages appear, either:
-- Debug is disabled (`debugTransferStats: false` in `transferLoop.js`)
-- Messages aren't reaching players
-- Code isn't executing (check if `onTick()` is being called)
-
-Start by adding a simple debug message at the very start of `getPrismKeys()` to verify it's being called, then work backwards to find where it's failing.
+- **Debug messages are already cleaned up** - Only aggregated stats remain
+- **System is functional** - Don't break existing functionality
+- **Focus on performance** - The 2 second tick time is the critical issue
+- **Minecraft Bedrock limitations** - DP saves are inherently slow, batching helps
+- **Cache invalidation** - Must be careful when extending cache lifetime to invalidate on block changes

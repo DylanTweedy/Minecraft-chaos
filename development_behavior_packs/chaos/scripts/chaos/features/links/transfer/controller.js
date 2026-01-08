@@ -91,13 +91,12 @@ export function createNetworkTransferController(deps, opts) {
   let lastSaveTick = 0;
   const transferCounts = new Map();
   let levelsDirty = false;
-  let lastLevelsSaveTick = 0;
   const outputCounts = new Map();
   let outputLevelsDirty = false;
-  let lastOutputLevelsSaveTick = 0;
   const prismCounts = new Map();
   let prismLevelsDirty = false;
-  let lastPrismLevelsSaveTick = 0;
+  // Unified save interval - batch all saves together
+  const SAVE_INTERVAL_TICKS = 200;
   const queueByContainer = new Map();
   const fullContainers = new Set();
   let fullCursor = 0;
@@ -135,11 +134,24 @@ export function createNetworkTransferController(deps, opts) {
   let cachedInputsStamp = null;
   let orbFxBudgetUsed = 0;
   const blockCache = new Map();
+  const blockCacheTimestamps = new Map();
   const containerInfoCache = new Map();
+  const containerInfoCacheTimestamps = new Map();
   const insertCapacityCache = new Map();
+  const insertCapacityCacheTimestamps = new Map();
   const totalCapacityCache = new Map();
+  const totalCapacityCacheTimestamps = new Map();
   const totalCountCache = new Map();
+  const totalCountCacheTimestamps = new Map();
   const dimCache = new Map();
+  const dimCacheTimestamps = new Map();
+  
+  // Cache TTL values (in ticks)
+  const BLOCK_CACHE_TTL = 5; // Block lookups are expensive, cache for 5 ticks
+  const CONTAINER_CACHE_TTL = 10; // Container info changes less frequently
+  const CAPACITY_CACHE_TTL = 3; // Capacity can change with items, shorter cache
+  const COUNT_CACHE_TTL = 2; // Item counts change frequently, very short cache
+  const DIM_CACHE_TTL = 1000; // Dimensions never change, cache for a long time
 
   function getBackoffTicks(level) {
     const safeLevel = Math.max(0, level | 0);
@@ -190,48 +202,135 @@ export function createNetworkTransferController(deps, opts) {
     debugState.msTotal = 0;
   }
 
+  // Cache cleanup state - only clean up periodically to avoid O(n) cost every tick
+  let lastCacheCleanupTick = 0;
+  const CACHE_CLEANUP_INTERVAL = 20; // Clean up every 20 ticks instead of every tick
+  const MAX_CACHE_SIZE = 500; // Maximum entries per cache to prevent unbounded growth
+  
+  // Clear expired cache entries periodically instead of every tick
   function resetTickCaches() {
-    blockCache.clear();
-    containerInfoCache.clear();
-    insertCapacityCache.clear();
-    totalCapacityCache.clear();
-    totalCountCache.clear();
-    dimCache.clear();
+    // Only do expensive cleanup every N ticks
+    if ((nowTick - lastCacheCleanupTick) < CACHE_CLEANUP_INTERVAL) {
+      return; // Skip cleanup this tick
+    }
+    lastCacheCleanupTick = nowTick;
+    
+    // Helper to clean cache with size limit
+    function cleanCache(cache, timestamps, ttl, maxSize) {
+      // If cache is too large, clear oldest entries first
+      if (cache.size > maxSize) {
+        const entries = Array.from(timestamps.entries()).sort((a, b) => a[1] - b[1]);
+        const toRemove = cache.size - maxSize;
+        for (let i = 0; i < toRemove; i++) {
+          const key = entries[i][0];
+          cache.delete(key);
+          timestamps.delete(key);
+        }
+      }
+      
+      // Clear expired entries (limit iterations to prevent lag spikes)
+      let cleaned = 0;
+      const maxCleanupPerCycle = 50;
+      for (const [key, timestamp] of timestamps.entries()) {
+        if ((nowTick - timestamp) >= ttl) {
+          cache.delete(key);
+          timestamps.delete(key);
+          if (++cleaned >= maxCleanupPerCycle) break;
+        }
+      }
+    }
+    
+    cleanCache(blockCache, blockCacheTimestamps, BLOCK_CACHE_TTL, MAX_CACHE_SIZE);
+    cleanCache(containerInfoCache, containerInfoCacheTimestamps, CONTAINER_CACHE_TTL, MAX_CACHE_SIZE);
+    cleanCache(insertCapacityCache, insertCapacityCacheTimestamps, CAPACITY_CACHE_TTL, MAX_CACHE_SIZE);
+    cleanCache(totalCapacityCache, totalCapacityCacheTimestamps, CAPACITY_CACHE_TTL, MAX_CACHE_SIZE);
+    cleanCache(totalCountCache, totalCountCacheTimestamps, COUNT_CACHE_TTL, MAX_CACHE_SIZE);
+    // Dimension cache is small, no size limit needed
+    let cleaned = 0;
+    const maxCleanupPerCycle = 50;
+    for (const [key, timestamp] of dimCacheTimestamps.entries()) {
+      if ((nowTick - timestamp) >= DIM_CACHE_TTL) {
+        dimCache.delete(key);
+        dimCacheTimestamps.delete(key);
+        if (++cleaned >= maxCleanupPerCycle) break;
+      }
+    }
+  }
+  
+  // Function to invalidate specific cache entries (for block changes)
+  function invalidateCacheForBlock(blockKey) {
+    blockCache.delete(blockKey);
+    blockCacheTimestamps.delete(blockKey);
+    containerInfoCache.delete(blockKey);
+    containerInfoCacheTimestamps.delete(blockKey);
+    // Also clear related capacity/count caches
+    for (const key of insertCapacityCache.keys()) {
+      if (key.includes(blockKey)) {
+        insertCapacityCache.delete(key);
+        insertCapacityCacheTimestamps.delete(key);
+      }
+    }
+    for (const key of totalCapacityCache.keys()) {
+      if (key.includes(blockKey)) {
+        totalCapacityCache.delete(key);
+        totalCapacityCacheTimestamps.delete(key);
+      }
+    }
+    for (const key of totalCountCache.keys()) {
+      if (key.includes(blockKey)) {
+        totalCountCache.delete(key);
+        totalCountCacheTimestamps.delete(key);
+      }
+    }
   }
 
   function getDimensionCached(dimId) {
     if (!dimId) return null;
-    if (dimCache.has(dimId)) return dimCache.get(dimId);
+    const cached = dimCache.get(dimId);
+    const timestamp = dimCacheTimestamps.get(dimId);
+    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < DIM_CACHE_TTL) {
+      return cached;
+    }
     const dim = world.getDimension(dimId);
     dimCache.set(dimId, dim || null);
+    dimCacheTimestamps.set(dimId, nowTick);
     return dim || null;
   }
 
   function resolveBlockInfoCached(blockKey) {
     try {
       if (!blockKey) return null;
-      if (blockCache.has(blockKey)) return blockCache.get(blockKey);
+      const cached = blockCache.get(blockKey);
+      const timestamp = blockCacheTimestamps.get(blockKey);
+      if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < BLOCK_CACHE_TTL) {
+        return cached;
+      }
       const pos = parseKey(blockKey);
       if (!pos) {
         blockCache.set(blockKey, null);
+        blockCacheTimestamps.set(blockKey, nowTick);
         return null;
       }
       const dim = getDimensionCached(pos.dimId);
       if (!dim) {
         blockCache.set(blockKey, null);
+        blockCacheTimestamps.set(blockKey, nowTick);
         return null;
       }
       const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
       if (!block) {
         blockCache.set(blockKey, null);
+        blockCacheTimestamps.set(blockKey, nowTick);
         return null;
       }
       const info = { dim, block, pos };
       blockCache.set(blockKey, info);
+      blockCacheTimestamps.set(blockKey, nowTick);
       if (debugEnabled) debugState.blockLookups++;
       return info;
     } catch (err) {
       blockCache.set(blockKey, null);
+      blockCacheTimestamps.set(blockKey, nowTick);
       return null;
     }
   }
@@ -265,49 +364,71 @@ export function createNetworkTransferController(deps, opts) {
 
   function resolveContainerInfoCached(containerKey) {
     if (!containerKey) return null;
-    if (containerInfoCache.has(containerKey)) return containerInfoCache.get(containerKey);
+    const cached = containerInfoCache.get(containerKey);
+    const timestamp = containerInfoCacheTimestamps.get(containerKey);
+    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < CONTAINER_CACHE_TTL) {
+      return cached;
+    }
     const info = resolveBlockInfoCached(containerKey);
     if (!info || !info.block) {
       containerInfoCache.set(containerKey, null);
+      containerInfoCacheTimestamps.set(containerKey, nowTick);
       return null;
     }
     const container = getInventoryContainer(info.block);
     if (!container) {
       containerInfoCache.set(containerKey, null);
+      containerInfoCacheTimestamps.set(containerKey, nowTick);
       return null;
     }
     const result = { dim: info.dim, block: info.block, container, pos: info.pos };
     containerInfoCache.set(containerKey, result);
+    containerInfoCacheTimestamps.set(containerKey, nowTick);
     if (debugEnabled) debugState.containerLookups++;
     return result;
   }
 
   function getTotalCountForTypeCached(containerKey, container, typeId) {
     const keyId = `${containerKey}|${typeId}`;
-    if (totalCountCache.has(keyId)) return totalCountCache.get(keyId);
+    const cached = totalCountCache.get(keyId);
+    const timestamp = totalCountCacheTimestamps.get(keyId);
+    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < COUNT_CACHE_TTL) {
+      return cached;
+    }
     if (debugEnabled) debugState.inventoryScans++;
     const total = getTotalCountForType(container, typeId);
     totalCountCache.set(keyId, total);
+    totalCountCacheTimestamps.set(keyId, nowTick);
     return total;
   }
 
   function getInsertCapacityCached(containerKey, container, typeId, stack) {
     const maxStack = Math.max(1, stack?.maxAmount || 64);
     const keyId = `${containerKey}|${typeId}|${maxStack}`;
-    if (insertCapacityCache.has(keyId)) return insertCapacityCache.get(keyId);
+    const cached = insertCapacityCache.get(keyId);
+    const timestamp = insertCapacityCacheTimestamps.get(keyId);
+    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < CAPACITY_CACHE_TTL) {
+      return cached;
+    }
     if (debugEnabled) debugState.inventoryScans++;
     const info = resolveContainerInfoCached(containerKey);
     const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack, info?.block);
     insertCapacityCache.set(keyId, capacity);
+    insertCapacityCacheTimestamps.set(keyId, nowTick);
     return capacity;
   }
 
   function getContainerCapacityCached(containerKey, container) {
-    if (totalCapacityCache.has(containerKey)) return totalCapacityCache.get(containerKey);
+    const cached = totalCapacityCache.get(containerKey);
+    const timestamp = totalCapacityCacheTimestamps.get(containerKey);
+    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < CAPACITY_CACHE_TTL) {
+      return cached;
+    }
     if (debugEnabled) debugState.inventoryScans++;
     const info = resolveContainerInfoCached(containerKey);
     const capacity = getContainerCapacityWithReservations(containerKey, container, info?.block);
     totalCapacityCache.set(containerKey, capacity);
+    totalCapacityCacheTimestamps.set(containerKey, nowTick);
     return capacity;
   }
 
@@ -359,23 +480,9 @@ export function createNetworkTransferController(deps, opts) {
     lastSaveTick = nowTick;
   }
 
+  // Legacy functions kept for compatibility but now use batched saves
   function persistInflightIfNeeded() {
-    if (!inflightDirty && !inflightStepDirty) return;
-    if (inflightDirty && inflight.length === 0) {
-      persistInflightStateToWorld(world, inflight);
-      if (debugEnabled) debugState.dpSaves++;
-      inflightDirty = false;
-      inflightStepDirty = false;
-      lastSaveTick = nowTick;
-      return;
-    }
-    const interval = Math.max(1, cfg.inflightSaveIntervalTicks | 0);
-    if ((nowTick - lastSaveTick) < interval) return;
-    persistInflightStateToWorld(world, inflight);
-    if (debugEnabled) debugState.dpSaves++;
-    inflightDirty = false;
-    inflightStepDirty = false;
-    lastSaveTick = nowTick;
+    // Now handled by persistAllIfNeeded()
   }
 
   function loadLevelsState() {
@@ -387,17 +494,10 @@ export function createNetworkTransferController(deps, opts) {
       transferCounts.set(k, n | 0);
     }
     levelsDirty = false;
-    lastLevelsSaveTick = nowTick;
   }
 
   function persistLevelsIfNeeded() {
-    if (!levelsDirty && (nowTick - lastLevelsSaveTick) < 200) return;
-    const obj = {};
-    for (const [k, v] of transferCounts.entries()) obj[k] = v;
-    saveInputLevels(world, obj);
-    if (debugEnabled) debugState.dpSaves++;
-    levelsDirty = false;
-    lastLevelsSaveTick = nowTick;
+    // Now handled by persistAllIfNeeded()
   }
 
   function loadOutputLevelsState() {
@@ -409,17 +509,10 @@ export function createNetworkTransferController(deps, opts) {
       outputCounts.set(k, n | 0);
     }
     outputLevelsDirty = false;
-    lastOutputLevelsSaveTick = nowTick;
   }
 
   function persistOutputLevelsIfNeeded() {
-    if (!outputLevelsDirty && (nowTick - lastOutputLevelsSaveTick) < 200) return;
-    const obj = {};
-    for (const [k, v] of outputCounts.entries()) obj[k] = v;
-    saveOutputLevels(world, obj);
-    if (debugEnabled) debugState.dpSaves++;
-    outputLevelsDirty = false;
-    lastOutputLevelsSaveTick = nowTick;
+    // Now handled by persistAllIfNeeded()
   }
 
   function loadPrismLevelsState() {
@@ -431,17 +524,78 @@ export function createNetworkTransferController(deps, opts) {
       prismCounts.set(k, n | 0);
     }
     prismLevelsDirty = false;
-    lastPrismLevelsSaveTick = nowTick;
   }
 
   function persistPrismLevelsIfNeeded() {
-    if (!prismLevelsDirty && (nowTick - lastPrismLevelsSaveTick) < 200) return;
-    const obj = {};
-    for (const [k, v] of prismCounts.entries()) obj[k] = v;
-    savePrismLevels(world, obj);
-    if (debugEnabled) debugState.dpSaves++;
-    prismLevelsDirty = false;
-    lastPrismLevelsSaveTick = nowTick;
+    // Now handled by persistAllIfNeeded()
+  }
+
+  // Batched save function - saves all dirty data in one operation
+  function persistAllIfNeeded() {
+    // Special case: if inflight is empty and dirty, save immediately (critical for clearing state)
+    if (inflightDirty && inflight.length === 0) {
+      persistInflightStateToWorld(world, inflight);
+      if (debugEnabled) debugState.dpSaves++;
+      inflightDirty = false;
+      inflightStepDirty = false;
+      lastSaveTick = nowTick;
+      return;
+    }
+    
+    // Check if we need to save and if enough time has passed
+    const needsSave = inflightDirty || inflightStepDirty || levelsDirty || outputLevelsDirty || prismLevelsDirty;
+    if (!needsSave) return;
+    
+    // Check save interval - use shorter interval for inflight (more critical) or longer for levels
+    const inflightInterval = Math.max(1, cfg.inflightSaveIntervalTicks | 0);
+    const needsInflightSave = (inflightDirty || inflightStepDirty) && (nowTick - lastSaveTick) >= inflightInterval;
+    const needsLevelsSave = (levelsDirty || outputLevelsDirty || prismLevelsDirty) && (nowTick - lastSaveTick) >= SAVE_INTERVAL_TICKS;
+    
+    if (!needsInflightSave && !needsLevelsSave) return;
+    
+    // Batch all saves into one operation
+    let savesCount = 0;
+    
+    // Save inflight state (higher priority, shorter interval)
+    if (needsInflightSave && (inflightDirty || inflightStepDirty)) {
+      persistInflightStateToWorld(world, inflight);
+      savesCount++;
+      inflightDirty = false;
+      inflightStepDirty = false;
+    }
+    
+    // Save input levels
+    if (needsLevelsSave && levelsDirty) {
+      const obj = {};
+      for (const [k, v] of transferCounts.entries()) obj[k] = v;
+      saveInputLevels(world, obj);
+      savesCount++;
+      levelsDirty = false;
+    }
+    
+    // Save output levels
+    if (needsLevelsSave && outputLevelsDirty) {
+      const obj = {};
+      for (const [k, v] of outputCounts.entries()) obj[k] = v;
+      saveOutputLevels(world, obj);
+      savesCount++;
+      outputLevelsDirty = false;
+    }
+    
+    // Save prism levels
+    if (needsLevelsSave && prismLevelsDirty) {
+      const obj = {};
+      for (const [k, v] of prismCounts.entries()) obj[k] = v;
+      savePrismLevels(world, obj);
+      savesCount++;
+      prismLevelsDirty = false;
+    }
+    
+    // Update last save tick if any save occurred
+    if (savesCount > 0) {
+      lastSaveTick = nowTick;
+      if (debugEnabled) debugState.dpSaves += savesCount;
+    }
   }
 
   function enqueuePendingForContainer(containerKey, itemTypeId, amount, outputKey, reservedTypeId) {
@@ -641,6 +795,7 @@ export function createNetworkTransferController(deps, opts) {
         transferBudget--;
       }
 
+      // Get block info for interval calculation (resolveBlockInfo uses cache internally)
       const info = resolveBlockInfo(prismKey);
       let interval = cfg.perPrismIntervalTicks;
       if (info && info.block) {
@@ -669,17 +824,11 @@ export function createNetworkTransferController(deps, opts) {
 
     if (debugEnabled) {
       const t3 = Date.now();
-      persistInflightIfNeeded();
-      persistLevelsIfNeeded();
-      persistOutputLevelsIfNeeded();
-      persistPrismLevelsIfNeeded();
+      persistAllIfNeeded();
       debugState.msPersist += (Date.now() - t3);
       debugState.msTotal += (Date.now() - tickStart);
     } else {
-      persistInflightIfNeeded();
-      persistLevelsIfNeeded();
-      persistOutputLevelsIfNeeded();
-      persistPrismLevelsIfNeeded();
+      persistAllIfNeeded();
     }
     if (debugEnabled) postDebugStats(prismKeys.length);
   }
