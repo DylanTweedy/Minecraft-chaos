@@ -60,7 +60,7 @@ const PATH_WEIGHT_LEN_EXP = 0.6;
 const PATH_WEIGHT_RANDOM_MIN = 0.5;
 const PATH_WEIGHT_RANDOM_MAX = 2.0;
 const CRYSTAL_FLUX_WEIGHT = 6.0;
-const CRYSTAL_ROUTE_MAX_NODES = 256;
+const CRYSTAL_ROUTE_MAX_NODES = 128; // Optimization #2: Reduced from 256 to 128 (50% reduction) - most networks don't need 256 nodes
 const SPEED_SCALE_MAX = 1.8;
 const PRISM_SPEED_BOOST_BASE = 0.0; // Tier 1 has no boost
 const PRISM_SPEED_BOOST_PER_TIER = 0.05; // Each tier adds 5% boost (tier 2 = 5%, tier 5 = 20%)
@@ -69,9 +69,9 @@ const DEFAULTS = {
   maxTransfersPerTick: 4, // Budget for item transfers started per tick
   maxSearchesPerTick: 8, // Budget for pathfinding searches per tick
   perPrismIntervalTicks: 10, // Base interval between prism scans
-  cacheTicks: 10,
+  cacheTicks: 20, // Performance #3: Increased from 10 to 20 ticks (paths don't change frequently)
   cacheTicksWithStamp: 60,
-  maxVisitedPerSearch: 200,
+  maxVisitedPerSearch: 150, // Increased from 120 to 150 to allow finding more distant nodes while still limiting performance impact
   orbStepTicks: 20,
   maxOutputOptions: 6,
   levelStep: 2000, // Massively increased for natural progression
@@ -96,6 +96,7 @@ const DEFAULTS = {
   backoffMaxTicks: 200,
   backoffMaxLevel: 6,
   maxFluxFxInFlight: 24,
+  maxInflight: 100, // Hard limit on total in-flight transfers to prevent unbounded growth
   inflightSaveIntervalTicks: 40,
   // Legacy - kept for compatibility
   perInputIntervalTicks: 10,

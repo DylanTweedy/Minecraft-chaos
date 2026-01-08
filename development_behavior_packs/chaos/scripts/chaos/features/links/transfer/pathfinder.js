@@ -3,6 +3,7 @@ import { DEFAULTS, isPrismBlock } from "./config.js";
 import { mergeCfg } from "./utils.js";
 import { key, parseKey } from "./keys.js";
 import { makeDirs, scanEdgeFromNode } from "./graph.js";
+import { getAllAdjacentInventories } from "./inventory.js";
 
 export function createTransferPathfinder(deps, opts) {
   const world = deps.world;
@@ -12,6 +13,9 @@ export function createTransferPathfinder(deps, opts) {
   const cache = new Map();
   const edgeCache = new Map();
   let edgeCacheStamp = null;
+  // Cache for prism inventory checks during pathfinding (avoid expensive getAllAdjacentInventories calls)
+  const prismInventoryCheckCache = new Map(); // prismKey -> { hasInventories: boolean, tick: number }
+  const PRISM_INVENTORY_CHECK_CACHE_TTL = 10; // Cache for 10 ticks
   const stats = {
     searches: 0,
     visitedTotal: 0,
@@ -22,6 +26,20 @@ export function createTransferPathfinder(deps, opts) {
 
   function invalidatePrism(prismKey) {
     cache.delete(prismKey);
+    // Also invalidate inventory check cache for this prism
+    prismInventoryCheckCache.delete(prismKey);
+  }
+  
+  // Clean up old cache entries periodically
+  function cleanupInventoryCheckCache(nowTick) {
+    // Only cleanup if cache is getting large
+    if (prismInventoryCheckCache.size > 100) {
+      for (const [key, value] of prismInventoryCheckCache.entries()) {
+        if ((nowTick - value.tick) > PRISM_INVENTORY_CHECK_CACHE_TTL * 2) {
+          prismInventoryCheckCache.delete(key);
+        }
+      }
+    }
   }
 
   // Find paths from a prism to other prisms (bidirectional - can push or pull)
@@ -57,6 +75,20 @@ export function createTransferPathfinder(deps, opts) {
       return null;
     }
 
+    // Optimization #2: Block lookup cache for this search (avoids repeated dim.getBlock calls)
+    const blockCache = new Map(); // posKey -> block | null (null means already checked, block doesn't exist)
+    
+    // Helper function to get cached block
+    function getBlockCached(x, y, z) {
+      const posKey = `${x},${y},${z}`;
+      if (blockCache.has(posKey)) {
+        return blockCache.get(posKey);
+      }
+      const block = dim.getBlock({ x, y, z });
+      blockCache.set(posKey, block || null); // Cache null explicitly if block doesn't exist
+      return block;
+    }
+
     const visited = new Set();
     let visitedCount = 0;
     const queue = [];
@@ -70,7 +102,17 @@ export function createTransferPathfinder(deps, opts) {
     visited.add(key(parsed.dimId, parsed.x, parsed.y, parsed.z));
     visitedCount++;
 
+    // Note: We don't do early termination anymore - BFS finds closer nodes first,
+    // and early termination would prevent finding distant nodes. The weighted random
+    // selection already biases toward shorter paths, so finding distant options is still valuable.
+    // We rely on maxVisitedPerSearch to limit exploration instead.
     const outputs = [];
+    
+    // Minimum nodes to explore before considering early termination (ensures we find distant nodes)
+    const MIN_EXPLORATION_NODES = 50; // Must explore at least this many nodes before early termination
+    const maxOutputs = cfg.maxOutputOptions || 6;
+    const earlyTerminationLimit = Math.max(15, maxOutputs * 2); // Much higher limit, only for very large networks
+    
     while (qIndex < queue.length) {
       if (visitedCount >= cfg.maxVisitedPerSearch) break;
       const cur = queue[qIndex++];
@@ -101,23 +143,58 @@ export function createTransferPathfinder(deps, opts) {
 
         // Target prisms (or crystallizers) can receive items
         if (edge.nodeType === "prism" || edge.nodeType === "crystal") {
-          outputs.push({
-            dimId: parsed.dimId,
-            outputKey: nextKey,
-            outputPos: edge.nodePos,
-            path: nextPath,
-            outputType: edge.nodeType,
-          });
-          if (outputs.length >= cfg.maxOutputOptions) {
-            visited.add(nextKey);
-            visitedCount++;
-            queue.push({
-              nodePos: edge.nodePos,
-              nodeType: edge.nodeType,
-              path: nextPath,
-            });
-            break;
+          // For prisms, check if they have inventories before adding as output
+          // Crystallizers can always accept items (no check needed)
+          let isValidOutput = true;
+          if (edge.nodeType === "prism") {
+            try {
+              // Use cached inventory check to avoid expensive getAllAdjacentInventories calls
+              const cached = prismInventoryCheckCache.get(nextKey);
+              if (cached && (nowTick - cached.tick) <= PRISM_INVENTORY_CHECK_CACHE_TTL) {
+                isValidOutput = cached.hasInventories;
+              } else {
+                // Not cached or expired - check and cache
+                // Optimization #2: Use block cache to avoid repeated dim.getBlock calls
+                const targetBlock = getBlockCached(edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
+                if (targetBlock && isPrismBlock(targetBlock)) {
+                  const inventories = getAllAdjacentInventories(targetBlock, dim);
+                  isValidOutput = inventories && inventories.length > 0;
+                  // Cache the result
+                  prismInventoryCheckCache.set(nextKey, {
+                    hasInventories: isValidOutput,
+                    tick: nowTick,
+                  });
+                } else {
+                  isValidOutput = false;
+                  // Cache negative result too
+                  prismInventoryCheckCache.set(nextKey, {
+                    hasInventories: false,
+                    tick: nowTick,
+                  });
+                }
+              }
+            } catch {
+              isValidOutput = false;
+            }
           }
+          
+          if (isValidOutput) {
+            outputs.push({
+              dimId: parsed.dimId,
+              outputKey: nextKey,
+              outputPos: edge.nodePos,
+              path: nextPath,
+              outputType: edge.nodeType,
+            });
+            // Only terminate early if we've explored enough nodes AND found many outputs
+            // This ensures we find both close and distant nodes before stopping
+            if (visitedCount >= MIN_EXPLORATION_NODES && outputs.length >= earlyTerminationLimit) {
+              // Found many outputs after exploring enough - terminate search early
+              visitedCount = cfg.maxVisitedPerSearch; // Force loop exit
+              break;
+            }
+          }
+          // If prism has no inventories, continue searching through it but don't add as output
         }
 
         visited.add(nextKey);
@@ -129,7 +206,9 @@ export function createTransferPathfinder(deps, opts) {
         });
         if (visitedCount >= cfg.maxVisitedPerSearch) break;
       }
-      if (outputs.length >= cfg.maxOutputOptions) break;
+      // Only break outer loop if we've explored enough AND found many outputs
+      if (visitedCount >= MIN_EXPLORATION_NODES && outputs.length >= earlyTerminationLimit) break;
+      // Continue searching until we've explored the network or hit visit limit
     }
 
     stats.searches++;
@@ -137,6 +216,11 @@ export function createTransferPathfinder(deps, opts) {
     stats.visitedMax = Math.max(stats.visitedMax, visitedCount);
     stats.outputsTotal += outputs.length;
     stats.outputsMax = Math.max(stats.outputsMax, outputs.length);
+
+    // Cleanup inventory check cache periodically
+    if (stats.searches % 50 === 0) {
+      cleanupInventoryCheckCache(nowTick);
+    }
 
     if (outputs.length > 0) {
       cache.set(prismKey, { tick: nowTick, stamp, outputs, filterForPull });
@@ -147,7 +231,6 @@ export function createTransferPathfinder(deps, opts) {
     return null;
   }
 
-  // Legacy compatibility
   function findPathForInput(inputKey, nowTick) {
     return findPathsForPrism(inputKey, nowTick, null);
   }
@@ -174,9 +257,9 @@ export function createTransferPathfinder(deps, opts) {
 
   return { 
     findPathsForPrism, 
-    findPathForInput, // Legacy compatibility
+    findPathForInput,
     invalidatePrism,
-    invalidateInput, // Legacy compatibility
+    invalidateInput,
     getAndResetStats 
   };
 }

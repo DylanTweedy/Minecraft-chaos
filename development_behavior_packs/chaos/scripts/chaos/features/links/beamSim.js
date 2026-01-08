@@ -65,8 +65,8 @@ export function startBeamSimV0() {
       if (!dim) continue;
 
       const pb = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-      // Only prisms now
-      if (!pb || !isPrismBlock(pb)) {
+      // Only prisms and crystallizers now
+      if (!pb || (!isPrismBlock(pb) && pb.typeId !== CRYSTALLIZER_ID)) {
         delete map[prismKey];
         changed = true;
         continue;

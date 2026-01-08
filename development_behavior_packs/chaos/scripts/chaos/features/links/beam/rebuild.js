@@ -113,8 +113,8 @@ function removeBeamsBetweenPrisms(world, sourceEntry, targetPos) {
         b.setType("minecraft:air");
         enqueueAdjacentBeams(dim, { x, y, z });
         enqueueAdjacentPrisms(dim, { x, y, z });
-      } else if (isPrismBlock(b)) {
-        // Pass through prisms
+      } else if (isPrismBlock(b) || b.typeId === CRYSTALLIZER_ID) {
+        // Pass through prisms and crystallizers (both are relays)
         continue;
       } else {
         // Obstacle - stop
@@ -138,16 +138,11 @@ function scanPrismsInDir(dim, loc, dx, dy, dz) {
     if (!b) break;
 
     const id = b.typeId;
-    // All prisms are valid connection points
-    if (isPrismBlock(b)) {
+    // All prisms and crystallizers are valid connection points
+    if (isPrismBlock(b) || id === CRYSTALLIZER_ID) {
       prismDists.push(i);
       if (closestPrismDist === 0) closestPrismDist = i;
-      continue; // Continue scanning - there might be more prisms
-    }
-    if (id === CRYSTALLIZER_ID) {
-      prismDists.push(i);
-      if (closestPrismDist === 0) closestPrismDist = i;
-      break; // Crystallizers stop scanning
+      continue; // Continue scanning - there might be more prisms/crystallizers
     }
     if (id === "minecraft:air") continue;
     if (id === BEAM_ID) {
@@ -224,8 +219,8 @@ function rebuildBeamsBetweenPrisms(world, sourceEntry, targetPos, sourceTier) {
             }
           }
         }
-      } else if (isPrismBlock(b)) {
-        // Pass through prisms
+      } else if (isPrismBlock(b) || id === CRYSTALLIZER_ID) {
+        // Pass through prisms and crystallizers (both are relays)
         continue;
       } else {
         // Obstacle - stop
@@ -237,17 +232,19 @@ function rebuildBeamsBetweenPrisms(world, sourceEntry, targetPos, sourceTier) {
   }
 }
 
-// Rebuild beams for a prism - each prism emits beams of its tier to nearby prisms
+// Rebuild beams for a prism or crystallizer - they both emit beams to nearby prisms/crystallizers
 export function rebuildPrismBeams(world, entry) {
   const dim = getDimensionById(world, entry?.dimId);
   if (!dim) return;
 
-  const prismBlock = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-  if (!prismBlock || !isPrismBlock(prismBlock)) return;
+  const block = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
+  if (!block || (!isPrismBlock(block) && block.typeId !== CRYSTALLIZER_ID)) return;
 
   removeRecordedBeams(world, entry);
 
-  const sourceTier = getTierFromBlock(prismBlock);
+  // Crystallizers are treated as tier 1 for beam purposes
+  const sourceTier = isPrismBlock(block) ? getTierFromBlock(block) : 1;
+  const isCrystallizer = block.typeId === CRYSTALLIZER_ID;
 
   const dirs = [
     { dx: 1, dy: 0, dz: 0 },
@@ -258,14 +255,14 @@ export function rebuildPrismBeams(world, entry) {
     { dx: 0, dy: -1, dz: 0 },
   ];
 
-  // Store connections (target prism keys), not individual beam block locations
+  // Store connections (target prism/crystallizer keys), not individual beam block locations
   const connections = [];
   const connectionsSet = new Set();
   
   for (const d of dirs) {
     const res = scanPrismsInDir(dim, { x: entry.x, y: entry.y, z: entry.z }, d.dx, d.dy, d.dz);
     
-    // Connect to the closest prism in this direction
+    // Connect to the closest prism or crystallizer in this direction
     const targetDist = res.closestPrismDist;
     if (targetDist > 0) {
       const targetX = entry.x + d.dx * targetDist;
@@ -273,18 +270,19 @@ export function rebuildPrismBeams(world, entry) {
       const targetZ = entry.z + d.dz * targetDist;
       const targetKey = key(entry.dimId, targetX, targetY, targetZ);
       
-      // Verify target is actually a prism
+      // Verify target is actually a prism or crystallizer
       const targetBlock = dim.getBlock({ x: targetX, y: targetY, z: targetZ });
-        if (targetBlock && isPrismBlock(targetBlock)) {
-        // Store connection (prism key, not beam block locations)
+      if (targetBlock && (isPrismBlock(targetBlock) || targetBlock.typeId === CRYSTALLIZER_ID)) {
+        // Store connection (prism/crystallizer key, not beam block locations)
         if (!connectionsSet.has(targetKey)) {
           connectionsSet.add(targetKey);
           connections.push(targetKey);
         }
         
-        // Rebuild beams visually between this prism and target (on-demand)
-        // Use the maximum tier of both prisms to prevent tier conflicts
-        const targetTier = getTierFromBlock(targetBlock);
+        // Rebuild beams visually between this block and target (on-demand)
+        // Use the maximum tier of both blocks to prevent tier conflicts
+        // Crystallizers are treated as tier 1 for beam purposes
+        const targetTier = isPrismBlock(targetBlock) ? getTierFromBlock(targetBlock) : 1;
         const beamTier = Math.max(sourceTier, targetTier);
         rebuildBeamsBetweenPrisms(world, entry, { dimId: entry.dimId, x: targetX, y: targetY, z: targetZ }, beamTier);
         
@@ -298,7 +296,7 @@ export function rebuildPrismBeams(world, entry) {
 
   // Store connections instead of beam block locations
   entry.connections = connections;
-  entry.kind = "prism";
+  entry.kind = isCrystallizer ? "crystallizer" : "prism";
 }
 
 export function rebuildInputBeams(world, entry) {
@@ -310,20 +308,32 @@ export function rebuildRelayBeams(world, entry, map) {
   if (!dim) return;
 
   const pb = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-  // Only prisms now (crystallizers are handled separately)
-  if (!pb || !isPrismBlock(pb)) {
-    removeRecordedBeams(world, entry);
-    delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
+  if (!pb) {
+    // Block doesn't exist - clean up entry if it exists
+    if (entry) {
+      removeRecordedBeams(world, entry);
+      delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
+    }
     return;
   }
 
-  // In unified system, rebuildRelayBeams is called when adjacent prisms change
-  // Use the same logic as rebuildPrismBeams - rebuild beams to nearby prisms
-  // No source check needed - all prisms can emit beams
-  rebuildPrismBeams(world, entry);
-  
-  // Update the map entry
-  map[key(entry.dimId, entry.x, entry.y, entry.z)] = entry;
+  // Handle prisms and crystallizers - they both emit beams
+  if (isPrismBlock(pb) || pb.typeId === CRYSTALLIZER_ID) {
+    // In unified system, rebuildRelayBeams is called when adjacent blocks change
+    // Use the same logic as rebuildPrismBeams - rebuild beams to nearby prisms/crystallizers
+    // Both prisms and crystallizers can emit beams
+    rebuildPrismBeams(world, entry);
+    
+    // Update the map entry
+    map[key(entry.dimId, entry.x, entry.y, entry.z)] = entry;
+    return;
+  }
+
+  // Unknown block type - clean up entry if it exists
+  if (entry) {
+    removeRecordedBeams(world, entry);
+    delete map[key(entry.dimId, entry.x, entry.y, entry.z)];
+  }
 }
 
 export function rebuildOrRemoveAllDeterministically(world) {
@@ -348,8 +358,8 @@ export function rebuildOrRemoveAllDeterministically(world) {
     removeRecordedBeams(world, entry);
 
     const ib = dim.getBlock({ x: entry.x, y: entry.y, z: entry.z });
-    // Only prisms are valid now
-    if (!ib || !isPrismBlock(ib)) {
+    // Only prisms and crystallizers are valid now
+    if (!ib || (!isPrismBlock(ib) && ib.typeId !== CRYSTALLIZER_ID)) {
       delete map[inputKey];
       changed = true;
       continue;
@@ -372,7 +382,7 @@ export function rebuildOrRemoveAllDeterministically(world) {
         const connPos = parseKey(connKey);
         if (!connPos || connPos.dimId !== entry.dimId) continue;
         const connBlock = dim.getBlock({ x: connPos.x, y: connPos.y, z: connPos.z });
-        if (connBlock && isPrismBlock(connBlock)) {
+        if (connBlock && (isPrismBlock(connBlock) || connBlock.typeId === CRYSTALLIZER_ID)) {
           validConnections.push(connKey);
         }
       }

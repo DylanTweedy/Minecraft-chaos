@@ -89,6 +89,12 @@ export function createNetworkTransferController(deps, opts) {
   let inflightDirty = false;
   let inflightStepDirty = false;
   let lastSaveTick = 0;
+  
+  // Priority queue: Track items ready to process (ticksUntilStep <= 0)
+  // This avoids iterating all 100 items every tick
+  const readyItems = new Set(); // Items that are ready to move this tick
+  const nearReadyItems = new Set(); // Items that will be ready next tick (ticksUntilStep === 1)
+  let needsRebuild = false; // Flag to rebuild queues when items are added/removed
   const transferCounts = new Map();
   let levelsDirty = false;
   const outputCounts = new Map();
@@ -102,6 +108,13 @@ export function createNetworkTransferController(deps, opts) {
   let fullCursor = 0;
   let queueCursor = 0;
   const inputBackoff = new Map();
+  
+  // Queuing systems for expensive operations
+  const pathfindingQueue = []; // Queue of prisms needing pathfinding
+  const inventoryScanQueue = []; // Queue of prisms needing inventory validation
+  const activePrisms = new Set(); // Prisms with inventories (pre-filtered)
+  let lastInventoryValidationTick = 0;
+  const INVENTORY_VALIDATION_INTERVAL = 100; // Validate active prisms every 100 ticks
   const debugEnabled = !!(cfg.debugTransferStats || FX?.debugTransferStats);
   const debugInterval = Math.max(20, Number(cfg.debugTransferStatsIntervalTicks || FX?.debugTransferStatsIntervalTicks) || 100);
   let lastDebugTick = 0;
@@ -129,6 +142,31 @@ export function createNetworkTransferController(deps, opts) {
     msScan: 0,
     msPersist: 0,
     msTotal: 0,
+    // Granular timing breakdown
+    msInflightPriorityQueue: 0, // Time updating priority queues
+    msInflightBlockLookups: 0, // Time doing block lookups in tickInFlight
+    msInflightPathValidation: 0, // Time validating paths
+    msInflightPrismLogic: 0, // Time processing prism-specific logic
+    msInflightOrbSpawning: 0, // Time spawning orbs
+    msInflightMovement: 0, // Time for movement/step advancement
+    msPathfinding: 0, // Time in pathfinding operations
+    msInventoryScanning: 0, // Time scanning inventories
+    msCacheOps: 0, // Time in cache operations
+    msFinalizeJob: 0, // Time finalizing jobs
+    // Granular Finalize timings
+    msFinalizeBlockLookups: 0, // Time resolving block info in finalizeJob
+    msFinalizeInventoryLookups: 0, // Time getting inventories in finalizeJob
+    msFinalizeFluxRefine: 0, // Time in flux refinement
+    msFinalizeItemInsertion: 0, // Time inserting items into inventories
+    msFinalizeCrystalRoute: 0, // Time finding crystallizer routes
+    msFinalizeFluxGenerate: 0, // Time generating flux
+    msFinalizeQueueCleanup: 0, // Time cleaning up queues
+    // Granular Scan timings
+    msScanResolveBlock: 0, // Time resolving block info in scan loop
+    msScanGetInventories: 0, // Time getting inventories in scan loop
+    msScanGetItem: 0, // Time getting random item from inventories
+    msScanAttemptTransfer: 0, // Time in attemptTransferForPrism
+    msScanIntervalCalc: 0, // Time calculating intervals in scan loop
   };
   let cachedInputKeys = null;
   let cachedInputsStamp = null;
@@ -145,6 +183,24 @@ export function createNetworkTransferController(deps, opts) {
   const totalCountCacheTimestamps = new Map();
   const dimCache = new Map();
   const dimCacheTimestamps = new Map();
+  const prismInventoryCache = new Map(); // prismKey -> { hasInventories: bool, timestamp: number }
+  const prismInventoryCacheTimestamps = new Map();
+  const prismInventoryListCache = new Map(); // prismKey -> { inventories: Array, timestamp: number }
+  const prismInventoryListCacheTimestamps = new Map();
+  const containerCapacityCache = new Map(); // containerKey -> { typeId -> capacity, timestamp: number }
+  const containerCapacityCacheTimestamps = new Map();
+  // Cache for crystallizer route lookups (expensive pathfinding operation)
+  const crystallizerRouteCache = new Map(); // prismKey -> { route: object | null, tick: number }
+  const CRYSTALLIZER_ROUTE_CACHE_TTL = 50; // Routes to crystallizers don't change often, cache for 50 ticks
+  
+  // Optimization #4: Track if crystallizers exist in network (skip route lookup if none exist)
+  let hasCrystallizersInNetwork = null; // null = unknown, true = exists, false = doesn't exist
+  let lastCrystallizerCheckTick = -1000; // When we last checked for crystallizers
+  const CRYSTALLIZER_CHECK_INTERVAL = 500; // Check every 500 ticks (25 seconds)
+  
+  // Optimization #3: Batch crystallizer route lookups per tick
+  const pendingRouteLookups = new Map(); // prismKey -> { block, dimId, callback }
+  const routeLookupResults = new Map(); // prismKey -> route (this tick only)
   
   // Cache TTL values (in ticks)
   const BLOCK_CACHE_TTL = 5; // Block lookups are expensive, cache for 5 ticks
@@ -152,6 +208,9 @@ export function createNetworkTransferController(deps, opts) {
   const CAPACITY_CACHE_TTL = 3; // Capacity can change with items, shorter cache
   const COUNT_CACHE_TTL = 2; // Item counts change frequently, very short cache
   const DIM_CACHE_TTL = 1000; // Dimensions never change, cache for a long time
+  const PRISM_INVENTORY_CACHE_TTL = 20; // Inventory status changes when blocks change
+  const PRISM_INVENTORY_LIST_CACHE_TTL = 15; // Performance #2: Increased from 5 to 15 ticks (items move slowly)
+  const CONTAINER_CAPACITY_CACHE_TTL = 5; // Performance #2: Increased from 2 to 5 ticks (capacity doesn't change that frequently)
 
   function getBackoffTicks(level) {
     const safeLevel = Math.max(0, level | 0);
@@ -200,6 +259,31 @@ export function createNetworkTransferController(deps, opts) {
     debugState.msScan = 0;
     debugState.msPersist = 0;
     debugState.msTotal = 0;
+    // Granular timing reset
+    debugState.msInflightPriorityQueue = 0;
+    debugState.msInflightBlockLookups = 0;
+    debugState.msInflightPathValidation = 0;
+    debugState.msInflightPrismLogic = 0;
+    debugState.msInflightOrbSpawning = 0;
+    debugState.msInflightMovement = 0;
+    debugState.msPathfinding = 0;
+    debugState.msInventoryScanning = 0;
+    debugState.msCacheOps = 0;
+    debugState.msFinalizeJob = 0;
+    // Granular Finalize timing reset
+    debugState.msFinalizeBlockLookups = 0;
+    debugState.msFinalizeInventoryLookups = 0;
+    debugState.msFinalizeFluxRefine = 0;
+    debugState.msFinalizeItemInsertion = 0;
+    debugState.msFinalizeCrystalRoute = 0;
+    debugState.msFinalizeFluxGenerate = 0;
+    debugState.msFinalizeQueueCleanup = 0;
+    // Granular Scan timing reset
+    debugState.msScanResolveBlock = 0;
+    debugState.msScanGetInventories = 0;
+    debugState.msScanGetItem = 0;
+    debugState.msScanAttemptTransfer = 0;
+    debugState.msScanIntervalCalc = 0;
   }
 
   // Cache cleanup state - only clean up periodically to avoid O(n) cost every tick
@@ -245,9 +329,28 @@ export function createNetworkTransferController(deps, opts) {
     cleanCache(insertCapacityCache, insertCapacityCacheTimestamps, CAPACITY_CACHE_TTL, MAX_CACHE_SIZE);
     cleanCache(totalCapacityCache, totalCapacityCacheTimestamps, CAPACITY_CACHE_TTL, MAX_CACHE_SIZE);
     cleanCache(totalCountCache, totalCountCacheTimestamps, COUNT_CACHE_TTL, MAX_CACHE_SIZE);
-    // Dimension cache is small, no size limit needed
-    let cleaned = 0;
+    cleanCache(prismInventoryCache, prismInventoryCacheTimestamps, PRISM_INVENTORY_CACHE_TTL, MAX_CACHE_SIZE);
+    cleanCache(prismInventoryListCache, prismInventoryListCacheTimestamps, PRISM_INVENTORY_LIST_CACHE_TTL, MAX_CACHE_SIZE);
+    
+    // Clean crystallizer route cache (uses Map with tick field, so custom cleanup)
     const maxCleanupPerCycle = 50;
+    if (crystallizerRouteCache.size > MAX_CACHE_SIZE) {
+      const entries = Array.from(crystallizerRouteCache.entries()).sort((a, b) => a[1].tick - b[1].tick);
+      const toRemove = crystallizerRouteCache.size - MAX_CACHE_SIZE;
+      for (let i = 0; i < toRemove; i++) {
+        crystallizerRouteCache.delete(entries[i][0]);
+      }
+    }
+    let cleaned = 0;
+    for (const [key, value] of crystallizerRouteCache.entries()) {
+      if ((nowTick - value.tick) >= CRYSTALLIZER_ROUTE_CACHE_TTL) {
+        crystallizerRouteCache.delete(key);
+        if (++cleaned >= maxCleanupPerCycle) break;
+      }
+    }
+    
+    // Dimension cache is small, no size limit needed
+    cleaned = 0;
     for (const [key, timestamp] of dimCacheTimestamps.entries()) {
       if ((nowTick - timestamp) >= DIM_CACHE_TTL) {
         dimCache.delete(key);
@@ -263,6 +366,41 @@ export function createNetworkTransferController(deps, opts) {
     blockCacheTimestamps.delete(blockKey);
     containerInfoCache.delete(blockKey);
     containerInfoCacheTimestamps.delete(blockKey);
+    // Invalidate prism inventory cache for this block (it might be a prism or adjacent to one)
+    prismInventoryCache.delete(blockKey);
+    prismInventoryCacheTimestamps.delete(blockKey);
+    prismInventoryListCache.delete(blockKey);
+    prismInventoryListCacheTimestamps.delete(blockKey);
+    // Invalidate crystallizer route cache for this block (route might have changed)
+    crystallizerRouteCache.delete(blockKey);
+    
+    // Also invalidate adjacent prisms' inventory cache (they might have lost/gained an adjacent inventory)
+    try {
+      const pos = parseKey(blockKey);
+      if (pos) {
+        const dim = getDimensionCached(pos.dimId);
+        if (dim) {
+          // Check all 6 adjacent positions for prisms
+          const dirs = [
+            { x: 1, y: 0, z: 0 }, { x: -1, y: 0, z: 0 },
+            { x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 },
+            { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }
+          ];
+          for (const d of dirs) {
+            const adjKey = key(pos.dimId, pos.x + d.x, pos.y + d.y, pos.z + d.z);
+            const adjBlock = dim.getBlock({ x: pos.x + d.x, y: pos.y + d.y, z: pos.z + d.z });
+            if (adjBlock && isPrismBlock(adjBlock)) {
+              // Invalidate this adjacent prism's inventory cache
+              prismInventoryCache.delete(adjKey);
+              prismInventoryCacheTimestamps.delete(adjKey);
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore errors in cache invalidation
+    }
+    
     // Also clear related capacity/count caches
     for (const key of insertCapacityCache.keys()) {
       if (key.includes(blockKey)) {
@@ -282,6 +420,193 @@ export function createNetworkTransferController(deps, opts) {
         totalCountCacheTimestamps.delete(key);
       }
     }
+  }
+  
+  // Expose cache invalidation function for external use (block change events)
+  function invalidateCachesForBlockChange(blockKey) {
+    invalidateCacheForBlock(blockKey);
+    
+    // Optimization #4: Reset crystallizer existence flag if a crystallizer block was changed
+    try {
+      const pos = parseKey(blockKey);
+      if (pos) {
+        const dim = getDimensionCached(pos.dimId);
+        if (dim) {
+          const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
+          // If a crystallizer was added/removed, reset the flag
+          if (block?.typeId === CRYSTALLIZER_ID || !block) {
+            hasCrystallizersInNetwork = null; // Reset - need to rediscover
+          }
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    
+    // Also invalidate pathfinder cache for affected prisms
+    if (typeof invalidateInput === "function") {
+      invalidateInput(blockKey);
+      // Also invalidate adjacent prisms
+      try {
+        const pos = parseKey(blockKey);
+        if (pos) {
+          const dim = getDimensionCached(pos.dimId);
+          if (dim) {
+            const dirs = [
+              { x: 1, y: 0, z: 0 }, { x: -1, y: 0, z: 0 },
+              { x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 },
+              { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }
+            ];
+            for (const d of dirs) {
+              const adjKey = key(pos.dimId, pos.x + d.x, pos.y + d.y, pos.z + d.z);
+              const adjBlock = dim.getBlock({ x: pos.x + d.x, y: pos.y + d.y, z: pos.z + d.z });
+              if (adjBlock && isPrismBlock(adjBlock)) {
+                invalidateInput(adjKey);
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+  }
+  
+  // Get cached inventory list for a prism (with TTL and invalidation)
+  function getPrismInventoriesCached(prismKey, prismBlock, dim) {
+    const cached = prismInventoryListCache.get(prismKey);
+    const timestamp = prismInventoryListCacheTimestamps.get(prismKey);
+    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < PRISM_INVENTORY_LIST_CACHE_TTL) {
+      return cached; // Return cached inventory list
+    }
+    
+    // Not cached or expired - scan and cache
+    const inventories = getAllAdjacentInventories(prismBlock, dim);
+    prismInventoryListCache.set(prismKey, inventories);
+    prismInventoryListCacheTimestamps.set(prismKey, nowTick);
+    
+    // Also update the hasInventories cache
+    const hasInventories = inventories && inventories.length > 0;
+    prismInventoryCache.set(prismKey, hasInventories);
+    prismInventoryCacheTimestamps.set(prismKey, nowTick);
+    
+    return inventories;
+  }
+  
+  // Check if a prism has adjacent inventories (cached)
+  function getPrismHasInventories(prismKey) {
+    const cached = prismInventoryCache.get(prismKey);
+    const timestamp = prismInventoryCacheTimestamps.get(prismKey);
+    if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < PRISM_INVENTORY_CACHE_TTL) {
+      return cached;
+    }
+    
+    // Queue for validation if not cached
+    if (!inventoryScanQueue.includes(prismKey)) {
+      inventoryScanQueue.push(prismKey);
+    }
+    
+    // Return cached value if available, otherwise return false (will be updated when queue processes)
+    return cached !== undefined ? cached : false;
+  }
+  
+  // Process inventory scan queue (limited per tick)
+  function processInventoryScanQueue() {
+    const maxScansPerTick = 10; // Limit expensive inventory scans
+    let processed = 0;
+    const tStart = debugEnabled ? Date.now() : 0;
+
+    while (inventoryScanQueue.length > 0 && processed < maxScansPerTick) {
+      const prismKey = inventoryScanQueue.shift();
+      if (!prismKey) continue;
+
+      const tInfo = debugEnabled ? Date.now() : 0;
+      const info = resolveBlockInfo(prismKey);
+      if (debugEnabled) debugState.msCacheOps += (Date.now() - tInfo);
+      if (!info || !info.block || !isPrismBlock(info.block)) {
+        prismInventoryCache.set(prismKey, false);
+        prismInventoryCacheTimestamps.set(prismKey, nowTick);
+        activePrisms.delete(prismKey);
+        processed++;
+        continue;
+      }
+
+      const tScan = debugEnabled ? Date.now() : 0;
+      const inventories = getAllAdjacentInventories(info.block, info.dim);
+      if (debugEnabled) debugState.msInventoryScanning += (Date.now() - tScan);
+      const hasInventories = inventories && inventories.length > 0;
+      
+      // Update both caches
+      prismInventoryCache.set(prismKey, hasInventories);
+      prismInventoryCacheTimestamps.set(prismKey, nowTick);
+      prismInventoryListCache.set(prismKey, inventories);
+      prismInventoryListCacheTimestamps.set(prismKey, nowTick);
+      
+      if (hasInventories) {
+        activePrisms.add(prismKey);
+      } else {
+        activePrisms.delete(prismKey);
+      }
+      
+      processed++;
+    }
+  }
+  
+  // Process pathfinding queue (limited per tick)
+  function processPathfindingQueue() {
+    const maxSearchesPerTick = 5; // Limit expensive pathfinding searches
+    let processed = 0;
+    const tStart = debugEnabled ? Date.now() : 0;
+
+    while (pathfindingQueue.length > 0 && processed < maxSearchesPerTick) {
+      const prismKey = pathfindingQueue.shift();
+      if (!prismKey) continue;
+
+      // Trigger pathfinding (will use cache if available)
+      const tPath = debugEnabled ? Date.now() : 0;
+      if (typeof findPathForInput === "function") {
+        findPathForInput(prismKey, nowTick);
+      }
+      if (debugEnabled) debugState.msPathfinding += (Date.now() - tPath);
+
+      processed++;
+    }
+    if (debugEnabled && tStart > 0) {
+      // Already accumulated per-search above, but keep for completeness
+    }
+  }
+  
+  // Get active prisms (only those with inventories) - pre-filtered
+  function getActivePrismKeys() {
+    // Process queued inventory scans first (limited per tick)
+    processInventoryScanQueue();
+    
+    // Validate active prisms periodically (not every tick)
+    if ((nowTick - lastInventoryValidationTick) >= INVENTORY_VALIDATION_INTERVAL) {
+      // Rebuild active prisms list from all prisms (expensive, so only every 100 ticks)
+      const allPrisms = getPrismKeys();
+      activePrisms.clear();
+      // Limit validation to prevent spikes - validate max 10 prisms per validation cycle
+      const maxValidatedPerCycle = 10;
+      let validated = 0;
+      for (const prismKey of allPrisms) {
+        if (validated >= maxValidatedPerCycle) {
+          // Queue remaining for next cycle
+          if (!inventoryScanQueue.includes(prismKey)) {
+            inventoryScanQueue.push(prismKey);
+          }
+          continue;
+        }
+        const hasInventories = getPrismHasInventories(prismKey);
+        if (hasInventories) {
+          activePrisms.add(prismKey);
+        }
+        validated++;
+      }
+      lastInventoryValidationTick = nowTick;
+    }
+    
+    return Array.from(activePrisms);
   }
 
   function getDimensionCached(dimId) {
@@ -469,6 +794,8 @@ export function createNetworkTransferController(deps, opts) {
 
   function stop() {
     if (tickId === null) return;
+    // Save all state before stopping to prevent data loss
+    persistAllIfNeeded();
     try { system.clearRun(tickId); } catch (_) {}
     tickId = null;
   }
@@ -476,14 +803,23 @@ export function createNetworkTransferController(deps, opts) {
   function loadInflightState() {
     loadInflightStateFromWorld(world, inflight, cfg);
     rebuildReservationsFromInflight();
+    
+    // Rebuild priority queues for loaded items
+    readyItems.clear();
+    nearReadyItems.clear();
+    for (const job of inflight) {
+      if (!job) continue;
+      if (job.ticksUntilStep <= 0) {
+        readyItems.add(job);
+      } else if (job.ticksUntilStep === 1) {
+        nearReadyItems.add(job);
+      }
+    }
+    
     inflightDirty = false;
     lastSaveTick = nowTick;
   }
 
-  // Legacy functions kept for compatibility but now use batched saves
-  function persistInflightIfNeeded() {
-    // Now handled by persistAllIfNeeded()
-  }
 
   function loadLevelsState() {
     const raw = loadInputLevels(world);
@@ -728,6 +1064,31 @@ export function createNetworkTransferController(deps, opts) {
     nowTick++;
     resetTickCaches();
     orbFxBudgetUsed = 0;
+    
+    // Optimization #3: Clear batch route lookup results each tick (only valid for one tick)
+    routeLookupResults.clear();
+    
+    // Optimization #4: Periodically check if crystallizers exist in network
+    // If we've done many route lookups and all returned null, mark as no crystallizers
+    if ((nowTick - lastCrystallizerCheckTick) >= CRYSTALLIZER_CHECK_INTERVAL) {
+      // Check if cache has any non-null routes - if not, maybe no crystallizers exist
+      // But be conservative - only mark as false if we're very confident
+      if (crystallizerRouteCache.size > 20) {
+        let foundAny = false;
+        for (const [key, value] of crystallizerRouteCache.entries()) {
+          if (value && value.route !== null && (nowTick - value.tick) < CRYSTALLIZER_ROUTE_CACHE_TTL) {
+            foundAny = true;
+            break;
+          }
+        }
+        // If we've checked many prisms and never found a route, probably no crystallizers
+        if (!foundAny && hasCrystallizersInNetwork === null) {
+          hasCrystallizersInNetwork = false; // Tentatively mark as no crystallizers
+          // Will be reset if we ever find one
+        }
+      }
+      lastCrystallizerCheckTick = nowTick;
+    }
 
     const tickStart = debugEnabled ? Date.now() : 0;
 
@@ -737,6 +1098,8 @@ export function createNetworkTransferController(deps, opts) {
           const t0 = Date.now();
           tickOutputQueues();
           tickFullContainers();
+          processInventoryScanQueue();
+          processPathfindingQueue();
           debugState.msQueues += (Date.now() - t0);
         },
         () => {
@@ -752,15 +1115,20 @@ export function createNetworkTransferController(deps, opts) {
       ]);
     } else {
       runTransferPipeline([
-        tickOutputQueues,
-        tickFullContainers,
+        () => {
+          tickOutputQueues();
+          tickFullContainers();
+          processInventoryScanQueue();
+          processPathfindingQueue();
+        },
         tickInFlight,
         tickFluxFxInFlight,
       ]);
     }
 
     const scanStart = debugEnabled ? Date.now() : 0;
-    const prismKeys = getPrismKeys();
+    // Use active prisms only (pre-filtered to only include those with inventories)
+    const prismKeys = getActivePrismKeys();
     // Prism count tracked in aggregated stats (postDebugStats)
     if (prismKeys.length === 0) return;
 
@@ -783,7 +1151,9 @@ export function createNetworkTransferController(deps, opts) {
       if (nowTick < allowedAt) continue;
 
       // Attempt transfer with budgeted searches
+      const tAttempt = debugEnabled ? Date.now() : 0;
       const result = attemptTransferForPrism(prismKey, searchBudget);
+      if (debugEnabled) debugState.msScanAttemptTransfer += (Date.now() - tAttempt);
       const searchesUsed = result?.searchesUsed || 0;
       searchBudget -= searchesUsed;
       
@@ -796,7 +1166,9 @@ export function createNetworkTransferController(deps, opts) {
       }
 
       // Get block info for interval calculation (resolveBlockInfo uses cache internally)
+      const tInterval = debugEnabled ? Date.now() : 0;
       const info = resolveBlockInfo(prismKey);
+      if (debugEnabled) debugState.msScanResolveBlock += (Date.now() - tInterval);
       let interval = cfg.perPrismIntervalTicks;
       if (info && info.block) {
         const s = getSpeed(info.block);
@@ -812,6 +1184,7 @@ export function createNetworkTransferController(deps, opts) {
         clearBackoff(prismKey);
       }
       nextAllowed.set(prismKey, nowTick + interval);
+      if (debugEnabled) debugState.msScanIntervalCalc += (Date.now() - tInterval);
 
       // If we're out of budgets, stop scanning
       if (transferBudget <= 0 && searchBudget <= 0) break;
@@ -1105,20 +1478,31 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  // Unified push/pull transfer for prisms
+  // Unified push/pull transfer for prisms with smart mode detection
   function attemptTransferForPrism(prismKey, searchBudget) {
     let searchesUsed = 0;
+    const tResolve = debugEnabled ? Date.now() : 0;
     const prismInfo = resolveBlockInfo(prismKey);
+    if (debugEnabled) debugState.msScanResolveBlock += (Date.now() - tResolve);
     if (!prismInfo) return { ...makeResult(false, "no_prism"), searchesUsed };
 
     const dim = prismInfo.dim;
     const prismBlock = prismInfo.block;
     if (!prismBlock || !isPrismBlock(prismBlock)) return { ...makeResult(false, "no_prism"), searchesUsed };
 
-    // Get all adjacent inventories (multi-inventory support)
-    const inventories = getAllAdjacentInventories(prismBlock, dim);
+    // Quick check: does this prism have inventories? (cached)
+    if (!getPrismHasInventories(prismKey)) {
+      return { ...makeResult(false, "no_container"), searchesUsed };
+    }
+
+    // Get all adjacent inventories (multi-inventory support) - cached
+    const tInv = debugEnabled ? Date.now() : 0;
+    const inventories = getPrismInventoriesCached(prismKey, prismBlock, dim);
+    if (debugEnabled) debugState.msScanGetInventories += (Date.now() - tInv);
     if (!inventories || inventories.length === 0) {
-      // Track in stats, don't spam chat
+      // Invalidate cache if we got false positive
+      prismInventoryCache.set(prismKey, false);
+      prismInventoryCacheTimestamps.set(prismKey, nowTick);
       return { ...makeResult(false, "no_container"), searchesUsed };
     }
 
@@ -1127,39 +1511,33 @@ export function createNetworkTransferController(deps, opts) {
     const filterSet = filter ? (filter instanceof Set ? filter : getFilterSet(filter)) : null;
     const hasFilter = filterSet && filterSet.size > 0;
 
-    // TRY PUSH: Extract items from inventories and send to network
-    // - If unattuned: push random items
-    // - If attuned: push items NOT in filter
-    const randomItem = getRandomItemFromInventories(inventories, filterSet);
-    if (randomItem && searchBudget > 0) {
-      const result = attemptPushTransfer(prismKey, prismBlock, dim, inventories, randomItem, filterSet, searchBudget);
-      if (result.ok) {
-        // Debug: successful push (show immediately)
-            // Track successful pushes in stats, don't spam chat
-        return result;
-      }
-      searchesUsed += result.searchesUsed || 0;
-      searchBudget -= result.searchesUsed || 0;
-      // Track failures in stats, don't spam chat
-    } else {
-      // Track no item/no budget in stats, don't spam chat
-    }
-
-    // TRY PULL: Request filtered items from network (only if attuned and no push happened)
+    // PRIORITY: Always prioritize filtered pull transfers (demand-driven)
+    // Then handle push if no pull happened
     if (hasFilter && searchBudget > 0) {
+      // PULL MODE: Request filtered items from network (highest priority)
       const result = attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget);
       if (result.ok) return result;
       searchesUsed += result.searchesUsed || 0;
+      searchBudget -= result.searchesUsed || 0;
+    }
+    
+    // PUSH MODE: Extract items from inventories and send to network (secondary priority)
+    if (searchBudget > 0) {
+      const tItem = debugEnabled ? Date.now() : 0;
+      const randomItem = getRandomItemFromInventories(inventories, filterSet);
+      if (debugEnabled) debugState.msScanGetItem += (Date.now() - tItem);
+      if (randomItem) {
+        const result = attemptPushTransfer(prismKey, prismBlock, dim, inventories, randomItem, filterSet, searchBudget);
+        if (result.ok) {
+          return result;
+        }
+        searchesUsed += result.searchesUsed || 0;
+      }
     }
 
     return { ...makeResult(false, "no_transfer"), searchesUsed };
   }
 
-  // Legacy function name
-  function attemptTransferOne(inputKey) {
-    const result = attemptTransferForPrism(inputKey, cfg.maxSearchesPerTick);
-    return makeResult(result.ok, result.reason);
-  }
 
   // Push transfer: extract items from this prism's inventories and send to other prisms
   function attemptPushTransfer(prismKey, prismBlock, dim, inventories, itemSource, filterSet, searchBudget) {
@@ -1176,8 +1554,8 @@ export function createNetworkTransferController(deps, opts) {
     if (!prismInfo) return { ...makeResult(false, "no_prism"), searchesUsed };
 
     // Find path to target prism using pathfinder
+    // Pathfinder has its own caching, so we call directly
     searchesUsed = 1;
-    // Use findPathForInput (legacy name, but now works with prisms via pathfinder update)
     if (typeof findPathForInput !== "function") {
       return { ...makeResult(false, "no_pathfinder"), searchesUsed };
     }
@@ -1192,9 +1570,20 @@ export function createNetworkTransferController(deps, opts) {
     
     // Debug: paths found (show occasionally)
     // Path finding stats tracked in aggregated output (no per-search messages)
+    
+    // Optimization #4: Track if crystallizers exist in network during pathfinding
+    // Check if any of the pathfinding options are crystallizers
+    for (const opt of options) {
+      if (opt?.outputType === "crystal") {
+        hasCrystallizersInNetwork = true; // Found a crystallizer in the network
+        break;
+      }
+    }
 
-    // Filter options to prioritize prisms that want this item (matching filters)
-    const filteredOptions = [];
+    // Filter and categorize options: prioritize filtered requests, but include all valid options
+    const prioritizedOptions = []; // Options with matching filters (highest priority)
+    const otherOptions = []; // Options without filters or that don't match
+    
     for (const opt of options) {
       if (!opt || !opt.outputKey) continue;
       const targetInfo = resolveBlockInfo(opt.outputKey);
@@ -1202,36 +1591,48 @@ export function createNetworkTransferController(deps, opts) {
 
       // Crystallizers can always accept flux
       if (targetInfo.block.typeId === CRYSTALLIZER_ID) {
+        // Optimization #4: Track crystallizer existence during pathfinding
+        if (hasCrystallizersInNetwork !== true) {
+          hasCrystallizersInNetwork = true; // Found a crystallizer in the network
+        }
         if (isFluxTypeId(sourceStack.typeId)) {
-          filteredOptions.push(opt);
+          prioritizedOptions.push(opt); // Crystallizers are high priority for flux
         }
         continue;
       }
 
       // Prisms - check if they have space and matching filter
       if (isPrismBlock(targetInfo.block)) {
-        const targetInventories = getAllAdjacentInventories(targetInfo.block, targetInfo.dim);
+        const targetPrismKey = opt.outputKey; // Use the outputKey from the pathfinding result
+        const targetInventories = getPrismInventoriesCached(targetPrismKey, targetInfo.block, targetInfo.dim);
         if (!targetInventories || targetInventories.length === 0) continue;
 
         const targetFilter = getFilterForBlock(targetInfo.block);
         const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
         
-        // If target has filter, prioritize if this item matches (they want it)
-        // If target has no filter, they can accept any item
-        if (!targetFilterSet || targetFilterSet.size === 0 || targetFilterSet.has(sourceStack.typeId)) {
-          filteredOptions.push(opt);
+        // Prioritize if target has filter AND wants this item (they're requesting it)
+        if (targetFilterSet && targetFilterSet.size > 0 && targetFilterSet.has(sourceStack.typeId)) {
+          prioritizedOptions.push(opt); // High priority: filtered request
+        } else if (!targetFilterSet || targetFilterSet.size === 0) {
+          otherOptions.push(opt); // Lower priority: no filter (can accept anything)
         }
+        // If target has filter but doesn't want this item, skip it
       }
     }
 
-    if (filteredOptions.length === 0) {
+    // Combine: prioritized first, then others (for random distribution)
+    const allValidOptions = prioritizedOptions.length > 0 
+      ? prioritizedOptions.concat(otherOptions)
+      : otherOptions;
+
+    if (allValidOptions.length === 0) {
       if (typeof invalidateInput === "function") invalidateInput(prismKey);
       return { ...makeResult(false, "no_options"), searchesUsed };
     }
 
     if (debugEnabled) {
-      debugState.outputOptionsTotal += filteredOptions.length;
-      debugState.outputOptionsMax = Math.max(debugState.outputOptionsMax, filteredOptions.length);
+      debugState.outputOptionsTotal += allValidOptions.length;
+      debugState.outputOptionsMax = Math.max(debugState.outputOptionsMax, allValidOptions.length);
     }
 
     const isFlux = isFluxTypeId(sourceStack.typeId);
@@ -1245,7 +1646,7 @@ export function createNetworkTransferController(deps, opts) {
     let sawFull = false;
     let outputType = "prism";
 
-    let candidates = filteredOptions.slice();
+    let candidates = allValidOptions.slice();
     if (!isFlux) {
       candidates = candidates.filter((c) => (c?.outputType || "prism") !== "crystal");
     }
@@ -1253,10 +1654,13 @@ export function createNetworkTransferController(deps, opts) {
 
     const available = sourceStack.amount;
     while (candidates.length > 0) {
+      // Random selection with bias: prioritize filtered requests (higher weight)
       const pick = pickWeightedRandomWithBias(candidates, (opt) => {
         const type = opt?.outputType || "prism";
         if (isFlux && type === "crystal") return CRYSTAL_FLUX_WEIGHT;
-        return 1.0;
+        // Give higher weight to prioritized options (filtered requests)
+        const isPrioritized = prioritizedOptions.includes(opt);
+        return isPrioritized ? 5.0 : 1.0; // Filtered requests get 5x weight
       });
       if (!pick || !Array.isArray(pick.path) || pick.path.length === 0) break;
       if (pick.path.length > MAX_STEPS) {
@@ -1451,7 +1855,21 @@ export function createNetworkTransferController(deps, opts) {
     const ticksPerBlock = Math.max(1, Math.floor(baseTicksPerBlock / Math.max(0.1, initialSpeedScale)));
     const totalTicksForFirstSegment = ticksPerBlock * Math.max(1, segLen | 0);
     
-    inflight.push({
+    // Hard limit: don't create new transfers if we're already overloaded
+    // Instead, queue the item for later insertion when capacity is available
+    const maxInflight = cfg.maxInflight || 100;
+    if (inflight.length >= maxInflight) {
+      // Too many in-flight transfers - queue item instead of creating new transfer
+      if (containerKey) {
+        enqueuePendingForContainer(containerKey, sourceStack.typeId, transferAmount, pathInfo.outputKey, sourceStack.typeId);
+      } else {
+        // No container key - drop as fallback
+        dropItemAt(dim, prismPos, sourceStack.typeId, transferAmount);
+      }
+      return { ...makeResult(false, "too_many_inflight"), searchesUsed };
+    }
+    
+    const newJob = {
       dimId: prismPos.dimId,
       itemTypeId: sourceStack.typeId,
       amount: transferAmount,
@@ -1467,11 +1885,20 @@ export function createNetworkTransferController(deps, opts) {
       startPos: { x: prismPos.x, y: prismPos.y, z: prismPos.z },
       level: level,
       segmentLengths: segmentLengths,
-      ticksUntilStep: Math.max(1, totalTicksForFirstSegment), // Constant time per segment
+      ticksUntilStep: Math.max(1, totalTicksForFirstSegment),
       refinedItems: (outputType === "crystal" && isFluxTypeId(sourceStack.typeId))
         ? [{ typeId: sourceStack.typeId, amount: transferAmount }]
         : null,
-    });
+    };
+    
+    inflight.push(newJob);
+    
+    // Add to priority queue based on ticksUntilStep
+    if (newJob.ticksUntilStep <= 0) {
+      readyItems.add(newJob);
+    } else if (newJob.ticksUntilStep === 1) {
+      nearReadyItems.add(newJob);
+    }
     
     if (containerKey) {
       reserveContainerSlot(containerKey, sourceStack.typeId, transferAmount);
@@ -1494,64 +1921,150 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function tickInFlight() {
-    if (inflight.length === 0) return;
-
-    // Debug: inflight count (show every 100 ticks)
-    if (debugEnabled && nowTick % 100 === 0 && inflight.length > 0) {
-      try {
-        // Inflight count already shown in aggregated stats
-        for (const player of world.getAllPlayers()) {
-          if (typeof player.sendMessage === "function") player.sendMessage(msg);
-        }
-      } catch {}
+    if (inflight.length === 0) {
+      readyItems.clear();
+      nearReadyItems.clear();
+      return;
     }
 
-    for (let i = inflight.length - 1; i >= 0; i--) {
-      const job = inflight[i];
-      job.ticksUntilStep--;
-      if (job.ticksUntilStep > 0) continue;
-
-      const nextIdx = job.stepIndex + 1;
-      if (nextIdx >= job.path.length) {
-        // Debug: job completing (removed duplicate - finalizeJob already has debug)
-        finalizeJob(job);
-        inflight.splice(i, 1);
-        inflightDirty = true;
+    // Performance optimization: Priority queue - only process ready items
+    const maxInflight = cfg.maxInflight || 100;
+    const baseLimit = 15; // Base limit for movement processing
+    const overloaded = inflight.length > maxInflight * 0.8; // Overloaded if > 80% of max
+    const maxProcessedPerTick = overloaded ? 10 : baseLimit; // Reduce to 10 when overloaded
+    
+    // Step 1: Process items from nearReadyItems (they become ready this tick)
+    // Move them from nearReadyItems to readyItems and decrement timer
+    const t0 = Date.now();
+    const inflightSet = new Set(inflight); // Create Set once for O(1) lookups
+    for (const job of nearReadyItems) {
+      if (!job || !inflightSet.has(job)) {
+        nearReadyItems.delete(job);
         continue;
       }
-
+      job.ticksUntilStep--;
+      if (job.ticksUntilStep <= 0) {
+        nearReadyItems.delete(job);
+        readyItems.add(job);
+      }
+    }
+    
+    // Step 2: Batch-decrement timers for items NOT in ready/nearReady sets
+    // These are items with ticksUntilStep > 1 - just decrement, no other processing
+    for (const job of inflight) {
+      if (!job) continue;
+      // Skip items already in ready/nearReady (they were handled above)
+      if (readyItems.has(job) || nearReadyItems.has(job)) continue;
+      
+      // Fast path: Just decrement timer (cheap operation)
+      job.ticksUntilStep--;
+      
+      // Move to appropriate queue based on new value
+      if (job.ticksUntilStep <= 0) {
+        readyItems.add(job);
+      } else if (job.ticksUntilStep === 1) {
+        nearReadyItems.add(job);
+      }
+    }
+    if (debugEnabled) debugState.msInflightPriorityQueue += (Date.now() - t0);
+    
+    // Step 3: Process items ready to move (from readyItems set)
+    // Only process a limited number per tick
+    const itemsReadyToMove = Array.from(readyItems);
+    readyItems.clear(); // Clear - we'll rebuild as we process
+    
+    let processed = 0;
+    for (const job of itemsReadyToMove) {
+      if (processed >= maxProcessedPerTick) break;
+      
+      // Verify job still exists (might have been removed)
+      if (!inflightSet.has(job)) continue;
+      
       const cur = job.path[job.stepIndex];
+      const nextIdx = job.stepIndex + 1;
+      if (nextIdx >= job.path.length) {
+        // Job completing - handle immediately
+        const tFinalize = Date.now();
+        finalizeJob(job);
+        if (debugEnabled) debugState.msFinalizeJob += (Date.now() - tFinalize);
+        const idx = inflight.indexOf(job); // Only use indexOf when actually removing
+        if (idx >= 0) inflight.splice(idx, 1);
+        inflightSet.delete(job);
+        readyItems.delete(job);
+        nearReadyItems.delete(job);
+        inflightDirty = true;
+        processed++;
+        continue;
+      }
+      
       const next = job.path[nextIdx];
+      const tDim = Date.now();
       const dim = getDimensionCached(job.dimId);
-      if (!dim) continue;
-
-      const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-      const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
-      if (isPrismBlock(curBlock) && job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
-        applyPrismRefineToFxJob(job, curBlock);
+      if (debugEnabled) debugState.msCacheOps += (Date.now() - tDim);
+      if (!dim) {
+        processed++;
+        continue;
       }
-      if (job.stepIndex < job.path.length - 1) {
-        if (!isPathBlock(curBlock)) {
+      
+      processed++;
+
+      // Optimize: Only do expensive block lookups when necessary
+      // In-flight orbs have paths already calculated - minimal validation needed
+      const isFirstStep = job.stepIndex === 0;
+      const isLastStep = nextIdx >= job.path.length - 1;
+      const needsValidation = isFirstStep || isLastStep || (job.stepIndex % 10 === 0); // Validate every 10 steps
+      
+      let curBlock = null;
+      let nextBlock = null;
+      
+      const tBlocks = Date.now();
+      if (needsValidation) {
+        // Validate path occasionally
+        curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+        nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
+        
+        // Only check path validity if we validated
+        if (job.stepIndex < job.path.length - 1 && curBlock && !isPathBlock(curBlock)) {
           dropItemAt(dim, cur, job.itemTypeId, job.amount);
           releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-          inflight.splice(i, 1);
+          const idx = inflight.indexOf(job);
+          if (idx >= 0) inflight.splice(idx, 1);
+          inflightSet.delete(job);
+          readyItems.delete(job);
+          nearReadyItems.delete(job);
           inflightDirty = true;
+          if (debugEnabled) debugState.msInflightBlockLookups += (Date.now() - tBlocks);
+          if (debugEnabled) debugState.msInflightPathValidation += (Date.now() - tBlocks);
           continue;
         }
-      }
-
-      if (nextIdx < job.path.length - 1) {
-        if (!isPathBlock(nextBlock)) {
+        if (nextIdx < job.path.length - 1 && nextBlock && !isPathBlock(nextBlock)) {
           dropItemAt(dim, cur, job.itemTypeId, job.amount);
           releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-          inflight.splice(i, 1);
+          const idx = inflight.indexOf(job);
+          if (idx >= 0) inflight.splice(idx, 1);
+          inflightSet.delete(job);
+          readyItems.delete(job);
+          nearReadyItems.delete(job);
           inflightDirty = true;
+          if (debugEnabled) debugState.msInflightBlockLookups += (Date.now() - tBlocks);
+          if (debugEnabled) debugState.msInflightPathValidation += (Date.now() - tBlocks);
           continue;
         }
+        if (debugEnabled) debugState.msInflightPathValidation += (Date.now() - tBlocks);
+      } else {
+        // Fast path: minimal lookups, just get blocks for prism checks
+        curBlock = getBlockCached(job.dimId, cur);
+        nextBlock = getBlockCached(job.dimId, next);
       }
-
-      if (job.stepIndex < job.path.length - 1) {
-        if (isPrismBlock(curBlock)) {
+      if (debugEnabled) debugState.msInflightBlockLookups += (Date.now() - tBlocks);
+      
+      // Prism-specific logic (only when we have the block)
+      const tPrism = Date.now();
+      if (curBlock && isPrismBlock(curBlock)) {
+        if (job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
+          applyPrismRefineToFxJob(job, curBlock);
+        }
+        if (job.stepIndex < job.path.length - 1) {
           notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
           applyPrismSpeedBoost(job, curBlock);
           if (isFluxTypeId(job.itemTypeId)) {
@@ -1559,6 +2072,7 @@ export function createNetworkTransferController(deps, opts) {
           }
         }
       }
+      if (debugEnabled) debugState.msInflightPrismLogic += (Date.now() - tPrism);
 
       const baseTicks = job.stepTicks || cfg.orbStepTicks;
       // Apply speed boost to logical speed (faster movement = fewer ticks per segment)
@@ -1573,26 +2087,54 @@ export function createNetworkTransferController(deps, opts) {
       const ticksPerBlock = Math.max(1, Math.floor(stepTicks / 4)); // Faster: divide by 4
       const logicalTicks = ticksPerBlock * Math.max(1, segLen | 0);
       
-      // Spawn orb only if we have valid blocks and the path is still valid
-      // Visual lifetime must match logical time to keep them in sync
-      if (!job.suppressOrb && isPathBlock(curBlock) && (nextIdx >= job.path.length || isPathBlock(nextBlock))) {
-        spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0);
+      // Spawn orb when item moves to next step (ONLY when moving to new segment)
+      const tOrb = Date.now();
+      if (!job.suppressOrb) {
+        const orbCurBlock = curBlock || getBlockCached(job.dimId, cur);
+        const orbNextBlock = nextBlock || getBlockCached(job.dimId, next);
+        if (spawnOrbStep(dim, cur, next, job.level, orbCurBlock, orbNextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0)) {
+          if (debugEnabled) debugState.orbSpawns++;
+        }
       }
+      if (debugEnabled) debugState.msInflightOrbSpawning += (Date.now() - tOrb);
       
+      // Advance step
+      const tMove = Date.now();
       job.stepIndex = nextIdx;
       // Time per segment scales with length (longer segments = more time)
       // Speed boost already applied via stepTicks reduction
       job.ticksUntilStep = logicalTicks;
       inflightStepDirty = true;
+      
+      // Update priority queues based on new ticksUntilStep
+      // Job was already removed from readyItems (cleared at start of Step 3)
+      // Add to appropriate queue for next cycle
+      if (job.ticksUntilStep <= 0) {
+        // Edge case: immediately ready again (shouldn't happen but handle it)
+        readyItems.add(job);
+      } else if (job.ticksUntilStep === 1) {
+        nearReadyItems.add(job);
+      }
+      // Otherwise ticksUntilStep > 1, item goes back to "waiting" pool (not in any queue)
+      if (debugEnabled) debugState.msInflightMovement += (Date.now() - tMove);
     }
   }
 
   function tickFluxFxInFlight() {
     if (fluxFxInflight.length === 0) return;
-    for (let i = fluxFxInflight.length - 1; i >= 0; i--) {
+    
+    // Limit processing per tick to prevent spikes
+    const maxProcessedPerTick = 15; // Process max 15 flux FX jobs per tick
+    let processed = 0;
+    
+    for (let i = fluxFxInflight.length - 1; i >= 0 && processed < maxProcessedPerTick; i--) {
       const job = fluxFxInflight[i];
       job.ticksUntilStep--;
-      if (job.ticksUntilStep > 0) continue;
+      if (job.ticksUntilStep > 0) {
+        processed++;
+        continue;
+      }
+      processed++;
 
       const nextIdx = job.stepIndex + 1;
       if (nextIdx >= job.path.length) {
@@ -1725,14 +2267,17 @@ export function createNetworkTransferController(deps, opts) {
       parts.push(`Paths: ${pathStats.searches} searches`);
     }
     
-    if (debugState.orbSpawns > 0) {
-      parts.push(`Orbs: ${debugState.orbSpawns}`);
+    // Show in-flight count as "orbs" since each in-flight item should have one visible orb
+    // The actual spawn count is misleading (shows spawns per interval, not visible count)
+    if (inflight.length > 0) {
+      parts.push(`Orbs: ${inflight.length}`);
     }
     
     if (fluxFxInflight.length > 0) {
       parts.push(`Flux FX: ${fluxFxInflight.length}`);
     }
     
+    // Show total time
     if (debugState.msTotal > 5) {
       parts.push(`Time: ${debugState.msTotal}ms`);
     }
@@ -1746,6 +2291,99 @@ export function createNetworkTransferController(deps, opts) {
         }
       } catch {
         // ignore
+      }
+    }
+
+    // Detailed timing breakdown on second line (only if total time is significant)
+    if (debugState.msTotal > 10) {
+      const timingParts = [];
+      if (debugState.msInflight > 1) {
+        timingParts.push(`Inflight: ${debugState.msInflight}ms`);
+      }
+      if (debugState.msInflightPriorityQueue > 0.5) {
+        timingParts.push(`PQ: ${debugState.msInflightPriorityQueue.toFixed(1)}ms`);
+      }
+      if (debugState.msInflightBlockLookups > 0.5) {
+        timingParts.push(`Blocks: ${debugState.msInflightBlockLookups.toFixed(1)}ms`);
+      }
+      if (debugState.msInflightPathValidation > 0.5) {
+        timingParts.push(`PathVal: ${debugState.msInflightPathValidation.toFixed(1)}ms`);
+      }
+      if (debugState.msInflightPrismLogic > 0.5) {
+        timingParts.push(`Prism: ${debugState.msInflightPrismLogic.toFixed(1)}ms`);
+      }
+      if (debugState.msInflightOrbSpawning > 0.5) {
+        timingParts.push(`Orbs: ${debugState.msInflightOrbSpawning.toFixed(1)}ms`);
+      }
+      if (debugState.msInflightMovement > 0.5) {
+        timingParts.push(`Move: ${debugState.msInflightMovement.toFixed(1)}ms`);
+      }
+      if (debugState.msPathfinding > 1) {
+        timingParts.push(`Pathfind: ${debugState.msPathfinding}ms`);
+      }
+      if (debugState.msInventoryScanning > 1) {
+        timingParts.push(`InvScan: ${debugState.msInventoryScanning}ms`);
+      }
+      if (debugState.msCacheOps > 1) {
+        timingParts.push(`Cache: ${debugState.msCacheOps}ms`);
+      }
+      if (debugState.msFinalizeJob > 1) {
+        timingParts.push(`Finalize: ${debugState.msFinalizeJob}ms`);
+      }
+      if (debugState.msFinalizeBlockLookups > 1) {
+        timingParts.push(`FinalizeBlocks: ${debugState.msFinalizeBlockLookups.toFixed(1)}ms`);
+      }
+      if (debugState.msFinalizeInventoryLookups > 1) {
+        timingParts.push(`FinalizeInv: ${debugState.msFinalizeInventoryLookups.toFixed(1)}ms`);
+      }
+      if (debugState.msFinalizeFluxRefine > 1) {
+        timingParts.push(`FinalizeRefine: ${debugState.msFinalizeFluxRefine.toFixed(1)}ms`);
+      }
+      if (debugState.msFinalizeItemInsertion > 1) {
+        timingParts.push(`FinalizeInsert: ${debugState.msFinalizeItemInsertion.toFixed(1)}ms`);
+      }
+      if (debugState.msFinalizeCrystalRoute > 1) {
+        timingParts.push(`FinalizeRoute: ${debugState.msFinalizeCrystalRoute.toFixed(1)}ms`);
+      }
+      if (debugState.msFinalizeFluxGenerate > 1) {
+        timingParts.push(`FinalizeFlux: ${debugState.msFinalizeFluxGenerate.toFixed(1)}ms`);
+      }
+      if (debugState.msFinalizeQueueCleanup > 1) {
+        timingParts.push(`FinalizeQueue: ${debugState.msFinalizeQueueCleanup.toFixed(1)}ms`);
+      }
+      if (debugState.msScan > 1) {
+        timingParts.push(`Scan: ${debugState.msScan}ms`);
+      }
+      if (debugState.msScanAttemptTransfer > 1) {
+        timingParts.push(`ScanAttempt: ${debugState.msScanAttemptTransfer.toFixed(1)}ms`);
+      }
+      if (debugState.msScanResolveBlock > 1) {
+        timingParts.push(`ScanResolve: ${debugState.msScanResolveBlock.toFixed(1)}ms`);
+      }
+      if (debugState.msScanGetInventories > 1) {
+        timingParts.push(`ScanInv: ${debugState.msScanGetInventories.toFixed(1)}ms`);
+      }
+      if (debugState.msScanGetItem > 1) {
+        timingParts.push(`ScanItem: ${debugState.msScanGetItem.toFixed(1)}ms`);
+      }
+      if (debugState.msScanIntervalCalc > 1) {
+        timingParts.push(`ScanInterval: ${debugState.msScanIntervalCalc.toFixed(1)}ms`);
+      }
+      if (debugState.msPersist > 1) {
+        timingParts.push(`Persist: ${debugState.msPersist}ms`);
+      }
+      
+      if (timingParts.length > 0) {
+        const timingMsg = `[Transfer] Timings: ${timingParts.join(" | ")}`;
+        for (const player of world.getAllPlayers()) {
+          try {
+            if (typeof player.sendMessage === "function") {
+              player.sendMessage(timingMsg);
+            }
+          } catch {
+            // ignore
+          }
+        }
       }
     }
 
@@ -1765,7 +2403,9 @@ export function createNetworkTransferController(deps, opts) {
     
     if (job?.outputType === "crystal") {
       if (job.skipCrystalAdd) return;
+      const tBlock = debugEnabled ? Date.now() : 0;
       const outInfo = resolveBlockInfo(job.outputKey);
+      if (debugEnabled) debugState.msFinalizeBlockLookups += (Date.now() - tBlock);
       if (!outInfo || !outInfo.block || outInfo.block.typeId !== CRYSTALLIZER_ID) {
         // Track crystallizer missing in stats, don't spam chat
         const dim = getDimensionCached(job.dimId);
@@ -1803,7 +2443,9 @@ export function createNetworkTransferController(deps, opts) {
       }
       return;
     }
+    const tBlock1 = debugEnabled ? Date.now() : 0;
     const outInfo = resolveBlockInfo(job.outputKey);
+    if (debugEnabled) debugState.msFinalizeBlockLookups += (Date.now() - tBlock1);
     if (!outInfo) {
       // Track in stats, don't spam chat
       const dim = getDimensionCached(job.dimId);
@@ -1828,7 +2470,10 @@ export function createNetworkTransferController(deps, opts) {
     let outInventories = null;
     let outContainerInfo = null; // Initialize for use in flux generation
     if (isPrismBlock(outBlock)) {
-      outInventories = getAllAdjacentInventories(outBlock, outInfo.dim);
+      const outPrismKey = job.outputKey; // Use the outputKey from the job
+      const tInv = debugEnabled ? Date.now() : 0;
+      outInventories = getPrismInventoriesCached(outPrismKey, outBlock, outInfo.dim);
+      if (debugEnabled) debugState.msFinalizeInventoryLookups += (Date.now() - tInv);
       if (!outInventories || outInventories.length === 0) {
         // Debug: no inventories
         if (debugEnabled) {
@@ -1866,14 +2511,20 @@ export function createNetworkTransferController(deps, opts) {
       ? job.refinedItems
       : [{ typeId: job.itemTypeId, amount: job.amount }];
     if (!job.refinedItems && job.prismKey) {
+      const tRefine = debugEnabled ? Date.now() : 0;
       const prismInfo = resolveBlockInfo(job.prismKey);
-      if (debugEnabled) debugState.fluxRefineCalls++;
+      if (debugEnabled) {
+        debugState.fluxRefineCalls++;
+        debugState.msFinalizeBlockLookups += (Date.now() - tRefine);
+      }
+      const tRefine2 = debugEnabled ? Date.now() : 0;
       const refined = tryRefineFluxInTransfer({
         prismBlock: prismInfo?.block,
         itemTypeId: job.itemTypeId,
         amount: job.amount,
         FX: FX,
       });
+      if (debugEnabled) debugState.msFinalizeFluxRefine += (Date.now() - tRefine2);
       if (debugEnabled && refined) {
         debugState.fluxRefined += Math.max(0, refined.refined | 0);
         debugState.fluxMutated += Math.max(0, refined.mutated | 0);
@@ -1882,10 +2533,12 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     let allInserted = true;
+    const tInsert = debugEnabled ? Date.now() : 0;
     for (const entry of itemsToInsert) {
       // Use multi-inventory insert for prisms
       if (isPrismBlock(outBlock)) {
         // Get filter for target prism to determine if it wants this item
+        // Optimization: Cache filter lookup if same block is used multiple times
         const targetFilter = getFilterForBlock(outBlock);
         const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
         const inserted = tryInsertIntoInventories(outInventories, entry.typeId, entry.amount, targetFilterSet);
@@ -1905,20 +2558,31 @@ export function createNetworkTransferController(deps, opts) {
         }
       }
     }
+    if (debugEnabled) debugState.msFinalizeItemInsertion += (Date.now() - tInsert);
 
+    // Invalidate inventory cache for the destination prism when items are inserted
+    if (isPrismBlock(outBlock) && job.outputKey) {
+      prismInventoryListCache.delete(job.outputKey);
+      prismInventoryListCacheTimestamps.delete(job.outputKey);
+    }
+    
     if (allInserted) {
       // Track successful insertions in stats, don't spam chat
       
       // Remove any pending queue entries for this container/item to prevent duplicate insertions
+      const tQueue = debugEnabled ? Date.now() : 0;
       if (job.containerKey && queueByContainer.has(job.containerKey)) {
         const queue = queueByContainer.get(job.containerKey);
         if (queue && Array.isArray(queue)) {
-          // Remove entries matching this item type and output
-          for (let i = queue.length - 1; i >= 0; i--) {
-            const queuedJob = queue[i];
-            if (queuedJob && queuedJob.itemTypeId === job.itemTypeId && queuedJob.outputKey === job.outputKey) {
-              queue.splice(i, 1);
-            }
+          // Optimization: Use filter + slice instead of splice in reverse loop for better performance
+          // Only remove matching entries, keep rest
+          const beforeLen = queue.length;
+          const filtered = queue.filter(q => 
+            !(q && q.itemTypeId === job.itemTypeId && q.outputKey === job.outputKey)
+          );
+          if (filtered.length !== beforeLen) {
+            queue.length = 0;
+            queue.push(...filtered);
           }
           if (queue.length === 0) {
             queueByContainer.delete(job.containerKey);
@@ -1926,6 +2590,7 @@ export function createNetworkTransferController(deps, opts) {
           }
         }
       }
+      if (debugEnabled) debugState.msFinalizeQueueCleanup += (Date.now() - tQueue);
       
       releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
       if (isPrismBlock(outBlock)) {
@@ -1933,16 +2598,66 @@ export function createNetworkTransferController(deps, opts) {
         noteOutputTransfer(job.outputKey, outBlock);
       }
       if (debugEnabled) debugState.fluxGenChecks++;
-      const crystalRoute = isPrismBlock(outBlock) 
-        ? findCrystallizerRouteFromPrism(outBlock, job.dimId)
-        : findCrystallizerRouteFromOutput(outBlock, job.dimId);
+      
+      // Optimization #1 & #4: Skip route lookup if we know no crystallizers exist OR if output is not a prism
+      let crystalRoute = null;
+      const shouldLookupRoute = (() => {
+        // Optimization #4: Skip entirely if we know no crystallizers exist
+        if (hasCrystallizersInNetwork === false) return false;
+        
+        // Optimization #1: Only lookup route if output is a prism (crystallizers don't need routes)
+        if (!isPrismBlock(outBlock)) return false; // Crystallizers don't need routes
+        
+        // Even tier 1 has 1% flux generation chance, so we should still check if crystallizers might exist
+        return true; // Lookup route
+      })();
+      
+      const tCrystalRoute = debugEnabled ? Date.now() : 0;
+      if (shouldLookupRoute) {
+        // Optimization #3: Check if we already looked up route for this prism this tick (batching)
+        const crystalRouteKey = job.outputKey;
+        const batchedResult = routeLookupResults.get(crystalRouteKey);
+        if (batchedResult !== undefined) {
+          crystalRoute = batchedResult;
+        } else {
+          // Not batched this tick - check cache or lookup
+          const cachedRoute = crystallizerRouteCache.get(crystalRouteKey);
+          if (cachedRoute && (nowTick - cachedRoute.tick) <= CRYSTALLIZER_ROUTE_CACHE_TTL) {
+            crystalRoute = cachedRoute.route;
+          } else {
+            // Not cached or expired - find route and cache
+            crystalRoute = isPrismBlock(outBlock) 
+              ? findCrystallizerRouteFromPrism(outBlock, job.dimId)
+              : findCrystallizerRouteFromOutput(outBlock, job.dimId);
+            // Cache the result (even if null, to avoid repeated expensive lookups)
+            crystallizerRouteCache.set(crystalRouteKey, {
+              route: crystalRoute,
+              tick: nowTick,
+            });
+          }
+          
+          // Batch result for this tick (so other jobs finishing same tick can reuse)
+          routeLookupResults.set(crystalRouteKey, crystalRoute);
+          
+          // Update global crystallizer existence flag
+          if (hasCrystallizersInNetwork === null && crystalRoute !== null) {
+            hasCrystallizersInNetwork = true; // Found at least one crystallizer
+          }
+        }
+      } else {
+        crystalRoute = null; // Skip lookup entirely
+      }
+      if (debugEnabled) debugState.msFinalizeCrystalRoute += (Date.now() - tCrystalRoute);
       
       // Only generate flux if we have a valid container
       if (outContainerInfo && outContainerInfo.container) {
+        const tFlux = debugEnabled ? Date.now() : 0;
+        // Optimization: Cache start block lookup - job.startPos might not be needed every time
+        const startBlock = job.startPos ? (getBlockCached(job.dimId, job.startPos) || outInfo.dim.getBlock(job.startPos)) : null;
         const fluxGenerated = tryGenerateFluxOnTransfer({
           outputBlock: outBlock,
           destinationInventory: outContainerInfo.container,
-          inputBlock: job.startPos ? outInfo.dim.getBlock(job.startPos) : null,
+          inputBlock: startBlock,
           path: job.path,
           getAttachedInventoryInfo,
           getBlockAt: (pos, dim) => {
@@ -1959,6 +2674,7 @@ export function createNetworkTransferController(deps, opts) {
           FX: FX,
           consumeFluxOutput: !!crystalRoute,
         });
+        if (debugEnabled) debugState.msFinalizeFluxGenerate += (Date.now() - tFlux);
         if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
         if (fluxGenerated > 0 && crystalRoute) {
           if (typeof enqueueFluxTransferFxPositions === "function") {
@@ -2192,7 +2908,8 @@ export function createNetworkTransferController(deps, opts) {
             
             // For prisms, check if they have inventories
             if (isPrismBlock(outBlock)) {
-              const inventories = getAllAdjacentInventories(outBlock, dim);
+              const outPrismKey = nextKey; // Use the key from the search
+              const inventories = getPrismInventoriesCached(outPrismKey, outBlock, dim);
               if (!inventories || inventories.length === 0) {
                 continue;
               }
@@ -2412,7 +3129,7 @@ export function createNetworkTransferController(deps, opts) {
       const maxOrbFx = Math.max(0, cfg.maxOrbFxPerTick | 0);
       if (maxOrbFx > 0 && orbFxBudgetUsed >= maxOrbFx) {
         if (debugEnabled) debugState.orbFxSkipped++;
-        return true;
+        return false; // Return false when budget exceeded, not true
       }
       if (maxOrbFx > 0) orbFxBudgetUsed++;
       const dir = normalizeDir(from, to);
@@ -2630,5 +3347,9 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  return { start, stop };
+  return { 
+    start, 
+    stop,
+    invalidateCachesForBlockChange // Expose for block change events
+  };
 }

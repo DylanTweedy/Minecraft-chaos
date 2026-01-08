@@ -38,8 +38,8 @@ function scheduleEmitAt(world, system, dim, loc, attempt) {
 
     const placed = dim.getBlock(loc);
 
-    // Handle prism placement
-    if (placed && isPrismBlock(placed)) {
+    // Handle prism or crystallizer placement
+    if (placed && (isPrismBlock(placed) || placed.typeId === CRYSTALLIZER_ID)) {
       pendingEmit.delete(k);
       handlePrismPlaced(world, placed);
       return;
@@ -128,7 +128,7 @@ function handleBlockChanged(world, dim, loc, prevId, nextId) {
 }
 
 function handlePrismPlaced(world, block) {
-  // Register any tier prism block
+  // Register any tier prism block or crystallizer
   try {
     if (!block) return;
 
@@ -137,7 +137,7 @@ function handlePrismPlaced(world, block) {
     if (!dim || !loc) return;
 
     const placed = dim.getBlock(loc);
-    if (!placed || !isPrismBlock(placed)) return;
+    if (!placed || (!isPrismBlock(placed) && placed.typeId !== CRYSTALLIZER_ID)) return;
 
     const dimId = placed.dimension.id;
     // Floor coordinates to ensure integer block positions
@@ -147,8 +147,9 @@ function handlePrismPlaced(world, block) {
     const prismKey = key(dimId, x, y, z);
 
     const map = loadBeamsMap(world);
-    // Store connections (prism keys this prism connects to), not individual beam block locations
-    const entry = { dimId, x, y, z, connections: [], kind: "prism" };
+    // Store connections (prism/crystallizer keys this block connects to), not individual beam block locations
+    const isCrystallizer = placed.typeId === CRYSTALLIZER_ID;
+    const entry = { dimId, x, y, z, connections: [], kind: isCrystallizer ? "crystallizer" : "prism" };
     map[prismKey] = entry;
     saveBeamsMap(world, map);
 
@@ -237,8 +238,8 @@ export function registerBeamEvents(world, system) {
     world.afterEvents.itemUseOn.subscribe((ev) => {
       try {
         const itemId = ev?.itemStack?.typeId;
-        // Handle prism placement via item use
-        if (!isPrismBlock({ typeId: itemId })) return;
+        // Handle prism or crystallizer placement via item use
+        if (!isPrismBlock({ typeId: itemId }) && itemId !== CRYSTALLIZER_ID) return;
 
         const clicked = ev?.block;
         const face = ev?.blockFace;
@@ -265,8 +266,8 @@ export function registerBeamEvents(world, system) {
       const loc = ev.block?.location;
       if (!dim || !loc) return;
 
-      // Clean up prism entry on break
-      if (isPrismBlock({ typeId: brokenId })) {
+      // Clean up prism or crystallizer entry on break
+      if (isPrismBlock({ typeId: brokenId }) || brokenId === CRYSTALLIZER_ID) {
         const prismKey = key(dim.id, loc.x, loc.y, loc.z);
         const map = loadBeamsMap(world);
         if (map[prismKey]) {
