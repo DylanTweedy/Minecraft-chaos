@@ -2,6 +2,18 @@
 import { createTransferPathfinder } from "../features/links/transfer/pathfinding/pathfinder.js";
 import { getNetworkStamp } from "../features/links/networkStamp.js";
 import { createNetworkTransferController } from "../features/links/transfer/controller.js";
+import { setCacheInvalidationFn } from "../features/links/beam/events.js";
+
+// Module-level storage for cache invalidation function (optional dependency)
+let cacheInvalidationFn = null;
+
+/**
+ * Get the cache invalidation function if available.
+ * Returns null if transfer controller hasn't been created yet.
+ */
+export function getCacheInvalidationFn() {
+  return cacheInvalidationFn;
+}
 
 export function startTransferLoop(ctx) {
   const {
@@ -71,6 +83,22 @@ export function startTransferLoop(ctx) {
           maxOutputOptions: 4,
         }
       );
+
+      // Extract and store cache invalidation function from controller
+      if (controller && typeof controller.getCacheManager === "function") {
+        try {
+          const cacheManager = controller.getCacheManager();
+          if (cacheManager && typeof cacheManager.invalidateCachesForBlockChange === "function") {
+            cacheInvalidationFn = cacheManager.invalidateCachesForBlockChange.bind(cacheManager);
+            // Update beam events system with the cache invalidation function
+            if (typeof setCacheInvalidationFn === "function") {
+              setCacheInvalidationFn(cacheInvalidationFn);
+            }
+          }
+        } catch {
+          // Ignore errors - cache invalidation is optional
+        }
+      }
 
       // Start the controller
       if (controller && typeof controller.start === "function") {

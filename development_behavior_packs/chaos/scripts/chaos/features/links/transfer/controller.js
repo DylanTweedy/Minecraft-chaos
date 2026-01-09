@@ -1365,5 +1365,9 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  return { start, stop };
+  function getCacheManager() {
+    return cacheManager || null;
+  }
+
+  return { start, stop, getCacheManager };
 }

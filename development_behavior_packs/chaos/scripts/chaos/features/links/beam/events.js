@@ -23,6 +23,7 @@ const FACE_OFFSETS = {
 };
 
 const pendingEmit = new Set();
+let globalInvalidateCachesFn = null;
 
 function scheduleEmitAt(world, system, dim, loc, attempt) {
   try {
@@ -41,7 +42,7 @@ function scheduleEmitAt(world, system, dim, loc, attempt) {
     // Handle prism placement
     if (placed && isPrismBlock(placed)) {
       pendingEmit.delete(k);
-      handlePrismPlaced(world, placed);
+      handlePrismPlaced(world, placed, globalInvalidateCachesFn);
       return;
     }
 
@@ -56,8 +57,20 @@ function scheduleEmitAt(world, system, dim, loc, attempt) {
   }
 }
 
-function handleBlockChanged(world, dim, loc, prevId, nextId) {
+function handleBlockChanged(world, dim, loc, prevId, nextId, invalidateCachesFn = null) {
   if (!dim || !loc) return;
+
+  // Invalidate caches for this block change if callback is provided
+  // Check both parameter and global variable (parameter takes precedence for explicit passing)
+  const fnToUse = invalidateCachesFn || globalInvalidateCachesFn;
+  if (fnToUse && typeof fnToUse === "function") {
+    try {
+      const blockKey = key(dim.id, loc.x, loc.y, loc.z);
+      fnToUse(blockKey);
+    } catch {
+      // Ignore errors in cache invalidation - don't break block change handling
+    }
+  }
 
   bumpNetworkStamp();
   enqueueAdjacentBeams(dim, loc);
@@ -128,7 +141,7 @@ function handleBlockChanged(world, dim, loc, prevId, nextId) {
   }
 }
 
-function handlePrismPlaced(world, block) {
+function handlePrismPlaced(world, block, invalidateCachesFn = null) {
   try {
     if (!block) return;
 
@@ -154,7 +167,7 @@ function handlePrismPlaced(world, block) {
     enqueueRelayForRescan(prismKey);
     // Enqueue adjacent prisms to rebuild their beams
     enqueueAdjacentPrisms(dim, loc);
-    handleBlockChanged(world, dim, loc);
+    handleBlockChanged(world, dim, loc, null, null, invalidateCachesFn);
   } catch {
     // ignore
   }
@@ -165,13 +178,23 @@ function handleInputPlaced(world, block) {
   return handlePrismPlaced(world, block);
 }
 
-export function registerBeamEvents(world, system) {
+/**
+ * Update the cache invalidation function (can be called later after transfer loop initializes)
+ */
+export function setCacheInvalidationFn(invalidateCachesFn) {
+  globalInvalidateCachesFn = invalidateCachesFn;
+}
+
+export function registerBeamEvents(world, system, invalidateCachesFn = null) {
+  // Store globally so scheduleEmitAt can access it
+  globalInvalidateCachesFn = invalidateCachesFn;
+  
   world.afterEvents.playerPlaceBlock.subscribe((ev) => {
     try {
       const b = ev?.block;
       if (!b) return;
       scheduleEmitAt(world, system, b.dimension, b.location, 0);
-      handleBlockChanged(world, b.dimension, b.location, null, b.typeId);
+      handleBlockChanged(world, b.dimension, b.location, null, b.typeId, invalidateCachesFn);
     } catch {
       // ignore
     }
@@ -183,7 +206,7 @@ export function registerBeamEvents(world, system) {
         const b = ev?.block;
         if (!b) return;
         scheduleEmitAt(world, system, b.dimension, b.location, 0);
-        handleBlockChanged(world, b.dimension, b.location, null, b.typeId);
+        handleBlockChanged(world, b.dimension, b.location, null, b.typeId, invalidateCachesFn);
       } catch {
         // ignore
       }
@@ -198,7 +221,7 @@ export function registerBeamEvents(world, system) {
         const b = ev?.block;
         if (!b) return;
         scheduleEmitAt(world, system, b.dimension, b.location, 0);
-        handleBlockChanged(world, b.dimension, b.location, null, b.typeId);
+        handleBlockChanged(world, b.dimension, b.location, null, b.typeId, invalidateCachesFn);
       } catch {
         // ignore
       }
@@ -249,7 +272,7 @@ export function registerBeamEvents(world, system) {
         }
       }
 
-      handleBlockChanged(world, dim, loc, brokenId, "minecraft:air");
+      handleBlockChanged(world, dim, loc, brokenId, "minecraft:air", invalidateCachesFn);
     } catch {
       // ignore
     }

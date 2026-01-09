@@ -24,9 +24,9 @@ import {
   takePendingValidation,
 } from "./beam/queue.js";
 
-export function startBeamSimV0() {
+export function startBeamSimV0(invalidateCachesFn = null) {
   rebuildOrRemoveAllDeterministically(world);
-  registerBeamEvents(world, system);
+  registerBeamEvents(world, system, invalidateCachesFn);
 
   system.runInterval(() => {
     const map = loadBeamsMap(world);
