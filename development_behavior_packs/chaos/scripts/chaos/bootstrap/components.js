@@ -1,6 +1,10 @@
 // scripts/chaos/bootstrap/components.js
 
+import { handleDeathmarkUseEvent, handleDeathmarkUseOnEvent } from "../deathmark.js";
+
 let registered = false;
+let mirrorRegistered = false;
+let deathmarkRegistered = false;
 
 export function registerWandComponent(ctx) {
   if (registered) return;
@@ -69,5 +73,135 @@ export function registerWandComponent(ctx) {
         });
       },
     });
+  });
+}
+
+export function registerMagicMirrorComponent(ctx) {
+  if (mirrorRegistered) return;
+  mirrorRegistered = true;
+
+  const {
+    system,
+    world,
+    MIRROR_ID,
+    handleMirrorUse,
+    handleMirrorUseOn,
+    handleMirrorEntityAttack,
+  } = ctx;
+
+  // Component registration - primary method (like wand)
+  system.beforeEvents.startup.subscribe((ev) => {
+    try {
+      ev.itemComponentRegistry.registerCustomComponent("chaos:magic_mirror_logic", {
+        onUseOn: (e) => {
+          try {
+            const item = e.itemStack;
+            if (!item) return;
+            const itemId = item.typeId;
+            if (itemId !== MIRROR_ID) return;
+            handleMirrorUseOn(e, {
+              MIRROR_ID,
+              world,
+            });
+          } catch (err) {
+            // ignore
+          }
+        },
+      });
+    } catch (err) {
+      // ignore
+    }
+  });
+
+  // Note: itemUseOn is handled by component callback (onUseOn)
+  // No need to subscribe to world.afterEvents.itemUseOn if component handles it
+
+  try {
+    world.afterEvents.itemUse.subscribe((e) => {
+      try {
+        const item = e.itemStack;
+        if (!item) return;
+        const itemId = item.typeId;
+        if (itemId !== MIRROR_ID) return;
+        // Only handle if no block was clicked (air use)
+        if (!e.block) {
+          handleMirrorUse(e, {
+            MIRROR_ID,
+            world,
+          });
+        }
+      } catch (err) {
+        // ignore
+      }
+    });
+  } catch {
+    // ignore
+  }
+
+  // Subscribe to entity hurt event to detect when player attacks entities
+  // Check if attacker is a player holding the mirror
+  try {
+    if (world.afterEvents && typeof world.afterEvents.entityHurt !== "undefined") {
+      world.afterEvents.entityHurt.subscribe((e) => {
+        try {
+          const hurtEntity = e.hurtEntity;
+          const damageSource = e.damageSource;
+          const attacker = damageSource?.damagingEntity;
+          
+          // Only handle if attacker is a player
+          if (!attacker || attacker.typeId !== "minecraft:player") return;
+          
+          const player = attacker;
+          
+          // Create event-like object for our handler
+          const attackEvent = {
+            player: player,
+            attackedEntity: hurtEntity,
+          };
+          
+          handleMirrorEntityAttack(attackEvent, {
+            MIRROR_ID,
+            world,
+          });
+        } catch (err) {
+          try {
+            world.sendMessage(`§c[Chaos Mirror] Error in entityHurt: ${err?.message || String(err)}`);
+          } catch {}
+        }
+      });
+    } else {
+      // entityHurt not available - entity teleport won't work
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function registerDeathmarkComponent(system) {
+  if (deathmarkRegistered) return;
+  deathmarkRegistered = true;
+
+  // Component registration
+  system.beforeEvents.startup.subscribe((ev) => {
+    try {
+      ev.itemComponentRegistry.registerCustomComponent("chaos:deathmark_logic", {
+        onUse: (e) => {
+          try {
+            handleDeathmarkUseEvent(e);
+          } catch {
+            // ignore
+          }
+        },
+        onUseOn: (e) => {
+          try {
+            handleDeathmarkUseOnEvent(e);
+          } catch {
+            // ignore
+          }
+        },
+      });
+    } catch {
+      // ignore
+    }
   });
 }

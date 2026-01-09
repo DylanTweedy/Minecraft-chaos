@@ -1,5 +1,5 @@
 // scripts/chaos/bootstrap/startSystems.js
-import { world } from "@minecraft/server";
+import { world, system } from "@minecraft/server";
 import { startLinkVision } from "../systems/linkVision.js";
 import { startCleanupOnBreak } from "../systems/cleanupOnBreak.js";
 import { startBeamSimV0 } from "../features/links/beamSim.js";
@@ -7,6 +7,7 @@ import { startFxQueue } from "../systems/fxQueue.js";
 import { startFilterInteract } from "../systems/filterInteract.js";
 import { startCrystallizerSystem } from "../crystallizer.js";
 import { startPrestigeSystem } from "../prestige.js";
+import { startDeathmarkSystem } from "../deathmark.js";
 
 export function startSystems() {
   // Start FX queue first so spawns don't stall if later systems throw.
@@ -17,6 +18,7 @@ export function startSystems() {
   try { startBeamSimV0(); } catch {}
   try { startCrystallizerSystem(); } catch {}
   try { startPrestigeSystem(); } catch {}
+  try { startDeathmarkSystem(world, system); } catch {}
   
   // Debug: Show which modules loaded
   try {
