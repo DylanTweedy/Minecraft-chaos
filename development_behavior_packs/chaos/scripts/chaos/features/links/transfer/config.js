@@ -111,7 +111,7 @@ const DEFAULTS = {
   levelUpBurstRadius: 0.35,
   orbLifetimeScale: 0.5,
   maxPrismsScannedPerTick: 24, // Budget for prisms to scan per tick
-  debugTransferStats: false,
+  debugTransferStats: true, // Enable debug timing messages
   debugTransferStatsIntervalTicks: 100,
   backoffBaseTicks: 10, // Base backoff when prism finds nothing
   backoffMaxTicks: 200,

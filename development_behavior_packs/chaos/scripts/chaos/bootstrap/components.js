@@ -138,11 +138,10 @@ export function registerMagicMirrorComponent(ctx) {
     // ignore
   }
 
-  // Subscribe to entity hurt event to detect when player attacks entities
-  // Check if attacker is a player holding the mirror
+  // Subscribe to beforeEvents.entityHurt to cancel damage and handle mirror interaction
   try {
-    if (world.afterEvents && typeof world.afterEvents.entityHurt !== "undefined") {
-      world.afterEvents.entityHurt.subscribe((e) => {
+    if (world.beforeEvents && typeof world.beforeEvents.entityHurt !== "undefined") {
+      world.beforeEvents.entityHurt.subscribe((e) => {
         try {
           const hurtEntity = e.hurtEntity;
           const damageSource = e.damageSource;
@@ -152,6 +151,21 @@ export function registerMagicMirrorComponent(ctx) {
           if (!attacker || attacker.typeId !== "minecraft:player") return;
           
           const player = attacker;
+          
+          // Check if player is holding the mirror
+          const inventory = player.getComponent?.("minecraft:inventory");
+          const container = inventory?.container;
+          if (!container) return;
+          
+          const selectedSlot = player.selectedSlotIndex || 0;
+          const itemStack = container.getItem(selectedSlot);
+          if (!itemStack) return;
+          
+          const itemId = itemStack.typeId;
+          if (itemId !== MIRROR_ID) return;
+          
+          // Cancel the damage
+          e.cancel = true;
           
           // Create event-like object for our handler
           const attackEvent = {
@@ -164,13 +178,9 @@ export function registerMagicMirrorComponent(ctx) {
             world,
           });
         } catch (err) {
-          try {
-            world.sendMessage(`§c[Chaos Mirror] Error in entityHurt: ${err?.message || String(err)}`);
-          } catch {}
+          // ignore
         }
       });
-    } else {
-      // entityHurt not available - entity teleport won't work
     }
   } catch {
     // ignore

@@ -1,0 +1,17 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:item": {
+    "description": {
+      "identifier": "chaos:magic_mirror_captured",
+      "menu_category": { "category": "items" }
+    },
+    "components": {
+      "minecraft:display_name": { "value": "item.chaos:magic_mirror_captured.name" },
+      "minecraft:icon": "magic_mirror_captured",
+      "minecraft:max_stack_size": 1,
+      "minecraft:hand_equipped": true,
+
+      "chaos:magic_mirror_logic": {}
+    }
+  }
+}

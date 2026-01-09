@@ -3,9 +3,10 @@ import { isPrismBlock, getPrismTierFromTypeId, getPrismTypeIdForTier } from "../
 
 export function createLevelsManager(cfg, state, deps = {}) {
   // State maps and flags are maintained by controller, passed in
-  const prismCounts = state.prismCounts;
-  const transferCounts = state.transferCounts;
-  const outputCounts = state.outputCounts;
+  if (!cfg || !state) return null; // Return null if required params are missing
+  const prismCounts = state.prismCounts || new Map();
+  const transferCounts = state.transferCounts || new Map();
+  const outputCounts = state.outputCounts || new Map();
   const spawnLevelUpBurst = deps.spawnLevelUpBurst || (() => {}); // Optional FX function
   
   // Helper to set dirty flag (handles both direct assignment and getter/setter objects)
@@ -52,6 +53,7 @@ export function createLevelsManager(cfg, state, deps = {}) {
 
   function getNextInputLevel(inputKey) {
     // Use unified prism counts system
+    if (!inputKey) return 1; // Guard against null/undefined keys
     const stored = prismCounts.has(inputKey) ? prismCounts.get(inputKey) : 0;
     const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
     return getLevelForCount(stored + 1, prismStep, cfg.maxLevel);
@@ -87,6 +89,11 @@ export function createLevelsManager(cfg, state, deps = {}) {
         // Use dimension.id format to match linkVision
         actualKey = `${dim.id}|${loc.x},${loc.y},${loc.z}`;
       }
+    }
+    
+    // Guard against invalid keys
+    if (!actualKey || (typeof actualKey !== 'string' && typeof actualKey !== 'number')) {
+      return;
     }
     
     const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
@@ -126,7 +133,9 @@ export function createLevelsManager(cfg, state, deps = {}) {
       
       // Spawn level up effect on the new block
       const updatedBlock = dim.getBlock(loc);
-      if (updatedBlock) spawnLevelUpBurst(updatedBlock);
+      if (updatedBlock && typeof spawnLevelUpBurst === "function") {
+        spawnLevelUpBurst(updatedBlock);
+      }
     } catch {
       // Ignore errors
     }

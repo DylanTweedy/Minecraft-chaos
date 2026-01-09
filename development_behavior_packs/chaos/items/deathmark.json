@@ -9,6 +9,12 @@
       "minecraft:display_name": { "value": "item.chaos:deathmark.name" },
       "minecraft:icon": "deathmark",
       "minecraft:max_stack_size": 1,
+      "minecraft:lore": [
+        "Right-click to teleport to your",
+        "death location. If no death point",
+        "is stored, teleports to spawn.",
+        "Consumed on use."
+      ],
       "chaos:deathmark_logic": {}
     }
   }

@@ -6,7 +6,8 @@ function getTierFromBlock(block) {
     if (!block) return 1;
     // Extract tier from block typeId
     if (isPrismBlock(block)) {
-      return getPrismTierFromTypeId(block.typeId);
+      // getPrismTierFromTypeId accepts either a block object or a typeId string
+      return getPrismTierFromTypeId(block);
     }
   } catch {
     // ignore

@@ -2,18 +2,18 @@
 import { MolangVariableMap } from "@minecraft/server";
 import { isPrismBlock, getPrismTierFromTypeId } from "../config.js";
 import { buildFluxFxSegments } from "../pathfinding/path.js";
-import { findDropLocation } from "../pathfinding/path.js";
-import { queueFxParticle } from "../../../fx/fx.js";
-import { getFluxTier, isFluxTypeId } from "../../../flux.js";
+import { queueFxParticle } from "../../../../fx/fx.js";
+import { getFluxTier, isFluxTypeId } from "../../../../flux.js";
 
 export function createFxManager(cfg, deps) {
+  if (!cfg || !deps) return null; // Return null if required params are missing
   const FX = deps.FX;
   const debugEnabled = deps.debugEnabled || false;
   const debugState = deps.debugState || null;
   const getDimensionCached = deps.getDimensionCached;
   const getOrbStepTicks = deps.getOrbStepTicks || (() => 60); // Fallback if not provided
-  const orbFxBudgetUsed = deps.orbFxBudgetUsed; // Reference object { value: number } to controller's orbFxBudgetUsed
-  const fluxFxInflight = deps.fluxFxInflight; // Reference to controller's fluxFxInflight array
+  const orbFxBudgetUsed = deps.orbFxBudgetUsed || { value: 0 }; // Reference object { value: number } to controller's orbFxBudgetUsed
+  const fluxFxInflight = deps.fluxFxInflight || []; // Reference to controller's fluxFxInflight array
 
   function normalizeDir(a, b) {
     const dx = b.x - a.x;
@@ -75,11 +75,13 @@ export function createFxManager(cfg, deps) {
         }
       }
       const maxOrbFx = Math.max(0, cfg.maxOrbFxPerTick | 0);
-      if (maxOrbFx > 0 && orbFxBudgetUsed.value >= maxOrbFx) {
+      if (maxOrbFx > 0 && orbFxBudgetUsed && typeof orbFxBudgetUsed.value === 'number' && orbFxBudgetUsed.value >= maxOrbFx) {
         if (debugEnabled && debugState) debugState.orbFxSkipped++;
         return false; // Return false when budget exceeded, not true
       }
-      if (maxOrbFx > 0) orbFxBudgetUsed.value++;
+      if (maxOrbFx > 0 && orbFxBudgetUsed && typeof orbFxBudgetUsed.value === 'number') {
+        orbFxBudgetUsed.value++;
+      }
       const dir = normalizeDir(from, to);
       if (!dir) return false;
 
@@ -138,7 +140,7 @@ export function createFxManager(cfg, deps) {
   function enqueueFluxTransferFx(pathBlocks, startIndex, endIndex, itemTypeId, level, insertInfo) {
     try {
       if (!Array.isArray(pathBlocks) || pathBlocks.length < 2) return;
-      if (fluxFxInflight.length >= Math.max(1, cfg.maxFluxFxInFlight | 0)) return;
+      if (!Array.isArray(fluxFxInflight) || fluxFxInflight.length >= Math.max(1, cfg.maxFluxFxInFlight | 0)) return;
       const s = Math.max(0, startIndex | 0);
       const e = Math.max(0, endIndex | 0);
       if (s <= e) return;
@@ -188,7 +190,7 @@ export function createFxManager(cfg, deps) {
   function enqueueFluxTransferFxPositions(pathPositions, startIndex, endIndex, itemTypeId, level, insertInfo) {
     try {
       if (!Array.isArray(pathPositions) || pathPositions.length < 2) return;
-      if (fluxFxInflight.length >= Math.max(1, cfg.maxFluxFxInFlight | 0)) return;
+      if (!Array.isArray(fluxFxInflight) || fluxFxInflight.length >= Math.max(1, cfg.maxFluxFxInFlight | 0)) return;
       const s = Math.max(0, startIndex | 0);
       const e = Math.max(0, endIndex | 0);
       if (s <= e) return;

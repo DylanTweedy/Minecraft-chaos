@@ -68,6 +68,8 @@ import { createLevelsManager } from "./systems/levels.js";
 import { createFxManager } from "./systems/fx.js";
 import { createRefinementManager } from "./systems/refinement.js";
 import { createFinalizeManager } from "./core/finalize.js";
+import { createQueuesManager } from "./core/queues.js";
+import { createInflightProcessorManager } from "./core/inflightProcessor.js";
 
 export function createNetworkTransferController(deps, opts) {
   const world = deps.world;
@@ -126,6 +128,7 @@ export function createNetworkTransferController(deps, opts) {
     fluxRefineCalls: 0,
     fluxRefined: 0,
     fluxMutated: 0,
+    msCache: 0,
     msQueues: 0,
     msInflight: 0,
     msFluxFx: 0,
@@ -145,6 +148,31 @@ export function createNetworkTransferController(deps, opts) {
   let cachedInputKeys = null;
   let cachedInputsStamp = null;
   const orbFxBudgetUsed = { value: 0 };
+
+  // Helper function for error handling during manager creation
+  function handleManagerCreationError(managerName, err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] Error creating ${managerName}: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+  }
+
+  // Helper function for non-fatal error logging (doesn't re-throw)
+  function logError(message, err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] ${message}: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+  }
 
   // Define getContainerCapacityWithReservations before creating cache manager (it needs this function)
   function getContainerCapacityWithReservations(containerKey, container, containerBlock) {
@@ -194,15 +222,7 @@ export function createNetworkTransferController(deps, opts) {
       throw new Error("createCacheManager returned null or undefined");
     }
   } catch (err) {
-    try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] Error creating cacheManager: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
-    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+    handleManagerCreationError("cacheManager", err);
   }
 
   // Create levelsManager first (without spawnLevelUpBurst - it's optional and will be added later)
@@ -222,15 +242,7 @@ export function createNetworkTransferController(deps, opts) {
       throw new Error("createLevelsManager returned null - check cfg and state parameters");
     }
   } catch (err) {
-    try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] Error creating levelsManager: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
-    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+    handleManagerCreationError("levelsManager", err);
   }
 
   // Create FX manager - needs getOrbStepTicks from levels manager
@@ -255,15 +267,7 @@ export function createNetworkTransferController(deps, opts) {
       throw new Error("createFxManager returned null - check cfg and deps parameters");
     }
   } catch (err) {
-    try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] Error creating fxManager: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
-    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+    handleManagerCreationError("fxManager", err);
   }
 
   // Recreate levelsManager with spawnLevelUpBurst from FX manager
@@ -286,15 +290,28 @@ export function createNetworkTransferController(deps, opts) {
       throw new Error("createLevelsManager (recreate) returned null - check cfg and state parameters");
     }
   } catch (err) {
-    try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] Error recreating levelsManager: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
-    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+    handleManagerCreationError("levelsManager (recreate)", err);
+  }
+
+  // Create queues manager - manages queue state internally (needed by other managers)
+  let queuesManager;
+  try {
+    if (!cacheManager || typeof cacheManager.resolveContainerInfoCached !== "function") {
+      throw new Error("cacheManager.resolveContainerInfoCached is not a function");
+    }
+    queuesManager = createQueuesManager(cfg, {
+      cacheManager,
+      resolveBlockInfo,
+      dropItemAt,
+      noteOutputTransfer,
+    });
+    if (!queuesManager) {
+      throw new Error("createQueuesManager returned null - check cfg and deps parameters");
+    }
+    // Initialize with existing state (if any - for persistence)
+    queuesManager.initializeState(queueByContainer, fullContainers);
+  } catch (err) {
+    handleManagerCreationError("queuesManager", err);
   }
 
   // Create refinement manager - needs fxManager and cacheManager
@@ -312,21 +329,13 @@ export function createNetworkTransferController(deps, opts) {
       resolveBlockInfo,
       dropItemAt,
       fxManager,
-      enqueuePendingForContainer,
+      enqueuePendingForContainer: queuesManager.enqueuePendingForContainer.bind(queuesManager),
     });
     if (!refinementManager) {
       throw new Error("createRefinementManager returned null - check cfg and deps parameters");
     }
   } catch (err) {
-    try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] Error creating refinementManager: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
-    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+    handleManagerCreationError("refinementManager", err);
   }
 
   // Create finalize manager - needs fxManager, refinementManager, and other dependencies
@@ -345,27 +354,54 @@ export function createNetworkTransferController(deps, opts) {
       resolveBlockInfo,
       dropItemAt,
       getFilterForBlock,
-      enqueuePendingForContainer,
+      enqueuePendingForContainer: queuesManager.enqueuePendingForContainer.bind(queuesManager),
       fxManager,
       getContainerKey,
       debugEnabled,
       debugState,
       noteOutputTransfer,
-      resolveContainerInfo,
+      resolveContainerInfo: queuesManager.resolveContainerInfo.bind(queuesManager),
     });
     if (!finalizeManager) {
       throw new Error("createFinalizeManager returned null - check cfg and deps parameters");
     }
   } catch (err) {
-    try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] Error creating finalizeManager: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
-    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+    handleManagerCreationError("finalizeManager", err);
+  }
+
+  // Create inflight processor manager - needs all other managers
+  let inflightProcessorManager;
+  try {
+    if (!cacheManager || typeof cacheManager.getDimensionCached !== "function") {
+      throw new Error("cacheManager.getDimensionCached is not a function");
+    }
+    if (!levelsManager || typeof levelsManager.notePrismPassage !== "function") {
+      throw new Error("levelsManager.notePrismPassage is not a function");
+    }
+    if (!refinementManager || typeof refinementManager.applyPrismSpeedBoost !== "function") {
+      throw new Error("refinementManager.applyPrismSpeedBoost is not a function");
+    }
+    if (!fxManager || typeof fxManager.spawnOrbStep !== "function") {
+      throw new Error("fxManager.spawnOrbStep is not a function");
+    }
+    if (!finalizeManager || typeof finalizeManager.finalizeJob !== "function") {
+      throw new Error("finalizeManager.finalizeJob is not a function");
+    }
+    inflightProcessorManager = createInflightProcessorManager(cfg, {
+      cacheManager,
+      dropItemAt,
+      levelsManager,
+      refinementManager,
+      fxManager,
+      finalizeManager,
+      debugEnabled,
+      debugState,
+    });
+    if (!inflightProcessorManager) {
+      throw new Error("createInflightProcessorManager returned null - check cfg and deps parameters");
+    }
+  } catch (err) {
+    handleManagerCreationError("inflightProcessorManager", err);
   }
 
   function getBackoffTicks(level) {
@@ -409,6 +445,7 @@ export function createNetworkTransferController(deps, opts) {
     debugState.fluxRefineCalls = 0;
     debugState.fluxRefined = 0;
     debugState.fluxMutated = 0;
+    debugState.msCache = 0;
     debugState.msQueues = 0;
     debugState.msInflight = 0;
     debugState.msFluxFx = 0;
@@ -441,75 +478,33 @@ export function createNetworkTransferController(deps, opts) {
   function start() {
     if (tickId !== null) return;
     if (!levelsManager) {
-      try {
-        const players = world.getAllPlayers();
-        for (const player of players) {
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage("§c[Chaos Transfer] ERROR: Cannot start - levelsManager is null!");
-          }
-        }
-      } catch {}
+      logError("ERROR: Cannot start - levelsManager is null!", new Error("levelsManager is null"));
       return; // Don't start if levelsManager is null
     }
     try {
       loadInflightState();
     } catch (err) {
-      try {
-        const players = world.getAllPlayers();
-        for (const player of players) {
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage(`§c[Chaos Transfer] Error loading inflight state: ${err?.message || String(err)}`);
-          }
-        }
-      } catch {}
+      logError("Error loading inflight state", err);
     }
     try {
       loadLevelsState();
     } catch (err) {
-      try {
-        const players = world.getAllPlayers();
-        for (const player of players) {
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage(`§c[Chaos Transfer] Error loading levels state: ${err?.message || String(err)}`);
-          }
-        }
-      } catch {}
+      logError("Error loading levels state", err);
     }
     try {
       loadOutputLevelsState();
     } catch (err) {
-      try {
-        const players = world.getAllPlayers();
-        for (const player of players) {
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage(`§c[Chaos Transfer] Error loading output levels state: ${err?.message || String(err)}`);
-          }
-        }
-      } catch {}
+      logError("Error loading output levels state", err);
     }
     try {
       loadPrismLevelsState();
     } catch (err) {
-      try {
-        const players = world.getAllPlayers();
-        for (const player of players) {
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage(`§c[Chaos Transfer] Error loading prism levels state: ${err?.message || String(err)}`);
-          }
-        }
-      } catch {}
+      logError("Error loading prism levels state", err);
     }
     try {
       tickId = system.runInterval(onTick, 1);
     } catch (err) {
-      try {
-        const players = world.getAllPlayers();
-        for (const player of players) {
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage(`§c[Chaos Transfer] Error starting tick interval: ${err?.message || String(err)}`);
-          }
-        }
-      } catch {}
+      logError("Error starting tick interval", err);
     }
   }
 
@@ -553,227 +548,151 @@ export function createNetworkTransferController(deps, opts) {
     lastSaveTick = nowTick;
   }
 
-  function loadLevelsState() {
+  // Generic helper for loading counts state
+  function loadCountsState(loadFn, countsMap, setDirty, setLastSaveTick) {
     try {
-      const raw = loadInputLevels(world);
-      transferCounts.clear();
+      const raw = loadFn(world);
+      countsMap.clear();
       for (const [k, v] of Object.entries(raw)) {
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) continue;
-        transferCounts.set(k, n | 0);
+        countsMap.set(k, n | 0);
       }
-      levelsDirty = false;
-      lastLevelsSaveTick = nowTick;
+      setDirty(false);
+      setLastSaveTick(nowTick);
     } catch (err) {
       // If loading fails, just start with empty state
-      transferCounts.clear();
-      levelsDirty = false;
-      lastLevelsSaveTick = nowTick;
+      countsMap.clear();
+      setDirty(false);
+      setLastSaveTick(nowTick);
       throw err; // Re-throw so start() can catch it
     }
+  }
+
+  // Generic helper for persisting counts state
+  function persistCountsIfNeeded(getDirty, getLastSaveTick, setDirty, setLastSaveTick, countsMap, saveFn, minInterval = 200) {
+    if (!getDirty() && (nowTick - getLastSaveTick()) < minInterval) return;
+    const obj = {};
+    for (const [k, v] of countsMap.entries()) obj[k] = v;
+    saveFn(world, obj);
+    if (debugEnabled) debugState.dpSaves++;
+    setDirty(false);
+    setLastSaveTick(nowTick);
+  }
+
+  function loadLevelsState() {
+    loadCountsState(
+      loadInputLevels,
+      transferCounts,
+      (v) => { levelsDirty = v; },
+      (v) => { lastLevelsSaveTick = v; }
+    );
   }
 
   function persistLevelsIfNeeded() {
-    if (!levelsDirty && (nowTick - lastLevelsSaveTick) < 200) return;
-    const obj = {};
-    for (const [k, v] of transferCounts.entries()) obj[k] = v;
-    saveInputLevels(world, obj);
-    if (debugEnabled) debugState.dpSaves++;
-    levelsDirty = false;
-    lastLevelsSaveTick = nowTick;
+    persistCountsIfNeeded(
+      () => levelsDirty,
+      () => lastLevelsSaveTick,
+      (v) => { levelsDirty = v; },
+      (v) => { lastLevelsSaveTick = v; },
+      transferCounts,
+      saveInputLevels
+    );
   }
 
   function loadOutputLevelsState() {
-    try {
-      const raw = loadOutputLevels(world);
-      outputCounts.clear();
-      for (const [k, v] of Object.entries(raw)) {
-        const n = Number(v);
-        if (!Number.isFinite(n) || n < 0) continue;
-        outputCounts.set(k, n | 0);
-      }
-      outputLevelsDirty = false;
-      lastOutputLevelsSaveTick = nowTick;
-    } catch (err) {
-      // If loading fails, just start with empty state
-      outputCounts.clear();
-      outputLevelsDirty = false;
-      lastOutputLevelsSaveTick = nowTick;
-      throw err; // Re-throw so start() can catch it
-    }
+    loadCountsState(
+      loadOutputLevels,
+      outputCounts,
+      (v) => { outputLevelsDirty = v; },
+      (v) => { lastOutputLevelsSaveTick = v; }
+    );
   }
 
   function persistOutputLevelsIfNeeded() {
-    if (!outputLevelsDirty && (nowTick - lastOutputLevelsSaveTick) < 200) return;
-    const obj = {};
-    for (const [k, v] of outputCounts.entries()) obj[k] = v;
-    saveOutputLevels(world, obj);
-    if (debugEnabled) debugState.dpSaves++;
-    outputLevelsDirty = false;
-    lastOutputLevelsSaveTick = nowTick;
+    persistCountsIfNeeded(
+      () => outputLevelsDirty,
+      () => lastOutputLevelsSaveTick,
+      (v) => { outputLevelsDirty = v; },
+      (v) => { lastOutputLevelsSaveTick = v; },
+      outputCounts,
+      saveOutputLevels
+    );
   }
 
   function loadPrismLevelsState() {
-    try {
-      const raw = loadPrismLevels(world);
-      prismCounts.clear();
-      for (const [k, v] of Object.entries(raw)) {
-        const n = Number(v);
-        if (!Number.isFinite(n) || n < 0) continue;
-        prismCounts.set(k, n | 0);
-      }
-      prismLevelsDirty = false;
-      lastPrismLevelsSaveTick = nowTick;
-    } catch (err) {
-      // If loading fails, just start with empty state
-      prismCounts.clear();
-      prismLevelsDirty = false;
-      lastPrismLevelsSaveTick = nowTick;
-      throw err; // Re-throw so start() can catch it
-    }
+    loadCountsState(
+      loadPrismLevels,
+      prismCounts,
+      (v) => { prismLevelsDirty = v; },
+      (v) => { lastPrismLevelsSaveTick = v; }
+    );
   }
 
   function persistPrismLevelsIfNeeded() {
-    if (!prismLevelsDirty && (nowTick - lastPrismLevelsSaveTick) < 200) return;
-    const obj = {};
-    for (const [k, v] of prismCounts.entries()) obj[k] = v;
-    savePrismLevels(world, obj);
-    if (debugEnabled) debugState.dpSaves++;
-    prismLevelsDirty = false;
-    lastPrismLevelsSaveTick = nowTick;
+    persistCountsIfNeeded(
+      () => prismLevelsDirty,
+      () => lastPrismLevelsSaveTick,
+      (v) => { prismLevelsDirty = v; },
+      (v) => { lastPrismLevelsSaveTick = v; },
+      prismCounts,
+      savePrismLevels
+    );
   }
 
-  function enqueuePendingForContainer(containerKey, itemTypeId, amount, outputKey, reservedTypeId) {
-    if (!containerKey || !itemTypeId || amount <= 0) return;
-    let queue = queueByContainer.get(containerKey);
-    if (!queue) {
-      queue = [];
-      queueByContainer.set(containerKey, queue);
-    }
-    queue.push({ itemTypeId, amount, outputKey, reservedTypeId: reservedTypeId || itemTypeId });
-    const info = cacheManager.resolveContainerInfoCached(containerKey);
-    if (!isFurnaceBlock(info?.block)) fullContainers.add(containerKey);
-  }
-
+  // resolveContainerInfo is now provided by queuesManager
   function resolveContainerInfo(containerKey) {
-    return cacheManager.resolveContainerInfoCached(containerKey);
-  }
-
-  function tickOutputQueues() {
-    let budget = Math.max(0, cfg.maxQueuedInsertsPerTick | 0);
-    if (budget <= 0 || queueByContainer.size === 0) return;
-
-    const keys = Array.from(queueByContainer.keys());
-    while (budget > 0 && keys.length > 0) {
-      if (queueCursor >= keys.length) queueCursor = 0;
-      const containerKey = keys[queueCursor++];
-      const queue = queueByContainer.get(containerKey);
-      if (!queue || queue.length === 0) {
-        queueByContainer.delete(containerKey);
-        fullContainers.delete(containerKey);
-        budget--;
-        continue;
-      }
-
-      const info = resolveContainerInfo(containerKey);
-      if (!info || !info.container) {
-        while (queue.length > 0) {
-          const job = queue.shift();
-          const outInfo = job?.outputKey ? resolveBlockInfo(job.outputKey) : null;
-          if (outInfo?.dim && outInfo?.block) {
-            dropItemAt(outInfo.dim, outInfo.block.location, job.itemTypeId, job.amount);
-          } else if (info?.dim) {
-            dropItemAt(info.dim, info.pos, job.itemTypeId, job.amount);
-          }
-          releaseContainerSlot(containerKey, job.reservedTypeId || job.itemTypeId, job.amount);
-        }
-        queueByContainer.delete(containerKey);
-        fullContainers.delete(containerKey);
-        budget--;
-        continue;
-      }
-
-      const job = queue[0];
-      if (!job) {
-        queue.shift();
-        budget--;
-        continue;
-      }
-
-      if (tryInsertAmountForContainer(info.container, info.block || null, job.itemTypeId, job.amount)) {
-        queue.shift();
-        releaseContainerSlot(containerKey, job.reservedTypeId || job.itemTypeId, job.amount);
-        const outInfo = job.outputKey ? resolveBlockInfo(job.outputKey) : null;
-        if (outInfo?.block && (isPrismBlock(outInfo.block) || outInfo.block.typeId === CRYSTALLIZER_ID)) {
-          // Note output transfer (for crystallizers and legacy output tracking)
-    noteOutputTransfer(job.outputKey, outInfo.block);
-        }
-        if (queue.length === 0) {
-          queueByContainer.delete(containerKey);
-          fullContainers.delete(containerKey);
-        }
-      } else if (!isFurnaceBlock(info.block)) {
-        fullContainers.add(containerKey);
-      }
-      budget--;
-    }
-  }
-
-  function tickFullContainers() {
-    const total = fullContainers.size;
-    if (total === 0) return;
-    let budget = Math.max(0, cfg.maxFullChecksPerTick | 0);
-    if (budget <= 0) return;
-
-    const keys = Array.from(fullContainers);
-    while (budget-- > 0 && keys.length > 0) {
-      if (fullCursor >= keys.length) fullCursor = 0;
-      const containerKey = keys[fullCursor++];
-      if (queueByContainer.has(containerKey)) continue;
-
-      const info = resolveContainerInfo(containerKey);
-      if (!info || !info.container) {
-        fullContainers.delete(containerKey);
-        continue;
-      }
-      const capacity = cacheManager.getContainerCapacityCached(containerKey, info.container);
-      if (capacity > 0) fullContainers.delete(containerKey);
-    }
+    return queuesManager.resolveContainerInfo(containerKey);
   }
 
   function onTick() {
     nowTick++;
+    const tickStart = debugEnabled ? Date.now() : 0;
+    const cacheStart = debugEnabled ? Date.now() : 0;
     cacheManager.updateTick(nowTick);
     cacheManager.resetTickCaches();
+    if (debugEnabled) {
+      debugState.msCache = (debugState.msCache || 0) + (Date.now() - cacheStart);
+    }
     orbFxBudgetUsed.value = 0;
-
-    const tickStart = debugEnabled ? Date.now() : 0;
 
     if (debugEnabled) {
       runTransferPipeline([
         () => {
           const t0 = Date.now();
-          tickOutputQueues();
-          tickFullContainers();
+          queuesManager.tickOutputQueues();
+          queuesManager.tickFullContainers();
           debugState.msQueues += (Date.now() - t0);
         },
         () => {
           const t1 = Date.now();
-          tickInFlight();
+          const result = inflightProcessorManager.tickInFlight(inflight, nowTick);
+          if (result) {
+            inflightDirty = result.inflightDirty || inflightDirty;
+            inflightStepDirty = result.inflightStepDirty || inflightStepDirty;
+          }
           debugState.msInflight += (Date.now() - t1);
         },
         () => {
           const t2 = Date.now();
-          tickFluxFxInFlight();
+          inflightProcessorManager.tickFluxFxInFlight(fluxFxInflight, debugState);
           debugState.msFluxFx += (Date.now() - t2);
         },
       ]);
     } else {
       runTransferPipeline([
-        tickOutputQueues,
-        tickFullContainers,
-        tickInFlight,
-        tickFluxFxInFlight,
+        queuesManager.tickOutputQueues.bind(queuesManager),
+        queuesManager.tickFullContainers.bind(queuesManager),
+        () => {
+          const result = inflightProcessorManager.tickInFlight(inflight, nowTick);
+          if (result) {
+            inflightDirty = result.inflightDirty || inflightDirty;
+            inflightStepDirty = result.inflightStepDirty || inflightStepDirty;
+          }
+        },
+        () => {
+          inflightProcessorManager.tickFluxFxInFlight(fluxFxInflight, debugState);
+        },
       ]);
     }
 
@@ -836,19 +755,14 @@ export function createNetworkTransferController(deps, opts) {
       debugState.msScan += (Date.now() - scanStart);
     }
 
+    const persistStart = debugEnabled ? Date.now() : 0;
+    persistInflightIfNeeded();
+    persistLevelsIfNeeded();
+    persistOutputLevelsIfNeeded();
+    persistPrismLevelsIfNeeded();
     if (debugEnabled) {
-      const t3 = Date.now();
-      persistInflightIfNeeded();
-      persistLevelsIfNeeded();
-      persistOutputLevelsIfNeeded();
-      persistPrismLevelsIfNeeded();
-      debugState.msPersist += (Date.now() - t3);
+      debugState.msPersist += (Date.now() - persistStart);
       debugState.msTotal += (Date.now() - tickStart);
-    } else {
-      persistInflightIfNeeded();
-      persistLevelsIfNeeded();
-      persistOutputLevelsIfNeeded();
-      persistPrismLevelsIfNeeded();
     }
     if (debugEnabled) postDebugStats(prismKeys.length);
   }
@@ -1113,7 +1027,8 @@ export function createNetworkTransferController(deps, opts) {
         const sourceContainerKey = getContainerKey(inventories[itemSource.inventoryIndex].entity || inventories[itemSource.inventoryIndex].block);
         if (sourceContainerKey && targetContainerKey === sourceContainerKey) continue;
 
-        if (fullContainers.has(targetContainerKey)) {
+        const queueState = queuesManager.getState();
+        if (queueState.fullContainers.has(targetContainerKey)) {
           sawFull = true;
           continue;
         }
@@ -1251,129 +1166,6 @@ export function createNetworkTransferController(deps, opts) {
     return { ...makeResult(false, "pull_not_implemented"), searchesUsed };
   }
 
-  function tickInFlight() {
-    if (inflight.length === 0) return;
-
-    for (let i = inflight.length - 1; i >= 0; i--) {
-      const job = inflight[i];
-      job.ticksUntilStep--;
-      if (job.ticksUntilStep > 0) continue;
-
-      const nextIdx = job.stepIndex + 1;
-      if (nextIdx >= job.path.length) {
-        // Track transfer completion time
-        if (debugEnabled && job.startTick != null) {
-          const transferDuration = nowTick - job.startTick;
-          debugState.transferCompleteTicks.push(transferDuration);
-        }
-        finalizeManager.finalizeJob(job);
-        inflight.splice(i, 1);
-        inflightDirty = true;
-        continue;
-      }
-
-      const cur = job.path[job.stepIndex];
-      const next = job.path[nextIdx];
-      const dim = cacheManager.getDimensionCached(job.dimId);
-      if (!dim) continue;
-
-      const curBlock = cacheManager.getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-      const nextBlock = cacheManager.getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
-      if (isPrismBlock(curBlock) && job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
-        refinementManager.applyPrismRefineToFxJob(job, curBlock, debugState, debugEnabled);
-      }
-      if (job.stepIndex < job.path.length - 1) {
-        if (!isPathBlock(curBlock)) {
-          dropItemAt(dim, cur, job.itemTypeId, job.amount);
-          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-          inflight.splice(i, 1);
-          inflightDirty = true;
-          continue;
-        }
-      }
-
-      if (nextIdx < job.path.length - 1) {
-        if (!isPathBlock(nextBlock)) {
-          dropItemAt(dim, cur, job.itemTypeId, job.amount);
-          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-          inflight.splice(i, 1);
-          inflightDirty = true;
-          continue;
-        }
-      }
-
-      if (job.stepIndex < job.path.length - 1) {
-        if (isPrismBlock(curBlock)) {
-          if (levelsManager && typeof levelsManager.notePrismPassage === "function") {
-            levelsManager.notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
-          }
-          refinementManager.applyPrismSpeedBoost(job, curBlock);
-          if (isFluxTypeId(job.itemTypeId)) {
-            refinementManager.applyPrismRefineToJob(job, curBlock, debugState, debugEnabled);
-          }
-        }
-      }
-
-      const segLen = job.segmentLengths?.[job.stepIndex] || 1;
-      const baseTicks = job.stepTicks || cfg.orbStepTicks;
-      const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
-      const totalTicksForSegment = stepTicks * Math.max(1, segLen | 0);
-      
-      // Spawn orb only if we have valid blocks and the path is still valid
-      if (!job.suppressOrb && isPathBlock(curBlock) && (nextIdx >= job.path.length || isPathBlock(nextBlock))) {
-        // FX manager expects: (dim, from, to, level, fromBlock, toBlock, itemTypeId, lengthSteps, logicalTicks, speedScale)
-        const logicalTicks = totalTicksForSegment; // Total ticks for entire segment
-        fxManager.spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0);
-      }
-      
-      job.stepIndex = nextIdx;
-      job.ticksUntilStep = totalTicksForSegment;
-      inflightStepDirty = true;
-    }
-  }
-
-  function tickFluxFxInFlight() {
-    if (fluxFxInflight.length === 0) return;
-    for (let i = fluxFxInflight.length - 1; i >= 0; i--) {
-      const job = fluxFxInflight[i];
-      job.ticksUntilStep--;
-      if (job.ticksUntilStep > 0) continue;
-
-      const nextIdx = job.stepIndex + 1;
-      if (nextIdx >= job.path.length) {
-        finalizeManager.finalizeFluxFxJob(job);
-        fluxFxInflight.splice(i, 1);
-        continue;
-      }
-
-      const dim = cacheManager.getDimensionCached(job.dimId);
-      if (!dim) {
-        fluxFxInflight.splice(i, 1);
-        continue;
-      }
-
-      const cur = job.path[job.stepIndex];
-      const next = job.path[nextIdx];
-      const curBlock = cacheManager.getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-      const nextBlock = cacheManager.getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
-      if (isPrismBlock(curBlock)) {
-        refinementManager.applyPrismSpeedBoost(job, curBlock);
-        if (job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
-          refinementManager.applyPrismRefineToFxJob(job, curBlock, debugState, debugEnabled);
-        }
-      }
-      const segLen = job.segmentLengths?.[job.stepIndex] || 1;
-      const baseTicks = job.stepTicks || cfg.orbStepTicks;
-      const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
-      const totalTicksForSegment = stepTicks * Math.max(1, segLen | 0);
-      if (fxManager.spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, totalTicksForSegment, job.speedScale || 1.0) && debugEnabled) {
-        debugState.fluxFxSpawns++;
-      }
-      job.stepIndex = nextIdx;
-      job.ticksUntilStep = totalTicksForSegment;
-    }
-  }
-
   function postDebugStats(inputCount) {
     if ((nowTick - lastDebugTick) < debugInterval) return;
     lastDebugTick = nowTick;
@@ -1384,7 +1176,8 @@ export function createNetworkTransferController(deps, opts) {
     let queuedEntries = 0;
     let queuedItems = 0;
     let queuedMax = 0;
-    for (const queue of queueByContainer.values()) {
+    const queueState = queuesManager.getState();
+    for (const queue of queueState.queueByContainer.values()) {
       if (!queue) continue;
       queuedContainers++;
       queuedEntries += queue.length;
@@ -1416,6 +1209,9 @@ export function createNetworkTransferController(deps, opts) {
       ` xferTicks=${avgTransferTicks}/${maxTransferTicks}` +
       ` segs=${avgSegments}`;
 
+    // Timing breakdown: show total and per-module times
+    const timingBreakdown = `TIMING: Total=${debugState.msTotal}ms | Cache=${debugState.msCache || 0}ms | Queues=${debugState.msQueues}ms | Inflight=${debugState.msInflight}ms | FluxFX=${debugState.msFluxFx}ms | Scan=${debugState.msScan}ms | Persist=${debugState.msPersist}ms`;
+
     const msg =
       `Chaos Transfer | inputs=${inputCount} scanned=${debugState.inputsScanned} ` +
       `xfer=${debugState.transfersStarted} inflight=${inflight.length} ` +
@@ -1424,11 +1220,11 @@ export function createNetworkTransferController(deps, opts) {
       `mapReloads=${debugState.inputMapReloads} ` +
       `fluxGen=${debugState.fluxGenHits}/${debugState.fluxGenChecks} refine=${debugState.fluxRefined}/${debugState.fluxMutated}/${debugState.fluxRefineCalls} ` +
       `blk=${debugState.blockLookups} cont=${debugState.containerLookups} inv=${debugState.inventoryScans} dp=${debugState.dpSaves} ` +
-      `msQ=${debugState.msQueues} msIn=${debugState.msInflight} msFx=${debugState.msFluxFx} msScan=${debugState.msScan} msSave=${debugState.msPersist} msTot=${debugState.msTotal} ` +
       `qC=${queuedContainers} qE=${queuedEntries} qI=${queuedItems} qMax=${queuedMax} ` +
-      `full=${fullContainers.size} opts=${debugState.outputOptionsTotal}/${debugState.outputOptionsMax}` +
+      `full=${queueState.fullContainers.size} opts=${debugState.outputOptionsTotal}/${debugState.outputOptionsMax} ` +
       timingLabel +
-      bfsLabel;
+      bfsLabel +
+      ` | ${timingBreakdown}`;
 
     for (const player of world.getAllPlayers()) {
       try {

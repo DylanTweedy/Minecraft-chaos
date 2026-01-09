@@ -15,13 +15,23 @@ const TICK_INTERVAL = 10;
 const BUDGET_PER_TICK = 4;
 const RESPAWN_DELAY_TICKS = 40;
 
-const FLUX_VALUE_BY_ID = new Map([
-  [FLUX_IDS[0], 1],
-  [FLUX_IDS[1], 3],
-  [FLUX_IDS[2], 7],
-  [FLUX_IDS[3], 15],
-  [FLUX_IDS[4], 30],
-]);
+// Safely initialize FLUX_VALUE_BY_ID - handle case where FLUX_IDS might not be available
+const FLUX_VALUE_BY_ID = (() => {
+  try {
+    if (typeof FLUX_IDS !== 'undefined' && Array.isArray(FLUX_IDS) && FLUX_IDS.length >= 5) {
+      return new Map([
+        [FLUX_IDS[0], 1],
+        [FLUX_IDS[1], 3],
+        [FLUX_IDS[2], 7],
+        [FLUX_IDS[3], 15],
+        [FLUX_IDS[4], 30],
+      ]);
+    }
+  } catch {
+    // ignore
+  }
+  return new Map();
+})();
 
 const crystalKeys = new Set();
 let crystalList = [];
