@@ -1,10 +1,7 @@
 // scripts/chaos/bootstrap/transferLoop.js
-import {
-  createTransferPathfinder,
-  createNetworkTransferController,
-  getLinksModuleStatus,
-} from "../features/links/transferSystem.js";
+import { createTransferPathfinder } from "../features/links/transfer/pathfinding/pathfinder.js";
 import { getNetworkStamp } from "../features/links/networkStamp.js";
+import { createNetworkTransferController } from "../features/links/transfer/controller.js";
 
 export function startTransferLoop(ctx) {
   const {
@@ -15,7 +12,6 @@ export function startTransferLoop(ctx) {
   } = ctx;
 
   let transferStarted = false;
-  let transferAnnounced = false;
 
   function sendChat(msg) {
     try {
@@ -36,6 +32,7 @@ export function startTransferLoop(ctx) {
     transferStarted = true;
 
     try {
+      // Create pathfinder
       const pathfinder = createTransferPathfinder(
         { world, getNetworkStamp },
         {
@@ -45,44 +42,45 @@ export function startTransferLoop(ctx) {
           maxOutputOptions: 4,
         }
       );
+
+      // Create controller with required dependencies
       const controller = createNetworkTransferController(
         {
           world,
           system,
-          findPathForInput: pathfinder.findPathForInput,
-          invalidateInput: pathfinder.invalidateInput,
-          getPathStats: pathfinder.getAndResetStats,
+          FX,
+          getSpeedForInput: (inputKey) => {
+            // Simple speed function - can be enhanced later
+            return { intervalTicks: 20, amount: 1 };
+          },
+          findPathForInput: (inputKey, nowTick) => {
+            return pathfinder.findPathForInput(inputKey, nowTick);
+          },
+          invalidateInput: (inputKey) => {
+            pathfinder.invalidateInput(inputKey);
+          },
+          getPathStats: () => {
+            return pathfinder.getAndResetStats();
+          },
           getNetworkStamp,
-          FX: FX,
         },
         {
-          maxTransfersPerTick: 4,
-          perInputIntervalTicks: 20,
-          orbStepTicks: 60,
-          maxOrbFxPerTick: 160,
-          debugTransferStats: true,
-          debugTransferStatsIntervalTicks: 100,
-          maxInputsScannedPerTick: 12,
-          maxQueuedInsertsPerTick: 2,
-          maxFullChecksPerTick: 2,
+          cacheTicks: 30,
+          cacheTicksWithStamp: 120,
+          maxVisitedPerSearch: 120,
+          maxOutputOptions: 4,
         }
       );
-      controller.start();
-      const status = (typeof getLinksModuleStatus === "function")
-        ? getLinksModuleStatus()
-        : { loaded: 0, total: 0 };
-      if (!transferAnnounced) {
-        sendChat(`Chaos Transfer: modules loaded ${status.loaded}/${status.total}.`);
-        transferAnnounced = true;
+
+      // Start the controller
+      if (controller && typeof controller.start === "function") {
+        controller.start();
       }
-    } catch {
-      // never break load
-      if (!transferAnnounced) {
-        const status = (typeof getLinksModuleStatus === "function")
-          ? getLinksModuleStatus()
-          : { loaded: 0, total: 0 };
-        sendChat(`Chaos Transfer: modules loaded ${status.loaded}/${status.total} (failed to start).`);
-        transferAnnounced = true;
+    } catch (err) {
+      sendChat(`§cChaos Transfer: Error: ${err?.message || String(err)}`);
+      if (err?.stack) {
+        const stack = err.stack.substring(0, 300);
+        sendChat(`§cStack: ${stack}`);
       }
     }
   }, 1);

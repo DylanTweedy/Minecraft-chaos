@@ -10,6 +10,7 @@ import {
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
   isPrismBlock,
+  getPrismTierFromTypeId,
 } from "./config.js";
 import { mergeCfg } from "./utils.js";
 import {
@@ -55,13 +56,16 @@ import {
   findDropLocation,
   pickWeightedRandomWithBias,
 } from "./pathfinding/path.js";
-import { findOutputRouteFromNode, findCrystallizerRouteFromOutput, findCrystallizerRouteFromPrism } from "./pathfinding/routes.js";
-import { makeDirs, scanEdgeFromNode } from "./pathfinding/graph.js";
+import { findOutputRouteFromNode, findCrystallizerRouteFromPrism } from "./pathfinding/routes.js";
 import { runTransferPipeline } from "./utils.js";
 import { getFilterSetForBlock } from "../filters.js";
+// Fixed import paths: from transfer/controller.js to chaos/ root is 3 levels up, not 4
 import { tryGenerateFluxOnTransfer, tryRefineFluxInTransfer, getFluxTier, isFluxTypeId } from "../../../flux.js";
 import { addFluxForItem, getFluxValueForItem } from "../../../crystallizer.js";
 import { fxFluxGenerate, queueFxParticle } from "../../../fx/fx.js";
+import { createCacheManager } from "./core/cache.js";
+import { createLevelsManager } from "./systems/levels.js";
+import { createFxManager } from "./systems/fx.js";
 
 export function createNetworkTransferController(deps, opts) {
   const world = deps.world;
@@ -138,13 +142,158 @@ export function createNetworkTransferController(deps, opts) {
   };
   let cachedInputKeys = null;
   let cachedInputsStamp = null;
-  let orbFxBudgetUsed = 0;
-  const blockCache = new Map();
-  const containerInfoCache = new Map();
-  const insertCapacityCache = new Map();
-  const totalCapacityCache = new Map();
-  const totalCountCache = new Map();
-  const dimCache = new Map();
+  const orbFxBudgetUsed = { value: 0 };
+
+  // Define getContainerCapacityWithReservations before creating cache manager (it needs this function)
+  function getContainerCapacityWithReservations(containerKey, container, containerBlock) {
+    try {
+      if (!containerKey || !container) return 0;
+      const slots = getFurnaceSlots(container, containerBlock);
+      const size = container.size;
+      let stackRoom = 0;
+      let emptySlots = 0;
+
+      const indices = slots ? [slots.input, slots.fuel] : null;
+      const loopCount = indices ? indices.length : size;
+      for (let i = 0; i < loopCount; i++) {
+        const slot = indices ? indices[i] : i;
+        const it = container.getItem(slot);
+        if (!it) {
+          emptySlots++;
+          continue;
+        }
+        const max = it.maxAmount || 64;
+        if (it.amount < max) stackRoom += (max - it.amount);
+      }
+
+      const reservedTotal = getReservedForContainer(containerKey).total;
+      const capacity = stackRoom + (emptySlots * 64);
+      return Math.max(0, capacity - reservedTotal);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  // Create cache manager with required dependencies
+  let cacheManager;
+  try {
+    cacheManager = createCacheManager(
+      {
+        world,
+        getContainerCapacityWithReservations,
+        getTotalCountForType,
+        invalidateInput,
+        debugEnabled,
+        debugState,
+      },
+      cfg
+    );
+    if (!cacheManager) {
+      throw new Error("createCacheManager returned null or undefined");
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] Error creating cacheManager: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+  }
+
+  // Create levelsManager first (without spawnLevelUpBurst - it's optional and will be added later)
+  let levelsManager;
+  try {
+    levelsManager = createLevelsManager(
+      cfg,
+      {
+        prismCounts,
+        transferCounts,
+        outputCounts,
+        prismLevelsDirty: { set: (v) => { prismLevelsDirty = v; } },
+      },
+      {} // spawnLevelUpBurst will be handled via direct call to fxManager
+    );
+    if (!levelsManager) {
+      throw new Error("createLevelsManager returned null - check cfg and state parameters");
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] Error creating levelsManager: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+  }
+
+  // Create FX manager - needs getOrbStepTicks from levels manager
+  let fxManager;
+  try {
+    if (!cacheManager || typeof cacheManager.getDimensionCached !== "function") {
+      throw new Error("cacheManager.getDimensionCached is not a function");
+    }
+    if (!levelsManager || typeof levelsManager.getOrbStepTicks !== "function") {
+      throw new Error("levelsManager.getOrbStepTicks is not a function");
+    }
+    fxManager = createFxManager(cfg, {
+      FX,
+      debugEnabled,
+      debugState,
+      getDimensionCached: cacheManager.getDimensionCached.bind(cacheManager),
+      getOrbStepTicks: levelsManager.getOrbStepTicks.bind(levelsManager),
+      orbFxBudgetUsed: orbFxBudgetUsed,
+      fluxFxInflight,
+    });
+    if (!fxManager) {
+      throw new Error("createFxManager returned null - check cfg and deps parameters");
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] Error creating fxManager: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+  }
+
+  // Recreate levelsManager with spawnLevelUpBurst from FX manager
+  // Note: getOrbStepTicks is a pure function (only depends on cfg), so fxManager's bound reference still works
+  try {
+    const spawnLevelUpBurst = (fxManager && typeof fxManager.spawnLevelUpBurst === "function")
+      ? fxManager.spawnLevelUpBurst.bind(fxManager)
+      : (() => {}); // Fallback to no-op if not available
+    levelsManager = createLevelsManager(
+      cfg,
+      {
+        prismCounts,
+        transferCounts,
+        outputCounts,
+        prismLevelsDirty: { set: (v) => { prismLevelsDirty = v; } },
+      },
+      { spawnLevelUpBurst }
+    );
+    if (!levelsManager) {
+      throw new Error("createLevelsManager (recreate) returned null - check cfg and state parameters");
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] Error recreating levelsManager: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+  }
 
   function getBackoffTicks(level) {
     const safeLevel = Math.max(0, level | 0);
@@ -195,110 +344,6 @@ export function createNetworkTransferController(deps, opts) {
     debugState.msTotal = 0;
   }
 
-  function resetTickCaches() {
-    blockCache.clear();
-    containerInfoCache.clear();
-    insertCapacityCache.clear();
-    totalCapacityCache.clear();
-    totalCountCache.clear();
-    dimCache.clear();
-  }
-
-  function getDimensionCached(dimId) {
-    if (!dimId) return null;
-    if (dimCache.has(dimId)) return dimCache.get(dimId);
-    const dim = world.getDimension(dimId);
-    dimCache.set(dimId, dim || null);
-    return dim || null;
-  }
-
-  function resolveBlockInfoCached(blockKey) {
-    try {
-      if (!blockKey) return null;
-      if (blockCache.has(blockKey)) return blockCache.get(blockKey);
-      const pos = parseKey(blockKey);
-      if (!pos) {
-        blockCache.set(blockKey, null);
-        return null;
-      }
-      const dim = getDimensionCached(pos.dimId);
-      if (!dim) {
-        blockCache.set(blockKey, null);
-        return null;
-      }
-      const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
-      if (!block) {
-        blockCache.set(blockKey, null);
-        return null;
-      }
-      const info = { dim, block, pos };
-      blockCache.set(blockKey, info);
-      if (debugEnabled) debugState.blockLookups++;
-      return info;
-    } catch {
-      return null;
-    }
-  }
-
-  function getBlockCached(dimId, pos) {
-    try {
-      if (!dimId || !pos) return null;
-      const blockKey = key(dimId, pos.x, pos.y, pos.z);
-      const info = resolveBlockInfoCached(blockKey);
-      return info?.block || null;
-    } catch {
-      return null;
-    }
-  }
-
-  function resolveContainerInfoCached(containerKey) {
-    if (!containerKey) return null;
-    if (containerInfoCache.has(containerKey)) return containerInfoCache.get(containerKey);
-    const info = resolveBlockInfoCached(containerKey);
-    if (!info || !info.block) {
-      containerInfoCache.set(containerKey, null);
-      return null;
-    }
-    const container = getInventoryContainer(info.block);
-    if (!container) {
-      containerInfoCache.set(containerKey, null);
-      return null;
-    }
-    const result = { dim: info.dim, block: info.block, container, pos: info.pos };
-    containerInfoCache.set(containerKey, result);
-    if (debugEnabled) debugState.containerLookups++;
-    return result;
-  }
-
-  function getTotalCountForTypeCached(containerKey, container, typeId) {
-    const keyId = `${containerKey}|${typeId}`;
-    if (totalCountCache.has(keyId)) return totalCountCache.get(keyId);
-    if (debugEnabled) debugState.inventoryScans++;
-    const total = getTotalCountForType(container, typeId);
-    totalCountCache.set(keyId, total);
-    return total;
-  }
-
-  function getInsertCapacityCached(containerKey, container, typeId, stack) {
-    const maxStack = Math.max(1, stack?.maxAmount || 64);
-    const keyId = `${containerKey}|${typeId}|${maxStack}`;
-    if (insertCapacityCache.has(keyId)) return insertCapacityCache.get(keyId);
-    if (debugEnabled) debugState.inventoryScans++;
-    const info = resolveContainerInfoCached(containerKey);
-    const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack, info?.block);
-    insertCapacityCache.set(keyId, capacity);
-    return capacity;
-  }
-
-  function getContainerCapacityCached(containerKey, container) {
-    if (totalCapacityCache.has(containerKey)) return totalCapacityCache.get(containerKey);
-    if (debugEnabled) debugState.inventoryScans++;
-    const info = resolveContainerInfoCached(containerKey);
-    const capacity = getContainerCapacityWithReservations(containerKey, container, info?.block);
-    totalCapacityCache.set(containerKey, capacity);
-    return capacity;
-  }
-
   function getSpeed(block) {
     try {
       if (typeof getSpeedForInput === "function") {
@@ -306,7 +351,15 @@ export function createNetworkTransferController(deps, opts) {
         if (s && typeof s === "object") return s;
       }
     } catch (_) {}
-    const level = (block?.permutation?.getState("chaos:level") | 0) || 1;
+    // Prisms now use tier block IDs, not state
+    let level = 1;
+    if (block) {
+      if (isPrismBlock(block)) {
+        level = getPrismTierFromTypeId(block);
+      } else {
+        level = (block?.permutation?.getState("chaos:level") | 0) || 1;
+      }
+    }
     const scale = Math.pow(2, Math.max(0, level - 1));
     const interval = Math.max(1, Math.floor(cfg.perInputIntervalTicks / scale));
     return { intervalTicks: interval, amount: 1 };
@@ -314,11 +367,77 @@ export function createNetworkTransferController(deps, opts) {
 
   function start() {
     if (tickId !== null) return;
-    loadInflightState();
-    loadLevelsState();
-    loadOutputLevelsState();
-    loadPrismLevelsState();
-    tickId = system.runInterval(onTick, 1);
+    if (!levelsManager) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (typeof player.sendMessage === "function") {
+            player.sendMessage("§c[Chaos Transfer] ERROR: Cannot start - levelsManager is null!");
+          }
+        }
+      } catch {}
+      return; // Don't start if levelsManager is null
+    }
+    try {
+      loadInflightState();
+    } catch (err) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[Chaos Transfer] Error loading inflight state: ${err?.message || String(err)}`);
+          }
+        }
+      } catch {}
+    }
+    try {
+      loadLevelsState();
+    } catch (err) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[Chaos Transfer] Error loading levels state: ${err?.message || String(err)}`);
+          }
+        }
+      } catch {}
+    }
+    try {
+      loadOutputLevelsState();
+    } catch (err) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[Chaos Transfer] Error loading output levels state: ${err?.message || String(err)}`);
+          }
+        }
+      } catch {}
+    }
+    try {
+      loadPrismLevelsState();
+    } catch (err) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[Chaos Transfer] Error loading prism levels state: ${err?.message || String(err)}`);
+          }
+        }
+      } catch {}
+    }
+    try {
+      tickId = system.runInterval(onTick, 1);
+    } catch (err) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[Chaos Transfer] Error starting tick interval: ${err?.message || String(err)}`);
+          }
+        }
+      } catch {}
+    }
   }
 
   function stop() {
@@ -328,10 +447,18 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function loadInflightState() {
-    loadInflightStateFromWorld(world, inflight, cfg);
-    rebuildReservationsFromInflight();
-    inflightDirty = false;
-    lastSaveTick = nowTick;
+    try {
+      loadInflightStateFromWorld(world, inflight, cfg);
+      rebuildReservationsFromInflight();
+      inflightDirty = false;
+      lastSaveTick = nowTick;
+    } catch (err) {
+      // If loading fails, just start with empty state
+      inflight.length = 0;
+      inflightDirty = false;
+      lastSaveTick = nowTick;
+      throw err; // Re-throw so start() can catch it
+    }
   }
 
   function persistInflightIfNeeded() {
@@ -354,15 +481,23 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function loadLevelsState() {
-    const raw = loadInputLevels(world);
-    transferCounts.clear();
-    for (const [k, v] of Object.entries(raw)) {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0) continue;
-      transferCounts.set(k, n | 0);
+    try {
+      const raw = loadInputLevels(world);
+      transferCounts.clear();
+      for (const [k, v] of Object.entries(raw)) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) continue;
+        transferCounts.set(k, n | 0);
+      }
+      levelsDirty = false;
+      lastLevelsSaveTick = nowTick;
+    } catch (err) {
+      // If loading fails, just start with empty state
+      transferCounts.clear();
+      levelsDirty = false;
+      lastLevelsSaveTick = nowTick;
+      throw err; // Re-throw so start() can catch it
     }
-    levelsDirty = false;
-    lastLevelsSaveTick = nowTick;
   }
 
   function persistLevelsIfNeeded() {
@@ -376,15 +511,23 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function loadOutputLevelsState() {
-    const raw = loadOutputLevels(world);
-    outputCounts.clear();
-    for (const [k, v] of Object.entries(raw)) {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0) continue;
-      outputCounts.set(k, n | 0);
+    try {
+      const raw = loadOutputLevels(world);
+      outputCounts.clear();
+      for (const [k, v] of Object.entries(raw)) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) continue;
+        outputCounts.set(k, n | 0);
+      }
+      outputLevelsDirty = false;
+      lastOutputLevelsSaveTick = nowTick;
+    } catch (err) {
+      // If loading fails, just start with empty state
+      outputCounts.clear();
+      outputLevelsDirty = false;
+      lastOutputLevelsSaveTick = nowTick;
+      throw err; // Re-throw so start() can catch it
     }
-    outputLevelsDirty = false;
-    lastOutputLevelsSaveTick = nowTick;
   }
 
   function persistOutputLevelsIfNeeded() {
@@ -398,15 +541,23 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function loadPrismLevelsState() {
-    const raw = loadPrismLevels(world);
-    prismCounts.clear();
-    for (const [k, v] of Object.entries(raw)) {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0) continue;
-      prismCounts.set(k, n | 0);
+    try {
+      const raw = loadPrismLevels(world);
+      prismCounts.clear();
+      for (const [k, v] of Object.entries(raw)) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) continue;
+        prismCounts.set(k, n | 0);
+      }
+      prismLevelsDirty = false;
+      lastPrismLevelsSaveTick = nowTick;
+    } catch (err) {
+      // If loading fails, just start with empty state
+      prismCounts.clear();
+      prismLevelsDirty = false;
+      lastPrismLevelsSaveTick = nowTick;
+      throw err; // Re-throw so start() can catch it
     }
-    prismLevelsDirty = false;
-    lastPrismLevelsSaveTick = nowTick;
   }
 
   function persistPrismLevelsIfNeeded() {
@@ -427,41 +578,12 @@ export function createNetworkTransferController(deps, opts) {
       queueByContainer.set(containerKey, queue);
     }
     queue.push({ itemTypeId, amount, outputKey, reservedTypeId: reservedTypeId || itemTypeId });
-    const info = resolveContainerInfoCached(containerKey);
+    const info = cacheManager.resolveContainerInfoCached(containerKey);
     if (!isFurnaceBlock(info?.block)) fullContainers.add(containerKey);
   }
 
   function resolveContainerInfo(containerKey) {
-    return resolveContainerInfoCached(containerKey);
-  }
-
-  function getContainerCapacityWithReservations(containerKey, container, containerBlock) {
-    try {
-      if (!containerKey || !container) return 0;
-      const slots = getFurnaceSlots(container, containerBlock);
-      const size = container.size;
-      let stackRoom = 0;
-      let emptySlots = 0;
-
-      const indices = slots ? [slots.input, slots.fuel] : null;
-      const loopCount = indices ? indices.length : size;
-      for (let i = 0; i < loopCount; i++) {
-        const slot = indices ? indices[i] : i;
-        const it = container.getItem(slot);
-        if (!it) {
-          emptySlots++;
-          continue;
-        }
-        const max = it.maxAmount || 64;
-        if (it.amount < max) stackRoom += (max - it.amount);
-      }
-
-      const reservedTotal = getReservedForContainer(containerKey).total;
-      const capacity = stackRoom + (emptySlots * 64);
-      return Math.max(0, capacity - reservedTotal);
-    } catch (_) {
-      return 0;
-    }
+    return cacheManager.resolveContainerInfoCached(containerKey);
   }
 
   function tickOutputQueues() {
@@ -510,7 +632,8 @@ export function createNetworkTransferController(deps, opts) {
         releaseContainerSlot(containerKey, job.reservedTypeId || job.itemTypeId, job.amount);
         const outInfo = job.outputKey ? resolveBlockInfo(job.outputKey) : null;
         if (outInfo?.block && (isPrismBlock(outInfo.block) || outInfo.block.typeId === CRYSTALLIZER_ID)) {
-          noteOutputTransfer(job.outputKey, outInfo.block);
+          // Note output transfer (for crystallizers and legacy output tracking)
+    noteOutputTransfer(job.outputKey, outInfo.block);
         }
         if (queue.length === 0) {
           queueByContainer.delete(containerKey);
@@ -540,15 +663,16 @@ export function createNetworkTransferController(deps, opts) {
         fullContainers.delete(containerKey);
         continue;
       }
-      const capacity = getContainerCapacityCached(containerKey, info.container);
+      const capacity = cacheManager.getContainerCapacityCached(containerKey, info.container);
       if (capacity > 0) fullContainers.delete(containerKey);
     }
   }
 
   function onTick() {
     nowTick++;
-    resetTickCaches();
-    orbFxBudgetUsed = 0;
+    cacheManager.updateTick(nowTick);
+    cacheManager.resetTickCaches();
+    orbFxBudgetUsed.value = 0;
 
     const tickStart = debugEnabled ? Date.now() : 0;
 
@@ -666,7 +790,7 @@ export function createNetworkTransferController(deps, opts) {
         const allKeys = Object.keys(map || {});
         const prismKeys = [];
         for (const k of allKeys) {
-          const info = resolveBlockInfoCached(k);
+          const info = cacheManager.resolveBlockInfoCached(k);
           if (info && info.block && isPrismBlock(info.block)) {
             prismKeys.push(k);
           }
@@ -683,7 +807,7 @@ export function createNetworkTransferController(deps, opts) {
     const allKeys = Object.keys(map || {});
     const prismKeys = [];
     for (const k of allKeys) {
-      const info = resolveBlockInfoCached(k);
+      const info = cacheManager.resolveBlockInfoCached(k);
       if (info && info.block && info.block.typeId === PRISM_ID) {
         prismKeys.push(k);
       }
@@ -692,12 +816,9 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   // Legacy function name
-  function getInputKeys() {
-    return getPrismKeys();
-  }
 
   function resolveBlockInfo(inputKey) {
-    return resolveBlockInfoCached(inputKey);
+    return cacheManager.resolveBlockInfoCached(inputKey);
   }
 
   function makeResult(ok, reason) {
@@ -725,7 +846,7 @@ export function createNetworkTransferController(deps, opts) {
     if (!prismBlock || !isPrismBlock(prismBlock)) return { ...makeResult(false, "no_prism"), searchesUsed };
 
     // Get all adjacent inventories (multi-inventory support)
-    const inventories = getAllAdjacentInventories(prismBlock, dim);
+    const inventories = cacheManager.getPrismInventoriesCached(prismKey, prismBlock, dim);
     if (!inventories || inventories.length === 0) return { ...makeResult(false, "no_container"), searchesUsed };
 
     // Get filter for this prism (attunement)
@@ -804,7 +925,7 @@ export function createNetworkTransferController(deps, opts) {
 
       // Prisms - check if they have space and matching filter
       if (isPrismBlock(targetInfo.block)) {
-        const targetInventories = getAllAdjacentInventories(targetInfo.block, targetInfo.dim);
+        const targetInventories = cacheManager.getPrismInventoriesCached(opt.outputKey, targetInfo.block, targetInfo.dim);
         if (!targetInventories || targetInventories.length === 0) continue;
 
         const targetFilter = getFilterForBlock(targetInfo.block);
@@ -829,7 +950,10 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     const isFlux = isFluxTypeId(sourceStack.typeId);
-    const previewLevel = getNextInputLevel(prismKey);
+    if (!levelsManager || typeof levelsManager.getNextInputLevel !== "function") {
+      return { ...makeResult(false, "no_levels_manager"), searchesUsed };
+    }
+    const previewLevel = levelsManager.getNextInputLevel(prismKey);
     let pathInfo = null;
     let outInfo = null;
     let outBlock = null;
@@ -875,7 +999,9 @@ export function createNetworkTransferController(deps, opts) {
           candidates.splice(candidates.indexOf(pick), 1);
           continue;
         }
-        const desiredAmount = getTransferAmount(previewLevel, sourceStack);
+        const desiredAmount = (levelsManager && typeof levelsManager.getTransferAmount === "function")
+          ? levelsManager.getTransferAmount(previewLevel, sourceStack)
+          : 1;
         const amount = Math.min(desiredAmount, available);
         if (amount <= 0) {
           candidates.splice(candidates.indexOf(pick), 1);
@@ -896,8 +1022,8 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      // Get target prism's inventories
-      const targetInventories = getAllAdjacentInventories(info.block, info.dim);
+      // Get target prism's inventories (use cached version)
+      const targetInventories = cacheManager.getPrismInventoriesCached(pick.outputKey, info.block, info.dim);
       if (!targetInventories || targetInventories.length === 0) {
         candidates.splice(candidates.indexOf(pick), 1);
         continue;
@@ -920,7 +1046,9 @@ export function createNetworkTransferController(deps, opts) {
         }
 
         // Try to insert
-        const desiredAmount = getTransferAmount(previewLevel, sourceStack);
+        const desiredAmount = (levelsManager && typeof levelsManager.getTransferAmount === "function")
+          ? levelsManager.getTransferAmount(previewLevel, sourceStack)
+          : 1;
         const inserted = tryInsertIntoInventories([targetInv], sourceStack.typeId, desiredAmount, null); // No filter check here - already filtered above
         if (inserted) {
           pathInfo = pick;
@@ -976,14 +1104,21 @@ export function createNetworkTransferController(deps, opts) {
     const suppressOrb = (outputType === "crystal" && isFluxTypeId(sourceStack.typeId));
     const firstStep = pathInfo.path[0];
     const prismPos = prismInfo.pos;
-    const firstBlock = getBlockCached(prismPos.dimId, firstStep) || dim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
+    const firstBlock = cacheManager.getBlockCached(prismPos.dimId, firstStep) || dim.getBlock({ x: firstStep.x, y: firstStep.y, z: firstStep.z });
     const nodePath = buildNodePathSegments(dim, pathInfo.path, prismPos);
     const travelPath = nodePath?.points || pathInfo.path;
     const segmentLengths = nodePath?.lengths || null;
 
     const pathPrismKey = findFirstPrismKeyInPath(dim, prismPos.dimId, pathInfo.path);
-    const level = noteTransferAndGetLevel(prismKey, prismBlock);
-    const baseStepTicks = getOrbStepTicks(level);
+    // Note that this prism started a transfer (counts toward prism leveling)
+    if (levelsManager && typeof levelsManager.notePrismPassage === "function") {
+      levelsManager.notePrismPassage(prismKey, prismBlock);
+    }
+    // Get level from prism block for orb step ticks (prisms now use tier block IDs, not state)
+    const prismTier = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock) : 1;
+    const baseStepTicks = (levelsManager && typeof levelsManager.getOrbStepTicks === "function")
+      ? levelsManager.getOrbStepTicks(prismTier)
+      : cfg.orbStepTicks;
     
     if (debugEnabled) {
       debugState.transferStartTicks.push(nowTick);
@@ -1011,7 +1146,7 @@ export function createNetworkTransferController(deps, opts) {
       containerKey: containerKey,
       prismKey: pathPrismKey,
       startPos: { x: prismPos.x, y: prismPos.y, z: prismPos.z },
-      level: level,
+      level: previewLevel,
       segmentLengths: segmentLengths,
       ticksUntilStep: 0,
       startTick: debugEnabled ? nowTick : null,
@@ -1029,6 +1164,9 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   // Pull transfer: request filtered items from network
+  // TODO: Implement pull-based transfer system for filtered item requests
+  // This will require scanning the network for items matching the filter whitelist
+  // and routing them to requesting prisms. Currently push-only transfers are used.
   function attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget) {
     let searchesUsed = 0;
     if (searchBudget <= 0) return { ...makeResult(false, "no_search_budget"), searchesUsed };
@@ -1063,11 +1201,11 @@ export function createNetworkTransferController(deps, opts) {
 
       const cur = job.path[job.stepIndex];
       const next = job.path[nextIdx];
-      const dim = getDimensionCached(job.dimId);
+      const dim = cacheManager.getDimensionCached(job.dimId);
       if (!dim) continue;
 
-      const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-      const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
+      const curBlock = cacheManager.getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+      const nextBlock = cacheManager.getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
       if (isPrismBlock(curBlock) && job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
         applyPrismRefineToFxJob(job, curBlock);
       }
@@ -1093,7 +1231,9 @@ export function createNetworkTransferController(deps, opts) {
 
       if (job.stepIndex < job.path.length - 1) {
         if (isPrismBlock(curBlock)) {
-          notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
+          if (levelsManager && typeof levelsManager.notePrismPassage === "function") {
+            levelsManager.notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
+          }
           applyPrismSpeedBoost(job, curBlock);
           if (isFluxTypeId(job.itemTypeId)) {
             applyPrismRefineToJob(job, curBlock);
@@ -1108,7 +1248,9 @@ export function createNetworkTransferController(deps, opts) {
       
       // Spawn orb only if we have valid blocks and the path is still valid
       if (!job.suppressOrb && isPathBlock(curBlock) && (nextIdx >= job.path.length || isPathBlock(nextBlock))) {
-        spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, stepTicks);
+        // FX manager expects: (dim, from, to, level, fromBlock, toBlock, itemTypeId, lengthSteps, logicalTicks, speedScale)
+        const logicalTicks = totalTicksForSegment; // Total ticks for entire segment
+        fxManager.spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, logicalTicks, job.speedScale || 1.0);
       }
       
       job.stepIndex = nextIdx;
@@ -1131,7 +1273,7 @@ export function createNetworkTransferController(deps, opts) {
         continue;
       }
 
-      const dim = getDimensionCached(job.dimId);
+      const dim = cacheManager.getDimensionCached(job.dimId);
       if (!dim) {
         fluxFxInflight.splice(i, 1);
         continue;
@@ -1139,8 +1281,8 @@ export function createNetworkTransferController(deps, opts) {
 
       const cur = job.path[job.stepIndex];
       const next = job.path[nextIdx];
-      const curBlock = getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
-      const nextBlock = getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
+      const curBlock = cacheManager.getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
+      const nextBlock = cacheManager.getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
       if (isPrismBlock(curBlock)) {
         applyPrismSpeedBoost(job, curBlock);
         if (job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
@@ -1150,17 +1292,18 @@ export function createNetworkTransferController(deps, opts) {
       const segLen = job.segmentLengths?.[job.stepIndex] || 1;
       const baseTicks = job.stepTicks || cfg.orbStepTicks;
       const stepTicks = Math.max(1, Math.floor(baseTicks / Math.max(0.1, job.speedScale || 1)));
-      if (spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, stepTicks) && debugEnabled) {
+      const totalTicksForSegment = stepTicks * Math.max(1, segLen | 0);
+      if (fxManager.spawnOrbStep(dim, cur, next, job.level, curBlock, nextBlock, job.itemTypeId, segLen, totalTicksForSegment, job.speedScale || 1.0) && debugEnabled) {
         debugState.fluxFxSpawns++;
       }
       job.stepIndex = nextIdx;
-      job.ticksUntilStep = stepTicks * Math.max(1, segLen | 0);
+      job.ticksUntilStep = totalTicksForSegment;
     }
   }
 
   function finalizeFluxFxJob(job) {
     try {
-      const dim = getDimensionCached(job.dimId);
+      const dim = cacheManager.getDimensionCached(job.dimId);
       if (!dim) return;
 
       if (job.crystalKey) {
@@ -1293,7 +1436,7 @@ export function createNetworkTransferController(deps, opts) {
       if (job.skipCrystalAdd) return;
       const outInfo = resolveBlockInfo(job.outputKey);
       if (!outInfo || !outInfo.block || outInfo.block.typeId !== CRYSTALLIZER_ID) {
-        const dim = getDimensionCached(job.dimId);
+        const dim = cacheManager.getDimensionCached(job.dimId);
         if (dim) {
           const fallback = job.path[job.path.length - 1] || job.startPos;
           if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
@@ -1320,7 +1463,7 @@ export function createNetworkTransferController(deps, opts) {
     }
 
     if (!job.containerKey) {
-      const dim = getDimensionCached(job.dimId);
+      const dim = cacheManager.getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
         if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
@@ -1329,7 +1472,7 @@ export function createNetworkTransferController(deps, opts) {
     }
     const outInfo = resolveBlockInfo(job.outputKey);
     if (!outInfo) {
-      const dim = getDimensionCached(job.dimId);
+      const dim = cacheManager.getDimensionCached(job.dimId);
       if (dim) {
         const fallback = job.path[job.path.length - 1] || job.startPos;
         if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
@@ -1346,10 +1489,10 @@ export function createNetworkTransferController(deps, opts) {
       return;
     }
 
-    // For prisms, use multi-inventory support
+    // For prisms, use multi-inventory support (use cached version)
     let outInventories = null;
     if (isPrismBlock(outBlock)) {
-      outInventories = getAllAdjacentInventories(outBlock, outInfo.dim);
+      outInventories = cacheManager.getPrismInventoriesCached(job.outputKey, outBlock, outInfo.dim);
       if (!outInventories || outInventories.length === 0) {
         dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
         releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
@@ -1413,9 +1556,7 @@ export function createNetworkTransferController(deps, opts) {
         noteOutputTransfer(job.outputKey, outBlock);
       }
       if (debugEnabled) debugState.fluxGenChecks++;
-      const crystalRoute = isPrismBlock(outBlock) 
-        ? findCrystallizerRouteFromPrism(outBlock, job.dimId)
-        : findCrystallizerRouteFromOutput(outBlock, job.dimId);
+      const crystalRoute = findCrystallizerRouteFromPrism(outBlock, job.dimId);
       const fluxGenerated = tryGenerateFluxOnTransfer({
         outputBlock: outBlock,
         destinationInventory: outContainerInfo.container,
@@ -1425,10 +1566,10 @@ export function createNetworkTransferController(deps, opts) {
         getBlockAt: (pos, dim) => {
           if (!pos) return null;
           const dimId = dim?.id || job.dimId;
-          return getBlockCached(dimId, pos);
+          return cacheManager.getBlockCached(dimId, pos);
         },
-        scheduleFluxTransferFx: enqueueFluxTransferFx,
-        scheduleFluxTransferFxPositions: enqueueFluxTransferFxPositions,
+        scheduleFluxTransferFx: fxManager.enqueueFluxTransferFx.bind(fxManager),
+        scheduleFluxTransferFxPositions: fxManager.enqueueFluxTransferFxPositions.bind(fxManager),
         getContainerKey,
         transferLevel: job.level,
         transferStepTicks: job.stepTicks || cfg.orbStepTicks,
@@ -1438,8 +1579,8 @@ export function createNetworkTransferController(deps, opts) {
       });
       if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
       if (fluxGenerated > 0 && crystalRoute) {
-        if (typeof enqueueFluxTransferFxPositions === "function") {
-          enqueueFluxTransferFxPositions(
+        if (typeof fxManager.enqueueFluxTransferFxPositions === "function") {
+          fxManager.enqueueFluxTransferFxPositions(
             crystalRoute.path,
             crystalRoute.outputIndex,
             crystalRoute.targetIndex,
@@ -1467,7 +1608,7 @@ export function createNetworkTransferController(deps, opts) {
       const prisms = [];
       for (const p of path) {
         if (!p) continue;
-        const b = getBlockCached(dimId, p);
+        const b = cacheManager.getBlockCached(dimId, p);
         if (isPrismBlock(b)) prisms.push(b);
       }
       return prisms;
@@ -1574,7 +1715,7 @@ export function createNetworkTransferController(deps, opts) {
   function sendExoticsToOutput(prismBlock, job, exotics) {
     try {
       if (!prismBlock || !job || !Array.isArray(exotics) || exotics.length === 0) return;
-      const route = findOutputRouteFromNode(prismBlock, job.dimId);
+      const route = findOutputRouteFromNode(prismBlock, job.dimId, cacheManager.getPrismInventoriesCached.bind(cacheManager));
       if (!route) {
         for (const entry of exotics) {
           dropItemAt(prismBlock.dimension, prismBlock.location, entry.typeId, entry.amount);
@@ -1589,8 +1730,8 @@ export function createNetworkTransferController(deps, opts) {
 
       for (const entry of exotics) {
         let scheduled = false;
-        if (containerKey && typeof enqueueFluxTransferFxPositions === "function") {
-          enqueueFluxTransferFxPositions(
+        if (containerKey && typeof fxManager.enqueueFluxTransferFxPositions === "function") {
+          fxManager.enqueueFluxTransferFxPositions(
             route.path,
             route.startIndex,
             route.endIndex,
@@ -1620,461 +1761,62 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
-  function findOutputRouteFromNode(startBlock, dimId) {
-    try {
-      if (!startBlock || !dimId) return null;
-      const dim = startBlock.dimension;
-      if (!dim) return null;
-      const startPos = startBlock.location;
-      const startKey = key(dimId, startPos.x, startPos.y, startPos.z);
-
-      const queue = [];
-      let qIndex = 0;
-      const visited = new Set();
-      const parent = new Map();
-      queue.push({ nodePos: { x: startPos.x, y: startPos.y, z: startPos.z }, nodeType: "prism", key: startKey });
-      visited.add(startKey);
-
-      while (qIndex < queue.length && visited.size < CRYSTAL_ROUTE_MAX_NODES) {
-        const cur = queue[qIndex++];
-        const dirs = makeDirs();
-        for (const d of dirs) {
-          const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
-          if (!edge) continue;
-          const nextKey = key(dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
-          if (visited.has(nextKey)) continue;
-          visited.add(nextKey);
-          parent.set(nextKey, {
-            prevKey: cur.key,
-            edgePath: edge.path,
-            nodePos: { x: edge.nodePos.x, y: edge.nodePos.y, z: edge.nodePos.z },
-            nodeType: edge.nodeType,
-          });
-
-          // Target prisms (or crystallizers)
-          if (edge.nodeType === "prism" || edge.nodeType === "crystal") {
-            const outBlock = dim.getBlock(edge.nodePos);
-            if (!outBlock || (!isPrismBlock(outBlock) && outBlock.typeId !== CRYSTALLIZER_ID)) {
-              continue;
-            }
-            
-            // For prisms, check if they have inventories
-            if (isPrismBlock(outBlock)) {
-              const inventories = getAllAdjacentInventories(outBlock, dim);
-              if (!inventories || inventories.length === 0) {
-                continue;
-              }
-            } else {
-              // Crystallizer - always valid
-            }
-            return buildOutputRoute(startKey, nextKey, parent);
-          }
-
-          queue.push({ nodePos: edge.nodePos, nodeType: edge.nodeType, key: nextKey });
-          if (visited.size >= CRYSTAL_ROUTE_MAX_NODES) break;
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  function buildOutputRoute(startKey, targetKey, parent) {
-    try {
-      const steps = [];
-      let curKey = targetKey;
-      while (curKey && curKey !== startKey) {
-        const info = parent.get(curKey);
-        if (!info) break;
-        steps.push(info);
-        curKey = info.prevKey;
-      }
-      if (curKey !== startKey) return null;
-      steps.reverse();
-
-      const parsedStart = parseKey(startKey);
-      if (!parsedStart) return null;
-      const forward = [{ x: parsedStart.x, y: parsedStart.y, z: parsedStart.z }];
-      for (const step of steps) {
-        if (Array.isArray(step.edgePath) && step.edgePath.length > 0) {
-          for (const p of step.edgePath) forward.push({ x: p.x, y: p.y, z: p.z });
-        }
-        forward.push({ x: step.nodePos.x, y: step.nodePos.y, z: step.nodePos.z });
-      }
-      if (forward.length < 2) return null;
-
-      const reversed = forward.slice().reverse();
-      const outputPos = reversed[0];
-      return {
-        path: reversed,
-        startIndex: reversed.length - 1,
-        endIndex: 0,
-        outputKey: targetKey,
-        outputPos: { x: outputPos.x, y: outputPos.y, z: outputPos.z },
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  // Legacy function - now works with prisms
-  function findCrystallizerRouteFromOutput(prismBlock, dimId) {
-    return findCrystallizerRouteFromPrism(prismBlock, dimId);
-  }
-
-  function noteTransferAndGetLevel(inputKey, block) {
-    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
-    const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
-    const stored = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
-    const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
-    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
-    const next = current + 1;
-    transferCounts.set(inputKey, next);
-    levelsDirty = true;
-    const level = getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
-    updateBlockLevel(block, level);
-    return level;
-  }
-
-  function getNextInputLevel(inputKey) {
-    const current = transferCounts.has(inputKey) ? transferCounts.get(inputKey) : 0;
-    return getLevelForCount(current + 1, cfg.levelStep, cfg.maxLevel);
-  }
-
-  function getLevelForCount(count, step, maxLevel) {
-    const base = Math.max(1, step | 0);
-    const cap = Math.max(1, maxLevel | 0);
-    let needed = base;
-    let total = 0;
-    const c = Math.max(0, count | 0);
-    for (let lvl = 1; lvl <= cap; lvl++) {
-      total += needed;
-      if (c < total) return lvl;
-      needed *= 2;
-    }
-    return cap;
-  }
-
-  function getMinCountForLevel(level, step) {
-    const base = Math.max(1, step | 0);
-    const lvl = Math.max(1, level | 0);
-    let needed = base;
-    let total = 0;
-    for (let i = 1; i < lvl; i++) {
-      total += needed;
-      needed *= 2;
-    }
-    return total;
-  }
-
-  function getTransferAmount(level, stack) {
-    const maxItems = Math.max(1, cfg.maxItemsPerOrb | 0);
-    const lvl = Math.max(1, level | 0);
-    const maxStack = Math.max(1, stack?.maxAmount || 64);
-    const cap = Math.min(maxItems, maxStack);
-    if (lvl <= 1) return 1;
-    const steps = Math.max(0, (cfg.maxLevel | 0) - lvl);
-    const desired = Math.floor(cap / Math.pow(2, steps));
-    return Math.max(1, Math.min(cap, desired));
-  }
-
-  function getOrbStepTicks(level) {
-    const safeLevel = Math.max(1, level | 0);
-    const base = Math.max(1, cfg.orbStepTicks | 0);
-    const minTicks = Math.max(1, cfg.minOrbStepTicks | 0);
-    const scale = Math.pow(2, Math.max(0, safeLevel - 1));
-    return Math.max(minTicks, Math.floor(base / scale));
-  }
-
-  function updateBlockLevel(block, level) {
-    try {
-      // Update level for prisms (was for extractors, now unified)
-      if (!block || !isPrismBlock(block)) return;
-      const perm = block.permutation;
-      if (!perm) return;
-      const current = perm.getState("chaos:level");
-      if ((current | 0) === (level | 0)) return;
-      const next = perm.withState("chaos:level", level | 0);
-      block.setPermutation(next);
-      spawnLevelUpBurst(block);
-    } catch {
-      // ignore
-    }
-  }
-
-  function notePrismPassage(prismKey, block) {
-    const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
-    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
-    const minCount = getMinCountForLevel(blockLevel, prismStep);
-    const stored = prismCounts.has(prismKey) ? prismCounts.get(prismKey) : 0;
-    const storedLevel = getLevelForCount(stored, prismStep, cfg.maxLevel);
-    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
-    const next = current + 1;
-    prismCounts.set(prismKey, next);
-    prismLevelsDirty = true;
-    const level = getLevelForCount(next, prismStep, cfg.maxLevel);
-    updatePrismBlockLevel(block, level);
-  }
-
-  function updatePrismBlockLevel(block, level) {
-    try {
-      if (!block || !isPrismBlock(block)) return;
-      const perm = block.permutation;
-      if (!perm) return;
-      const current = perm.getState("chaos:level");
-      if ((current | 0) === (level | 0)) return;
-      const next = perm.withState("chaos:level", level | 0);
-      block.setPermutation(next);
-      spawnLevelUpBurst(block);
-    } catch {
-      // ignore
-    }
-  }
 
   function noteOutputTransfer(outputKey, block) {
-    const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
-    const minCount = getMinCountForLevel(blockLevel, cfg.levelStep);
-    const stored = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
-    const storedLevel = getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
-    const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
-    const next = current + 1;
-    outputCounts.set(outputKey, next);
-    outputLevelsDirty = true;
-    const level = getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
-    updateOutputBlockLevel(block, level);
+    // Legacy function - outputs now use unified prism system
+    // For prisms, use notePrismPassage instead
+    if (!levelsManager) return; // Guard against null levelsManager
+    if (isPrismBlock(block)) {
+      if (typeof levelsManager.notePrismPassage === "function") {
+        levelsManager.notePrismPassage(outputKey, block);
+      }
+    } else {
+      // Legacy output blocks (if any) - use levels manager functions
+      if (typeof levelsManager.getMinCountForLevel !== "function" || typeof levelsManager.getLevelForCount !== "function") return;
+      const blockLevel = (block?.permutation?.getState("chaos:level") | 0) || 1;
+      const minCount = levelsManager.getMinCountForLevel(blockLevel, cfg.levelStep);
+      const stored = outputCounts.has(outputKey) ? outputCounts.get(outputKey) : 0;
+      const storedLevel = levelsManager.getLevelForCount(stored, cfg.levelStep, cfg.maxLevel);
+      const current = (storedLevel > blockLevel) ? minCount : Math.max(stored, minCount);
+      const next = current + 1;
+      outputCounts.set(outputKey, next);
+      outputLevelsDirty = true;
+      const level = levelsManager.getLevelForCount(next, cfg.levelStep, cfg.maxLevel);
+      try {
+        const perm = block.permutation;
+        if (perm) {
+          const current = perm.getState("chaos:level");
+          if ((current | 0) !== (level | 0)) {
+            block.setPermutation(perm.withState("chaos:level", level));
+            if (fxManager && typeof fxManager.spawnLevelUpBurst === "function") {
+              fxManager.spawnLevelUpBurst(block);
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
-  // Legacy function - prisms are now handled by updatePrismBlockLevel
-  function updateOutputBlockLevel(block, level) {
-    // This is now handled by updatePrismBlockLevel for unified prisms
-    return updatePrismBlockLevel(block, level);
-  }
 
   function rebuildReservationsFromInflight() {
-    clearReservations();
-    for (const job of inflight) {
-      if (!job || !job.containerKey || !job.itemTypeId) continue;
-      const amt = Math.max(1, job.amount | 0);
-      reserveContainerSlot(job.containerKey, job.itemTypeId, amt);
-    }
-  }
-
-  function spawnOrbStep(dim, from, to, level, fromBlock, toBlock, itemTypeId, lengthSteps, stepTicksOverride) {
     try {
-      if (!FX || !FX.particleTransferItem) return false;
-      let fxId = FX.particleTransferItem;
-      if (itemTypeId && FX?.particleExoticOrbById && FX.particleExoticOrbById[itemTypeId]) {
-        fxId = FX.particleExoticOrbById[itemTypeId] || fxId;
-      } else if (itemTypeId && FX?.particleFluxOrbByTier && Array.isArray(FX.particleFluxOrbByTier)) {
-        const tier = getFluxTier(itemTypeId);
-        if (tier > 0) {
-          const idx = tier - 1;
-          fxId = FX.particleFluxOrbByTier[idx] || fxId;
-        }
+      clearReservations();
+      if (!Array.isArray(inflight)) return; // Guard against invalid inflight
+      for (const job of inflight) {
+        if (!job || !job.containerKey || !job.itemTypeId) continue;
+        const amt = Math.max(1, job.amount | 0);
+        reserveContainerSlot(job.containerKey, job.itemTypeId, amt);
       }
-      const maxOrbFx = Math.max(0, cfg.maxOrbFxPerTick | 0);
-      if (maxOrbFx > 0 && orbFxBudgetUsed >= maxOrbFx) {
-        if (debugEnabled) debugState.orbFxSkipped++;
-        return true;
-      }
-      if (maxOrbFx > 0) orbFxBudgetUsed++;
-      const dir = normalizeDir(from, to);
-      if (!dir) return false;
-
-      const molang = new MolangVariableMap();
-      const steps = Math.max(1, lengthSteps | 0);
-      const stepTicks = Math.max(1, Number(stepTicksOverride) || getOrbStepTicks(level));
-      const lifetime = Math.max(0.05, (stepTicks * steps) / 20);
-      const speed = getOrbVisualSpeed(from, to, dir, level, lifetime);
-      const color = isFluxTypeId(itemTypeId)
-        ? { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
-        : getOrbColor(level);
-      if (typeof molang.setSpeedAndDirection === "function") {
-        molang.setSpeedAndDirection("variable.chaos_move", speed, dir);
-      }
-      molang.setFloat("variable.chaos_move.speed", speed);
-      molang.setFloat("variable.chaos_move.direction_x", dir.x);
-      molang.setFloat("variable.chaos_move.direction_y", dir.y);
-      molang.setFloat("variable.chaos_move.direction_z", dir.z);
-      molang.setFloat("variable.chaos_color_r", color.r);
-      molang.setFloat("variable.chaos_color_g", color.g);
-      molang.setFloat("variable.chaos_color_b", color.b);
-      molang.setFloat("variable.chaos_color_a", color.a);
-      molang.setFloat("variable.chaos_lifetime", lifetime);
-
-      const pos = {
-        x: from.x + 0.5,
-        y: from.y + 0.5,
-        z: from.z + 0.5,
-      };
-      queueFxParticle(dim, fxId, pos, molang);
-      if (debugEnabled) debugState.orbSpawns++;
-      return true;
-    } catch {
-      return false;
+    } catch (err) {
+      // If rebuilding fails, just clear reservations and continue
+      try {
+        clearReservations();
+      } catch {}
     }
   }
 
-  function enqueueFluxTransferFx(pathBlocks, startIndex, endIndex, itemTypeId, level, insertInfo) {
-    try {
-      if (!Array.isArray(pathBlocks) || pathBlocks.length < 2) return;
-      if (fluxFxInflight.length >= Math.max(1, cfg.maxFluxFxInFlight | 0)) return;
-      const s = Math.max(0, startIndex | 0);
-      const e = Math.max(0, endIndex | 0);
-      if (s <= e) return;
-      const dimId = pathBlocks[s]?.dimension?.id;
-      if (!dimId) return;
-
-      const path = [];
-      for (let i = s; i >= e; i--) {
-        const b = pathBlocks[i];
-        if (!b) continue;
-        const loc = b.location;
-        if (!loc) continue;
-        path.push({ x: loc.x, y: loc.y, z: loc.z });
-      }
-      if (path.length < 2) return;
-
-      const lvl = Math.max(1, level | 0);
-      const segments = buildFluxFxSegments(getDimensionCached(dimId), path);
-      if (!segments || segments.points.length < 2) return;
-      fluxFxInflight.push({
-        dimId,
-        itemTypeId,
-        amount: Math.max(1, insertInfo?.amount | 0),
-        containerKey: insertInfo?.containerKey || null,
-        dropPos: insertInfo?.dropPos || null,
-        suppressDrop: !!insertInfo?.suppressDrop,
-        refineOnPrism: !!insertInfo?.refineOnPrism,
-        crystalKey: insertInfo?.crystalKey || null,
-        refinedItems: insertInfo?.refineOnPrism
-          ? [{ typeId: itemTypeId, amount: Math.max(1, insertInfo?.amount | 0) }]
-          : null,
-        path: segments.points,
-        segmentLengths: segments.lengths,
-        stepIndex: 0,
-        stepTicks: (insertInfo?.stepTicks || getOrbStepTicks(lvl)),
-        speedScale: (insertInfo?.speedScale || 1.0),
-        ticksUntilStep: 0,
-        level: lvl,
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  function enqueueFluxTransferFxPositions(pathPositions, startIndex, endIndex, itemTypeId, level, insertInfo) {
-    try {
-      if (!Array.isArray(pathPositions) || pathPositions.length < 2) return;
-      if (fluxFxInflight.length >= Math.max(1, cfg.maxFluxFxInFlight | 0)) return;
-      const s = Math.max(0, startIndex | 0);
-      const e = Math.max(0, endIndex | 0);
-      if (s <= e) return;
-      const dimId = insertInfo?.dimId || pathPositions[s]?.dimId || null;
-      if (!dimId) return;
-
-      const path = [];
-      for (let i = s; i >= e; i--) {
-        const p = pathPositions[i];
-        if (!p) continue;
-        path.push({ x: p.x, y: p.y, z: p.z });
-      }
-      if (path.length < 2) return;
-
-      const lvl = Math.max(1, level | 0);
-      const segments = buildFluxFxSegments(getDimensionCached(dimId), path);
-      if (!segments || segments.points.length < 2) return;
-      fluxFxInflight.push({
-        dimId,
-        itemTypeId,
-        amount: Math.max(1, insertInfo?.amount | 0),
-        containerKey: insertInfo?.containerKey || null,
-        dropPos: insertInfo?.dropPos || null,
-        suppressDrop: !!insertInfo?.suppressDrop,
-        refineOnPrism: !!insertInfo?.refineOnPrism,
-        crystalKey: insertInfo?.crystalKey || null,
-        refinedItems: insertInfo?.refineOnPrism
-          ? [{ typeId: itemTypeId, amount: Math.max(1, insertInfo?.amount | 0) }]
-          : null,
-        path: segments.points,
-        segmentLengths: segments.lengths,
-        stepIndex: 0,
-        stepTicks: (insertInfo?.stepTicks || getOrbStepTicks(lvl)),
-        speedScale: (insertInfo?.speedScale || 1.0),
-        ticksUntilStep: 0,
-        level: lvl,
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  function spawnLevelUpBurst(block) {
-    try {
-      if (!block) return;
-      const dim = block.dimension;
-      const particleId = FX?.particleSuccess || FX?.particleBeamOutputBurst;
-      if (!dim || !particleId) return;
-
-      const count = Math.max(1, cfg.levelUpBurstCount | 0);
-      const radius = Math.max(0, Number(cfg.levelUpBurstRadius) || 0.35);
-      const base = block.location;
-      for (let i = 0; i < count; i++) {
-        const ox = (Math.random() * 2 - 1) * radius;
-        const oy = (Math.random() * 2 - 1) * radius;
-        const oz = (Math.random() * 2 - 1) * radius;
-        queueFxParticle(dim, particleId, {
-          x: base.x + 0.5 + ox,
-          y: base.y + 0.6 + oy,
-          z: base.z + 0.5 + oz,
-        });
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  function normalizeDir(a, b) {
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dz = b.z - a.z;
-    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (!Number.isFinite(len) || len <= 0.0001) return null;
-    return { x: dx / len, y: dy / len, z: dz / len };
-  }
-
-  function getOrbLifetimeSeconds(level) {
-    const stepTicks = Math.max(1, getOrbStepTicks(Math.max(1, level | 0)));
-    const base = stepTicks / 20;
-    const scale = Math.max(0.1, Number(cfg.orbLifetimeScale) || 0.5);
-    return Math.max(0.03, base * scale);
-  }
-
-  function getOrbVisualSpeed(from, to, dir, level, lifetimeSeconds) {
-    // Keep particle motion visually in sync with step cadence.
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const dz = to.z - from.z;
-    const dist = Math.max(0.01, Math.sqrt(dx * dx + dy * dy + dz * dz));
-    const life = Math.max(0.05, Number(lifetimeSeconds) || 0.05);
-    const baseSpeed = dist / life;
-    const minScale = Math.max(0.1, Number(cfg.orbVisualMinSpeedScale) || 0.6);
-    const maxScale = Math.max(minScale, Number(cfg.orbVisualMaxSpeedScale) || 1.0);
-    return Math.max(0.1, baseSpeed * Math.max(minScale, Math.min(maxScale, 1.0)));
-  }
-
-  function getOrbColor(level) {
-    const lvl = Math.min(cfg.maxLevel | 0, Math.max(1, level | 0));
-    const palette = [
-      { r: 0.78, g: 0.8, b: 0.84, a: 1.0 }, // L1 iron
-      { r: 1.0, g: 0.78, b: 0.2, a: 1.0 },  // L2 gold
-      { r: 0.2, g: 0.9, b: 0.9, a: 1.0 },   // L3 diamond
-      { r: 0.2, g: 0.2, b: 0.24, a: 1.0 },  // L4 netherite
-      { r: 0.85, g: 0.65, b: 1.0, a: 1.0 }, // L5 masterwork
-    ];
-    return palette[lvl - 1] || palette[0];
-  }
 
   function dropItemAt(dim, loc, typeId, amount) {
     try {
