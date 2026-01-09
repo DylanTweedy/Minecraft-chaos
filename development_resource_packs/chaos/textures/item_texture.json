@@ -37,6 +37,12 @@
     },
     "deathmark": {
       "textures": "textures/items/deathmark"
+    },
+    "insight_lens": {
+      "textures": "textures/items/insight_lens"
+    },
+    "insight_goggles": {
+      "textures": "textures/items/insight_goggles"
     }
   }
 }

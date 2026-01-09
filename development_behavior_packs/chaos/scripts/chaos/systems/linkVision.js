@@ -6,6 +6,7 @@ import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 import { getCrystalState } from "../crystallizer.js";
+import { hasInsight, hasExtendedDebug } from "../core/debugGroups.js";
 
 const WAND_ID = "chaos:wand";
 const PRISM_ID = "chaos:prism";
@@ -150,6 +151,15 @@ function getTargetBlock(player) {
 }
 
 function showWandStats(player) {
+  // Gate with lens/goggles visibility - basic debug visibility
+  if (!hasInsight(player)) return;
+  
+  // Optional: check for extended debugging for additional detail
+  const hasExtended = hasExtendedDebug(player, "vision") || 
+                      hasExtendedDebug(player, "prism") || 
+                      hasExtendedDebug(player, "transfer");
+  // Extended debugging is optional - basic stats shown with just lens/goggles
+  
   const last = _lastActionBarByPlayer.get(player.id) ?? -9999;
   if ((_tick - last) < ACTIONBAR_TICKS) return;
   _lastActionBarByPlayer.set(player.id, _tick);
@@ -284,6 +294,8 @@ export function startLinkVision() {
     if (FX.debugSpawnBeamParticles && (_tick % 20) === 0) {
       for (const player of world.getAllPlayers()) {
         if (!isHoldingWand(player)) continue;
+        // Gate debug particles with lens/goggles visibility
+        if (!hasInsight(player)) continue;
         const loc = { x: player.location.x, y: player.location.y + 1.2, z: player.location.z };
         const molang = new MolangVariableMap();
         molang.setFloat("variable.chaos_color_r", 0.2);
@@ -327,6 +339,9 @@ export function startLinkVision() {
 
     for (const player of world.getAllPlayers()) {
       if (!isHoldingWand(player)) continue;
+
+      // Gate link vision rendering with lens/goggles visibility
+      if (!hasInsight(player)) continue;
 
       showWandStats(player);
 
