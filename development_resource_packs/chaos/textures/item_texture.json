@@ -35,9 +35,6 @@
     "magic_mirror": {
       "textures": "textures/items/magic_mirror"
     },
-    "magic_mirror_captured": {
-      "textures": "textures/items/magic_mirror_captured"
-    },
     "deathmark": {
       "textures": "textures/items/deathmark"
     }
