@@ -88,13 +88,13 @@ function getPrismTypeIdForTier(tier) {
 
 const DEFAULTS = {
   maxTransfersPerTick: 4, // Budget for item transfers started per tick
-  maxSearchesPerTick: 8, // Budget for pathfinding searches per tick
+  maxSearchesPerTick: 4, // Budget for pathfinding searches per tick (reduced from 8 for performance)
   perPrismIntervalTicks: 10, // Base interval between prism scans
   cacheTicks: 10,
   cacheTicksWithStamp: 60,
-  maxVisitedPerSearch: 200,
+  maxVisitedPerSearch: 120, // Reduced from 200 for performance (matches transferLoop.js)
   orbStepTicks: 20,
-  maxOutputOptions: 6,
+  maxOutputOptions: 4, // Reduced from 6 for performance (matches transferLoop.js)
   levelStep: 2000, // Massively increased for natural progression
   prismLevelStep: 4000, // Massively increased for natural progression
   maxLevel: 5,
@@ -110,7 +110,7 @@ const DEFAULTS = {
   levelUpBurstCount: 8,
   levelUpBurstRadius: 0.35,
   orbLifetimeScale: 0.5,
-  maxPrismsScannedPerTick: 24, // Budget for prisms to scan per tick
+  maxPrismsScannedPerTick: 8, // Budget for prisms to scan per tick (reduced from 24 for performance)
   debugTransferStats: true, // Enable debug timing messages
   debugTransferStatsIntervalTicks: 100,
   backoffBaseTicks: 10, // Base backoff when prism finds nothing
@@ -120,7 +120,7 @@ const DEFAULTS = {
   inflightSaveIntervalTicks: 40,
   // Legacy - kept for compatibility
   perInputIntervalTicks: 10,
-  maxInputsScannedPerTick: 24,
+  maxInputsScannedPerTick: 8, // Reduced to match maxPrismsScannedPerTick
 };
 
 export {

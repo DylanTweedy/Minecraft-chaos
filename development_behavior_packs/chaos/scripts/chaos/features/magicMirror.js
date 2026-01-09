@@ -75,11 +75,38 @@ function playTeleportSound(entity, location) {
   try {
     if (!entity || !location) return;
     
-    // Use format from fx.js: dimension.playSound(soundId, location)
-    // Ender pearl teleport sound: entity.player.teleport
+    // Try multiple sound IDs - ender pearl teleport sounds
+    // Based on research: entity.player.teleport (ender pearl teleport), mob.endermen.portal (enderman teleport)
     const dimension = entity.dimension;
+    
+    // Try dimension.playSound first
     if (dimension && typeof dimension.playSound === "function") {
-      dimension.playSound("entity.player.teleport", location);
+      try {
+        dimension.playSound("mob.endermen.portal", location);
+      } catch {
+        try {
+          dimension.playSound("entity.player.teleport", location);
+        } catch {
+          try {
+            dimension.playSound("random.orb", location);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    
+    // Also try player.playSound as backup (for players)
+    if (entity.typeId === "minecraft:player" && entity.playSound && typeof entity.playSound === "function") {
+      try {
+        entity.playSound("mob.endermen.portal", { location });
+      } catch {
+        try {
+          entity.playSound("entity.player.teleport", { location });
+        } catch {
+          // ignore
+        }
+      }
     }
   } catch {
     // ignore
