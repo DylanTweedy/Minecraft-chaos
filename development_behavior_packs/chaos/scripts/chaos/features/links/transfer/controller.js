@@ -66,6 +66,8 @@ import { fxFluxGenerate, queueFxParticle } from "../../../fx/fx.js";
 import { createCacheManager } from "./core/cache.js";
 import { createLevelsManager } from "./systems/levels.js";
 import { createFxManager } from "./systems/fx.js";
+import { createRefinementManager } from "./systems/refinement.js";
+import { createFinalizeManager } from "./core/finalize.js";
 
 export function createNetworkTransferController(deps, opts) {
   const world = deps.world;
@@ -289,6 +291,77 @@ export function createNetworkTransferController(deps, opts) {
       for (const player of players) {
         if (typeof player.sendMessage === "function") {
           player.sendMessage(`§c[Chaos Transfer] Error recreating levelsManager: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+  }
+
+  // Create refinement manager - needs fxManager and cacheManager
+  let refinementManager;
+  try {
+    if (!cacheManager || typeof cacheManager.getPrismInventoriesCached !== "function") {
+      throw new Error("cacheManager.getPrismInventoriesCached is not a function");
+    }
+    if (!fxManager || typeof fxManager.enqueueFluxTransferFxPositions !== "function") {
+      throw new Error("fxManager.enqueueFluxTransferFxPositions is not a function");
+    }
+    refinementManager = createRefinementManager(cfg, {
+      FX,
+      cacheManager,
+      resolveBlockInfo,
+      dropItemAt,
+      fxManager,
+      enqueuePendingForContainer,
+    });
+    if (!refinementManager) {
+      throw new Error("createRefinementManager returned null - check cfg and deps parameters");
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] Error creating refinementManager: ${err?.message || String(err)}`);
+        }
+      }
+    } catch {}
+    throw err; // Re-throw to bubble up to transferLoop.js catch handler
+  }
+
+  // Create finalize manager - needs fxManager, refinementManager, and other dependencies
+  let finalizeManager;
+  try {
+    if (!cacheManager || typeof cacheManager.getDimensionCached !== "function") {
+      throw new Error("cacheManager.getDimensionCached is not a function");
+    }
+    if (!fxManager || typeof fxManager.enqueueFluxTransferFx !== "function") {
+      throw new Error("fxManager.enqueueFluxTransferFx is not a function");
+    }
+    finalizeManager = createFinalizeManager(cfg, {
+      world,
+      FX,
+      cacheManager,
+      resolveBlockInfo,
+      dropItemAt,
+      getFilterForBlock,
+      enqueuePendingForContainer,
+      fxManager,
+      getContainerKey,
+      debugEnabled,
+      debugState,
+      noteOutputTransfer,
+      resolveContainerInfo,
+    });
+    if (!finalizeManager) {
+      throw new Error("createFinalizeManager returned null - check cfg and deps parameters");
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[Chaos Transfer] Error creating finalizeManager: ${err?.message || String(err)}`);
         }
       }
     } catch {}
@@ -1193,7 +1266,7 @@ export function createNetworkTransferController(deps, opts) {
           const transferDuration = nowTick - job.startTick;
           debugState.transferCompleteTicks.push(transferDuration);
         }
-        finalizeJob(job);
+        finalizeManager.finalizeJob(job);
         inflight.splice(i, 1);
         inflightDirty = true;
         continue;
@@ -1207,7 +1280,7 @@ export function createNetworkTransferController(deps, opts) {
       const curBlock = cacheManager.getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
       const nextBlock = cacheManager.getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
       if (isPrismBlock(curBlock) && job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
-        applyPrismRefineToFxJob(job, curBlock);
+        refinementManager.applyPrismRefineToFxJob(job, curBlock, debugState, debugEnabled);
       }
       if (job.stepIndex < job.path.length - 1) {
         if (!isPathBlock(curBlock)) {
@@ -1234,9 +1307,9 @@ export function createNetworkTransferController(deps, opts) {
           if (levelsManager && typeof levelsManager.notePrismPassage === "function") {
             levelsManager.notePrismPassage(key(job.dimId, cur.x, cur.y, cur.z), curBlock);
           }
-          applyPrismSpeedBoost(job, curBlock);
+          refinementManager.applyPrismSpeedBoost(job, curBlock);
           if (isFluxTypeId(job.itemTypeId)) {
-            applyPrismRefineToJob(job, curBlock);
+            refinementManager.applyPrismRefineToJob(job, curBlock, debugState, debugEnabled);
           }
         }
       }
@@ -1268,7 +1341,7 @@ export function createNetworkTransferController(deps, opts) {
 
       const nextIdx = job.stepIndex + 1;
       if (nextIdx >= job.path.length) {
-        finalizeFluxFxJob(job);
+        finalizeManager.finalizeFluxFxJob(job);
         fluxFxInflight.splice(i, 1);
         continue;
       }
@@ -1284,9 +1357,9 @@ export function createNetworkTransferController(deps, opts) {
       const curBlock = cacheManager.getBlockCached(job.dimId, cur) || dim.getBlock({ x: cur.x, y: cur.y, z: cur.z });
       const nextBlock = cacheManager.getBlockCached(job.dimId, next) || dim.getBlock({ x: next.x, y: next.y, z: next.z });
       if (isPrismBlock(curBlock)) {
-        applyPrismSpeedBoost(job, curBlock);
+        refinementManager.applyPrismSpeedBoost(job, curBlock);
         if (job.refineOnPrism && isFluxTypeId(job.itemTypeId)) {
-          applyPrismRefineToFxJob(job, curBlock);
+          refinementManager.applyPrismRefineToFxJob(job, curBlock, debugState, debugEnabled);
         }
       }
       const segLen = job.segmentLengths?.[job.stepIndex] || 1;
@@ -1298,67 +1371,6 @@ export function createNetworkTransferController(deps, opts) {
       }
       job.stepIndex = nextIdx;
       job.ticksUntilStep = totalTicksForSegment;
-    }
-  }
-
-  function finalizeFluxFxJob(job) {
-    try {
-      const dim = cacheManager.getDimensionCached(job.dimId);
-      if (!dim) return;
-
-      if (job.crystalKey) {
-        if (job.skipCrystalAdd) return;
-        const itemsToConvert = Array.isArray(job.refinedItems) && job.refinedItems.length > 0
-          ? job.refinedItems
-          : [{ typeId: job.itemTypeId, amount: job.amount }];
-        let added = 0;
-        for (const entry of itemsToConvert) {
-          const value = getFluxValueForItem(entry.typeId);
-          if (value > 0) {
-            const gained = addFluxForItem(job.crystalKey, entry.typeId, entry.amount);
-            if (gained > 0) added += gained;
-          } else {
-            dropItemAt(dim, job.dropPos || { x: 0, y: 0, z: 0 }, entry.typeId, entry.amount);
-          }
-        }
-        if (added > 0) {
-          const p = parseKey(job.crystalKey);
-          if (p) {
-            const block = dim.getBlock({ x: p.x, y: p.y, z: p.z });
-            if (block) fxFluxGenerate(block, FX);
-          }
-        }
-        return;
-      }
-
-      if (job.containerKey) {
-        const info = resolveContainerInfo(job.containerKey);
-        const itemsToInsert = Array.isArray(job.refinedItems) && job.refinedItems.length > 0
-          ? job.refinedItems
-          : [{ typeId: job.itemTypeId, amount: job.amount }];
-        if (info?.container) {
-          let allInserted = true;
-          for (const entry of itemsToInsert) {
-            if (!tryInsertAmountForContainer(info.container, info.block || null, entry.typeId, entry.amount)) {
-              allInserted = false;
-              enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, null, entry.typeId);
-            }
-          }
-          if (allInserted) return;
-        } else {
-          for (const entry of itemsToInsert) {
-            enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, null, entry.typeId);
-          }
-        }
-        return;
-      }
-
-      if (job.suppressDrop) return;
-      if (job.dropPos) {
-        dropItemAt(dim, job.dropPos, job.itemTypeId, job.amount);
-      }
-    } catch {
-      // ignore
     }
   }
 
@@ -1430,337 +1442,6 @@ export function createNetworkTransferController(deps, opts) {
 
     resetDebugState();
   }
-
-  function finalizeJob(job) {
-    if (job?.outputType === "crystal") {
-      if (job.skipCrystalAdd) return;
-      const outInfo = resolveBlockInfo(job.outputKey);
-      if (!outInfo || !outInfo.block || outInfo.block.typeId !== CRYSTALLIZER_ID) {
-        const dim = cacheManager.getDimensionCached(job.dimId);
-        if (dim) {
-          const fallback = job.path[job.path.length - 1] || job.startPos;
-          if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
-        }
-        return;
-      }
-
-      const itemsToConvert = Array.isArray(job.refinedItems) && job.refinedItems.length > 0
-        ? job.refinedItems
-        : [{ typeId: job.itemTypeId, amount: job.amount }];
-
-      let added = 0;
-      for (const entry of itemsToConvert) {
-        const value = getFluxValueForItem(entry.typeId);
-        if (value > 0) {
-          const gained = addFluxForItem(job.outputKey, entry.typeId, entry.amount);
-          if (gained > 0) added += gained;
-        } else {
-          dropItemAt(outInfo.dim, outInfo.block.location, entry.typeId, entry.amount);
-        }
-      }
-      if (added > 0) fxFluxGenerate(outInfo.block, FX);
-      return;
-    }
-
-    if (!job.containerKey) {
-      const dim = cacheManager.getDimensionCached(job.dimId);
-      if (dim) {
-        const fallback = job.path[job.path.length - 1] || job.startPos;
-        if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
-      }
-      return;
-    }
-    const outInfo = resolveBlockInfo(job.outputKey);
-    if (!outInfo) {
-      const dim = cacheManager.getDimensionCached(job.dimId);
-      if (dim) {
-        const fallback = job.path[job.path.length - 1] || job.startPos;
-        if (fallback) dropItemAt(dim, fallback, job.itemTypeId, job.amount);
-      }
-      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-      return;
-    }
-
-    const outBlock = outInfo.block;
-    // Target is now a prism (or crystallizer)
-    if (!outBlock || (!isPrismBlock(outBlock) && outBlock.typeId !== CRYSTALLIZER_ID)) {
-      dropItemAt(outInfo.dim, outBlock?.location || outInfo.pos, job.itemTypeId, job.amount);
-      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-      return;
-    }
-
-    // For prisms, use multi-inventory support (use cached version)
-    let outInventories = null;
-    if (isPrismBlock(outBlock)) {
-      outInventories = cacheManager.getPrismInventoriesCached(job.outputKey, outBlock, outInfo.dim);
-      if (!outInventories || outInventories.length === 0) {
-        dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
-        releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-        return;
-      }
-    } else {
-      // Crystallizer - use old method for now
-      const outContainerInfo = getAttachedInventoryInfo(outBlock, outInfo.dim);
-      if (!outContainerInfo || !outContainerInfo.container) {
-        dropItemAt(outInfo.dim, outBlock.location, job.itemTypeId, job.amount);
-        releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-        return;
-      }
-      outInventories = [{ container: outContainerInfo.container, block: outContainerInfo.block, entity: outContainerInfo.entity }];
-    }
-
-    let itemsToInsert = Array.isArray(job.refinedItems) && job.refinedItems.length > 0
-      ? job.refinedItems
-      : [{ typeId: job.itemTypeId, amount: job.amount }];
-    if (!job.refinedItems && job.prismKey) {
-      const prismInfo = resolveBlockInfo(job.prismKey);
-      if (debugEnabled) debugState.fluxRefineCalls++;
-      const refined = tryRefineFluxInTransfer({
-        prismBlock: prismInfo?.block,
-        itemTypeId: job.itemTypeId,
-        amount: job.amount,
-        FX: FX,
-      });
-      if (debugEnabled && refined) {
-        debugState.fluxRefined += Math.max(0, refined.refined | 0);
-        debugState.fluxMutated += Math.max(0, refined.mutated | 0);
-      }
-      if (refined?.items?.length) itemsToInsert = refined.items;
-    }
-
-    let allInserted = true;
-    for (const entry of itemsToInsert) {
-      // Use multi-inventory insert for prisms
-      if (isPrismBlock(outBlock)) {
-        // Get filter for target prism to determine if it wants this item
-        const targetFilter = getFilterForBlock(outBlock);
-        const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
-        if (!tryInsertIntoInventories(outInventories, entry.typeId, entry.amount, targetFilterSet)) {
-          allInserted = false;
-          enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
-        }
-      } else {
-        // Crystallizer - use old method
-        const outContainerInfo = { container: outInventories[0].container, block: outInventories[0].block, entity: outInventories[0].entity };
-        if (!tryInsertAmountForContainer(outContainerInfo.container, outContainerInfo.block || null, entry.typeId, entry.amount)) {
-          allInserted = false;
-          enqueuePendingForContainer(job.containerKey, entry.typeId, entry.amount, job.outputKey, job.itemTypeId);
-        }
-      }
-    }
-
-    if (allInserted) {
-      releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
-      if (isPrismBlock(outBlock)) {
-        // For prisms, note transfer for leveling
-        noteOutputTransfer(job.outputKey, outBlock);
-      }
-      if (debugEnabled) debugState.fluxGenChecks++;
-      const crystalRoute = findCrystallizerRouteFromPrism(outBlock, job.dimId);
-      const fluxGenerated = tryGenerateFluxOnTransfer({
-        outputBlock: outBlock,
-        destinationInventory: outContainerInfo.container,
-        inputBlock: job.startPos ? outInfo.dim.getBlock(job.startPos) : null,
-        path: job.path,
-        getAttachedInventoryInfo,
-        getBlockAt: (pos, dim) => {
-          if (!pos) return null;
-          const dimId = dim?.id || job.dimId;
-          return cacheManager.getBlockCached(dimId, pos);
-        },
-        scheduleFluxTransferFx: fxManager.enqueueFluxTransferFx.bind(fxManager),
-        scheduleFluxTransferFxPositions: fxManager.enqueueFluxTransferFxPositions.bind(fxManager),
-        getContainerKey,
-        transferLevel: job.level,
-        transferStepTicks: job.stepTicks || cfg.orbStepTicks,
-        transferSpeedScale: 1.0,
-        FX: FX,
-        consumeFluxOutput: !!crystalRoute,
-      });
-      if (debugEnabled && fluxGenerated > 0) debugState.fluxGenHits++;
-      if (fluxGenerated > 0 && crystalRoute) {
-        if (typeof fxManager.enqueueFluxTransferFxPositions === "function") {
-          fxManager.enqueueFluxTransferFxPositions(
-            crystalRoute.path,
-            crystalRoute.outputIndex,
-            crystalRoute.targetIndex,
-            "chaos:flux_1",
-            job.level,
-            {
-              amount: fluxGenerated,
-              dimId: job.dimId,
-              suppressDrop: true,
-              refineOnPrism: true,
-              crystalKey: key(job.dimId, crystalRoute.crystalPos.x, crystalRoute.crystalPos.y, crystalRoute.crystalPos.z),
-              stepTicks: job.stepTicks || cfg.orbStepTicks,
-              speedScale: 1.0,
-            }
-          );
-        }
-      }
-      return;
-    }
-  }
-
-  function findPrismsInPath(path, dimId) {
-    try {
-      if (!Array.isArray(path) || path.length === 0) return [];
-      const prisms = [];
-      for (const p of path) {
-        if (!p) continue;
-        const b = cacheManager.getBlockCached(dimId, p);
-        if (isPrismBlock(b)) prisms.push(b);
-      }
-      return prisms;
-    } catch {
-      return [];
-    }
-  }
-
-  function applyPrismRefineChain(items, prismBlocks, speedScale) {
-    let list = Array.isArray(items) ? items.slice() : [];
-    if (!prismBlocks || prismBlocks.length === 0) return list;
-    const scale = Math.max(0.1, Number(speedScale) || 1.0);
-    for (const prismBlock of prismBlocks) {
-      if (!prismBlock) continue;
-      const next = [];
-      for (const entry of list) {
-        if (!entry || !isFluxTypeId(entry.typeId)) {
-          next.push(entry);
-          continue;
-        }
-        if (debugEnabled) debugState.fluxRefineCalls++;
-        const refined = tryRefineFluxInTransfer({
-          prismBlock,
-          itemTypeId: entry.typeId,
-          amount: entry.amount,
-          FX: FX,
-          speedScale: scale,
-        });
-        if (debugEnabled && refined) {
-          debugState.fluxRefined += Math.max(0, refined.refined | 0);
-          debugState.fluxMutated += Math.max(0, refined.mutated | 0);
-        }
-        if (refined?.items?.length) next.push(...refined.items);
-        else next.push(entry);
-      }
-      list = next;
-    }
-    return list;
-  }
-
-  function applyPrismRefineToJob(job, prismBlock) {
-    const items = Array.isArray(job.refinedItems) && job.refinedItems.length > 0
-      ? job.refinedItems
-      : [{ typeId: job.itemTypeId, amount: job.amount }];
-    let refined = applyPrismRefineChain(items, [prismBlock], job.speedScale);
-    if (job.outputType === "crystal") {
-      const exotics = [];
-      const filtered = [];
-      for (const entry of refined) {
-        if (!entry) continue;
-        if (isFluxTypeId(entry.typeId)) {
-          filtered.push(entry);
-        } else {
-          exotics.push(entry);
-        }
-      }
-      if (exotics.length > 0) sendExoticsToOutput(prismBlock, job, exotics);
-      refined = filtered;
-      job.skipCrystalAdd = refined.length === 0;
-    }
-    job.refinedItems = refined;
-    if (refined && refined.length > 0 && refined[0]?.typeId) {
-      job.itemTypeId = refined[0].typeId;
-    }
-  }
-
-  function applyPrismRefineToFxJob(job, prismBlock) {
-    const items = Array.isArray(job.refinedItems) && job.refinedItems.length > 0
-      ? job.refinedItems
-      : [{ typeId: job.itemTypeId, amount: job.amount }];
-    let refined = applyPrismRefineChain(items, [prismBlock], job.speedScale);
-    if (job.crystalKey) {
-      const exotics = [];
-      const filtered = [];
-      for (const entry of refined) {
-        if (!entry) continue;
-        if (isFluxTypeId(entry.typeId)) {
-          filtered.push(entry);
-        } else {
-          exotics.push(entry);
-        }
-      }
-      if (exotics.length > 0) sendExoticsToOutput(prismBlock, job, exotics);
-      refined = filtered;
-      job.skipCrystalAdd = refined.length === 0;
-    }
-    job.refinedItems = refined;
-    if (refined && refined.length > 0 && refined[0]?.typeId) {
-      job.itemTypeId = refined[0].typeId;
-    }
-  }
-
-  function applyPrismSpeedBoost(job, prismBlock) {
-    try {
-      const level = (prismBlock?.permutation?.getState("chaos:level") | 0) || 1;
-      const boost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, level) - 1) * PRISM_SPEED_BOOST_PER_TIER);
-      const current = Math.max(0.1, Number(job.speedScale) || 1.0);
-      job.speedScale = Math.min(SPEED_SCALE_MAX, current * boost);
-    } catch {
-      // ignore
-    }
-  }
-
-  function sendExoticsToOutput(prismBlock, job, exotics) {
-    try {
-      if (!prismBlock || !job || !Array.isArray(exotics) || exotics.length === 0) return;
-      const route = findOutputRouteFromNode(prismBlock, job.dimId, cacheManager.getPrismInventoriesCached.bind(cacheManager));
-      if (!route) {
-        for (const entry of exotics) {
-          dropItemAt(prismBlock.dimension, prismBlock.location, entry.typeId, entry.amount);
-        }
-        return;
-      }
-
-      const outInfo = resolveBlockInfo(route.outputKey);
-      const outBlock = outInfo?.block;
-      const cInfo = outBlock ? getAttachedInventoryInfo(outBlock, outInfo.dim) : null;
-      const containerKey = getContainerKeyFromInfo(cInfo);
-
-      for (const entry of exotics) {
-        let scheduled = false;
-        if (containerKey && typeof fxManager.enqueueFluxTransferFxPositions === "function") {
-          fxManager.enqueueFluxTransferFxPositions(
-            route.path,
-            route.startIndex,
-            route.endIndex,
-            entry.typeId,
-            job.level || 1,
-            {
-              amount: entry.amount,
-              dimId: job.dimId,
-              containerKey,
-              dropPos: outBlock?.location || prismBlock.location,
-            }
-          );
-          scheduled = true;
-        }
-        if (!scheduled) {
-          if (cInfo?.container && containerKey) {
-            if (!tryInsertAmountForContainer(cInfo.container, cInfo.block || null, entry.typeId, entry.amount)) {
-              enqueuePendingForContainer(containerKey, entry.typeId, entry.amount, route.outputKey, entry.typeId);
-            }
-          } else {
-            dropItemAt(prismBlock.dimension, prismBlock.location, entry.typeId, entry.amount);
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
 
   function noteOutputTransfer(outputKey, block) {
     // Legacy function - outputs now use unified prism system
