@@ -10,7 +10,13 @@
       "minecraft:icon": "magic_mirror",
       "minecraft:max_stack_size": 1,
       "minecraft:hand_equipped": true,
-
+      "minecraft:lore": [
+        "Right-click to teleport to spawn.",
+        "Crouch + right-click to teleport",
+        "upward to the nearest safe block.",
+        "Punch entities to teleport them",
+        "to your spawn point."
+      ],
       "chaos:magic_mirror_logic": {}
     }
   }

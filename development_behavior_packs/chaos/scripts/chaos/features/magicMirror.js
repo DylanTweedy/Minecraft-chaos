@@ -141,13 +141,8 @@ export function teleportToSpawn(entity, deps) {
             spawnLocation.y = safeY;
           }
         }
-      } catch (err) {
-        try {
-          const world = deps?.world;
-          if (world) {
-            world.sendMessage(`§c[Debug] getSpawnPoint error: ${err?.message || String(err)}`);
-          }
-        } catch {}
+      } catch {
+        // ignore
       }
     }
     
@@ -190,13 +185,8 @@ export function teleportToSpawn(entity, deps) {
             };
           }
         }
-      } catch (err) {
-        try {
-          const world = deps?.world;
-          if (world) {
-            world.sendMessage(`§c[Debug] Failed to get world spawn: ${err?.message || String(err)}`);
-          }
-        } catch {}
+      } catch {
+        // ignore
       }
     }
 
@@ -223,13 +213,7 @@ export function teleportToSpawn(entity, deps) {
     playTeleportSound(entity, spawnLocation);
 
     return true;
-  } catch (err) {
-    try {
-      const world = deps?.world;
-      if (world) {
-        world.sendMessage(`§c[Chaos Mirror] Teleport error: ${err?.message || String(err)}`);
-      }
-    } catch {}
+  } catch {
     return false;
   }
 }
@@ -315,13 +299,8 @@ export function handleMirrorUse(e, deps) {
     } else {
       teleportToSpawn(player, deps);
     }
-  } catch (err) {
-    try {
-      const world = deps?.world;
-      if (world) {
-        world.sendMessage(`§c[Chaos Mirror] Error in handleMirrorUse: ${err?.message || String(err)}`);
-      }
-    } catch {}
+  } catch {
+    // ignore
   }
 }
 
@@ -357,12 +336,7 @@ export function handleMirrorEntityAttack(e, deps) {
     // Teleport attacked entity to player's spawn point (with world spawn fallback)
     const playerSpawn = player.getSpawnPoint?.();
     teleportToSpawn(attackedEntity, { ...deps, playerSpawnLocation: playerSpawn, world });
-  } catch (err) {
-    try {
-      const world = deps?.world;
-      if (world) {
-        world.sendMessage(`§c[Chaos Mirror] Error in handleMirrorEntityAttack: ${err?.message || String(err)}`);
-      }
-    } catch {}
+  } catch {
+    // ignore
   }
 }

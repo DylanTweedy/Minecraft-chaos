@@ -138,10 +138,11 @@ export function registerMagicMirrorComponent(ctx) {
     // ignore
   }
 
-  // Subscribe to beforeEvents.entityHurt to cancel damage and handle teleport when using mirror
+  // Subscribe to entity hurt event to detect when player attacks entities with mirror
+  // Note: We accept that entities will take damage - cancellation/healing doesn't work reliably in Bedrock
   try {
-    if (world.beforeEvents && typeof world.beforeEvents.entityHurt !== "undefined") {
-      world.beforeEvents.entityHurt.subscribe((e) => {
+    if (world.afterEvents && typeof world.afterEvents.entityHurt !== "undefined") {
+      world.afterEvents.entityHurt.subscribe((e) => {
         try {
           const hurtEntity = e.hurtEntity;
           const damageSource = e.damageSource;
@@ -164,10 +165,7 @@ export function registerMagicMirrorComponent(ctx) {
           const itemId = itemStack.typeId;
           if (itemId !== MIRROR_ID) return;
           
-          // Cancel the damage
-          e.cancel = true;
-          
-          // Handle teleport immediately after canceling
+          // Handle teleport
           const attackEvent = {
             player: player,
             attackedEntity: hurtEntity,
@@ -181,47 +179,6 @@ export function registerMagicMirrorComponent(ctx) {
           // ignore
         }
       });
-    } else {
-      // Fallback to afterEvents if beforeEvents is not available
-      try {
-        if (world.afterEvents && typeof world.afterEvents.entityHurt !== "undefined") {
-          world.afterEvents.entityHurt.subscribe((e) => {
-            try {
-              const hurtEntity = e.hurtEntity;
-              const damageSource = e.damageSource;
-              const attacker = damageSource?.damagingEntity;
-              
-              if (!attacker || attacker.typeId !== "minecraft:player") return;
-              
-              const player = attacker;
-              const inventory = player.getComponent?.("minecraft:inventory");
-              const container = inventory?.container;
-              if (!container) return;
-              
-              const selectedSlot = player.selectedSlotIndex || 0;
-              const itemStack = container.getItem(selectedSlot);
-              if (!itemStack) return;
-              
-              const itemId = itemStack.typeId;
-              if (itemId !== MIRROR_ID) return;
-              
-              const attackEvent = {
-                player: player,
-                attackedEntity: hurtEntity,
-              };
-              
-              handleMirrorEntityAttack(attackEvent, {
-                MIRROR_ID,
-                world,
-              });
-            } catch (err) {
-              // ignore
-            }
-          });
-        }
-      } catch {
-        // ignore
-      }
     }
   } catch {
     // ignore
