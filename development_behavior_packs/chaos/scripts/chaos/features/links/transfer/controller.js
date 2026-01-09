@@ -70,6 +70,7 @@ import { createRefinementManager } from "./systems/refinement.js";
 import { createFinalizeManager } from "./core/finalize.js";
 import { createQueuesManager } from "./core/queues.js";
 import { createInflightProcessorManager } from "./core/inflightProcessor.js";
+import { createVirtualInventoryManager } from "./core/virtualInventory.js";
 
 export function createNetworkTransferController(deps, opts) {
   const world = deps.world;
@@ -174,7 +175,21 @@ export function createNetworkTransferController(deps, opts) {
     } catch {}
   }
 
+  // Create virtual inventory manager first (needed by cache manager for capacity calculations)
+  let virtualInventoryManager;
+  try {
+    virtualInventoryManager = createVirtualInventoryManager(cfg, {
+      getContainerKey,
+    });
+    if (!virtualInventoryManager) {
+      throw new Error("createVirtualInventoryManager returned null - check cfg and deps parameters");
+    }
+  } catch (err) {
+    handleManagerCreationError("virtualInventoryManager", err);
+  }
+
   // Define getContainerCapacityWithReservations before creating cache manager (it needs this function)
+  // This function now uses virtual inventory manager to account for pending items
   function getContainerCapacityWithReservations(containerKey, container, containerBlock) {
     try {
       if (!containerKey || !container) return 0;
@@ -196,9 +211,23 @@ export function createNetworkTransferController(deps, opts) {
         if (it.amount < max) stackRoom += (max - it.amount);
       }
 
-      const reservedTotal = getReservedForContainer(containerKey).total;
-      const capacity = stackRoom + (emptySlots * 64);
-      return Math.max(0, capacity - reservedTotal);
+      const reserved = getReservedForContainer(containerKey);
+      const reservedTotal = reserved.total;
+      const currentCapacity = stackRoom + (emptySlots * 64);
+      const capacityAfterReservations = Math.max(0, currentCapacity - reservedTotal);
+      
+      // Account for virtual inventory (pending items) if manager available
+      if (virtualInventoryManager && typeof virtualInventoryManager.getVirtualCapacity === "function") {
+        return virtualInventoryManager.getVirtualCapacity(
+          containerKey,
+          capacityAfterReservations,
+          reservedTotal,
+          null, // no type-specific, use total
+          reservedTotal
+        );
+      }
+      
+      return capacityAfterReservations;
     } catch (_) {
       return 0;
     }
@@ -215,6 +244,7 @@ export function createNetworkTransferController(deps, opts) {
         invalidateInput,
         debugEnabled,
         debugState,
+        virtualInventoryManager, // Pass virtual inventory manager to cache
       },
       cfg
     );
@@ -656,6 +686,7 @@ export function createNetworkTransferController(deps, opts) {
     }
     orbFxBudgetUsed.value = 0;
 
+    // Process existing queues and in-flight transfers first
     if (debugEnabled) {
       runTransferPipeline([
         () => {
@@ -694,6 +725,14 @@ export function createNetworkTransferController(deps, opts) {
           inflightProcessorManager.tickFluxFxInFlight(fluxFxInflight, debugState);
         },
       ]);
+    }
+
+    // Update virtual inventory state AFTER processing queues/in-flight
+    // This ensures virtual inventory reflects current state (items that just finalized are no longer pending)
+    // Then we can accurately predict future capacity for new transfers
+    if (virtualInventoryManager && typeof virtualInventoryManager.updateState === "function") {
+      const queueState = queuesManager.getState();
+      virtualInventoryManager.updateState(inflight, queueState.queueByContainer);
     }
 
     const scanStart = debugEnabled ? Date.now() : 0;
@@ -1033,10 +1072,21 @@ export function createNetworkTransferController(deps, opts) {
           continue;
         }
 
-        // Try to insert
+        // Calculate desired transfer amount
         const desiredAmount = (levelsManager && typeof levelsManager.getTransferAmount === "function")
           ? levelsManager.getTransferAmount(previewLevel, sourceStack)
           : 1;
+
+        // Check virtual capacity before attempting insertion
+        // This accounts for in-flight items and queued items to prevent overbooking
+        // getInsertCapacityCached already accounts for virtual inventory if manager is active
+        const virtualCapacity = cacheManager.getInsertCapacityCached(targetContainerKey, targetInv.container, sourceStack.typeId, sourceStack);
+        if (virtualCapacity < desiredAmount) {
+          sawFull = true;
+          continue; // Container doesn't have enough virtual capacity (accounting for pending items)
+        }
+
+        // Try to insert
         const inserted = tryInsertIntoInventories([targetInv], sourceStack.typeId, desiredAmount, null); // No filter check here - already filtered above
         if (inserted) {
           pathInfo = pick;

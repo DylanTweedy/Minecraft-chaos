@@ -37,7 +37,7 @@ export function releaseContainerSlot(containerKey, typeId, count) {
   if (entry.total <= 0 && entry.byType.size === 0) reservedByContainer.delete(containerKey);
 }
 
-export function getInsertCapacityWithReservations(containerKey, container, typeId, stack, containerBlock) {
+export function getInsertCapacityWithReservations(containerKey, container, typeId, stack, containerBlock, virtualInventoryManager = null) {
   try {
     const size = container.size;
     const slots = getFurnaceSlots(container, containerBlock);
@@ -48,7 +48,20 @@ export function getInsertCapacityWithReservations(containerKey, container, typeI
       const slotCapacity = getSlotInsertCapacity(container, targetSlot, typeId, maxStack);
       const reserved = getReservedForContainer(containerKey);
       const reservedForType = reserved.byType ? (reserved.byType.get(typeId) || 0) : 0;
-      return Math.max(0, slotCapacity - reservedForType);
+      const currentCapacity = Math.max(0, slotCapacity - reservedForType);
+      
+      // Account for virtual inventory (pending items) if manager provided
+      if (virtualInventoryManager && typeof virtualInventoryManager.getVirtualCapacity === "function") {
+        return virtualInventoryManager.getVirtualCapacity(
+          containerKey,
+          currentCapacity,
+          reservedForType,
+          typeId,
+          reservedForType
+        );
+      }
+      
+      return currentCapacity;
     }
 
     let stackRoom = 0;
@@ -66,9 +79,24 @@ export function getInsertCapacityWithReservations(containerKey, container, typeI
       if (it.amount < max) stackRoom += (max - it.amount);
     }
 
-    const reservedTotal = getReservedForContainer(containerKey).total;
-    const capacity = stackRoom + (emptySlots * maxStack);
-    return Math.max(0, capacity - reservedTotal);
+    const reserved = getReservedForContainer(containerKey);
+    const reservedTotal = reserved.total;
+    const reservedForType = reserved.byType ? (reserved.byType.get(typeId) || 0) : 0;
+    const currentCapacity = stackRoom + (emptySlots * maxStack);
+    const capacityAfterReservations = Math.max(0, currentCapacity - reservedTotal);
+    
+    // Account for virtual inventory (pending items) if manager provided
+    if (virtualInventoryManager && typeof virtualInventoryManager.getVirtualCapacity === "function") {
+      return virtualInventoryManager.getVirtualCapacity(
+        containerKey,
+        capacityAfterReservations,
+        reservedTotal,
+        typeId,
+        reservedForType
+      );
+    }
+    
+    return capacityAfterReservations;
   } catch (_) {
     return 0;
   }

@@ -11,6 +11,7 @@ export function createCacheManager(deps, cfg) {
   const invalidateInput = deps.invalidateInput || null; // Optional callback for pathfinder invalidation
   const debugEnabled = deps.debugEnabled || false;
   const debugState = deps.debugState || null;
+  const virtualInventoryManager = deps.virtualInventoryManager || null; // Virtual inventory manager (optional)
 
   let nowTick = 0;
 
@@ -339,12 +340,23 @@ export function createCacheManager(deps, cfg) {
     const keyId = `${containerKey}|${typeId}|${maxStack}`;
     const cached = insertCapacityCache.get(keyId);
     const timestamp = insertCapacityCacheTimestamps.get(keyId);
+    // Note: Don't cache when virtual inventory manager is active, as pending items change frequently
+    // Cache is only useful for the base capacity, but virtual capacity should be calculated fresh
+    if (virtualInventoryManager) {
+      // Always calculate fresh to account for pending items
+      if (debugEnabled && debugState) debugState.inventoryScans++;
+      const info = resolveContainerInfoCached(containerKey);
+      const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack, info?.block, virtualInventoryManager);
+      return capacity;
+    }
+    
+    // Without virtual inventory manager, use caching
     if (cached !== undefined && timestamp !== undefined && (nowTick - timestamp) < CAPACITY_CACHE_TTL) {
       return cached;
     }
     if (debugEnabled && debugState) debugState.inventoryScans++;
     const info = resolveContainerInfoCached(containerKey);
-    const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack, info?.block);
+    const capacity = getInsertCapacityWithReservations(containerKey, container, typeId, stack, info?.block, null);
     insertCapacityCache.set(keyId, capacity);
     insertCapacityCacheTimestamps.set(keyId, nowTick);
     return capacity;
