@@ -1,5 +1,5 @@
 // scripts/chaos/features/links/beam/events.js
-import { PRISM_ID, CRYSTALLIZER_ID, BEAM_ID, isPassThrough, EMIT_RETRY_TICKS } from "./config.js";
+import { PRISM_IDS, CRYSTALLIZER_ID, BEAM_ID, isPassThrough, EMIT_RETRY_TICKS } from "./config.js";
 import { isPrismBlock } from "../transfer/config.js";
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 import { key, loadBeamsMap, saveBeamsMap } from "./storage.js";
@@ -234,8 +234,8 @@ export function registerBeamEvents(world, system, invalidateCachesFn = null) {
     world.afterEvents.itemUseOn.subscribe((ev) => {
       try {
         const itemId = ev?.itemStack?.typeId;
-        // Handle prism placement via item use
-        if (itemId !== PRISM_ID) return;
+        // Handle prism placement via item use (any tier)
+        if (!itemId || !PRISM_IDS.includes(itemId)) return;
 
         const clicked = ev?.block;
         const face = ev?.blockFace;
@@ -262,8 +262,8 @@ export function registerBeamEvents(world, system, invalidateCachesFn = null) {
       const loc = ev.block?.location;
       if (!dim || !loc) return;
 
-      // Clean up prism entry on break
-      if (brokenId === PRISM_ID) {
+      // Clean up prism entry on break (any tier)
+      if (brokenId && PRISM_IDS.includes(brokenId)) {
         const prismKey = key(dim.id, loc.x, loc.y, loc.z);
         const map = loadBeamsMap(world);
         if (map[prismKey]) {

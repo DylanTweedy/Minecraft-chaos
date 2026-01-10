@@ -7,9 +7,9 @@ import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 import { getCrystalState } from "../crystallizer.js";
 import { hasInsight, hasExtendedDebug } from "../core/debugGroups.js";
+import { isPrismBlock } from "../features/links/transfer/config.js";
 
 const WAND_ID = "chaos:wand";
-const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
@@ -168,7 +168,8 @@ function showWandStats(player) {
   if (!block) return;
 
   const id = block.typeId;
-  if (id !== PRISM_ID && id !== CRYSTALLIZER_ID) return;
+  const isPrism = isPrismBlock(block);
+  if (!isPrism && id !== CRYSTALLIZER_ID) return;
 
   const loc = block.location;
   const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
@@ -187,7 +188,7 @@ function showWandStats(player) {
   }
   // Unified system - all prisms use prism counts
   let count = null;
-  if (id === PRISM_ID) {
+  if (isPrism) {
     const counts = getPrismCountsCached();
     count = (counts && counts[key] != null) ? Number(counts[key]) : null;
   }

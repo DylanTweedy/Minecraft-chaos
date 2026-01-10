@@ -2,7 +2,6 @@
 import { ItemStack, MolangVariableMap } from "@minecraft/server";
 import {
   DEFAULTS,
-  PRISM_ID,
   CRYSTALLIZER_ID,
   CRYSTAL_FLUX_WEIGHT,
   MAX_STEPS,
@@ -10,7 +9,7 @@ import {
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
   isPrismBlock,
-  getPrismTierFromTypeId,
+  getPrismTier,
 } from "./config.js";
 import { mergeCfg } from "./utils.js";
 import {
@@ -73,7 +72,7 @@ import { createQueuesManager } from "./core/queues.js";
 import { createInflightProcessorManager } from "./core/inflightProcessor.js";
 import { createVirtualInventoryManager } from "./core/virtualInventory.js";
 import { createInputQueuesManager } from "./core/inputQueues.js";
-import { hasLensOrGoggles, hasExtendedDebug } from "../../../core/debugGroups.js";
+import { hasInsight, hasExtendedDebug } from "../../../core/debugGroups.js";
 import { isHoldingLens } from "../../../items/insightLens.js";
 import { isWearingGoggles } from "../../../items/insightGoggles.js";
 
@@ -88,12 +87,75 @@ export function createNetworkTransferController(deps, opts) {
   const getNetworkStamp = deps.getNetworkStamp;
 
   const cfg = mergeCfg(DEFAULTS, opts);
+  
+  // Helper function for safe message sending (handles all errors gracefully)
+  // Must be defined early so it can be used throughout initialization
+  // This function MUST NEVER throw - wrap everything in try-catch
+  function sendInitMessage(message) {
+    try {
+      // Convert message to string first, safely
+      const msgStr = (message != null) ? String(message) : "";
+      if (!msgStr) return;
+      
+      // Safely check world object
+      if (!world || typeof world !== "object") return;
+      if (typeof world.getAllPlayers !== "function") return;
+      
+      // Safely get players
+      let players;
+      try {
+        players = world.getAllPlayers();
+      } catch {
+        return; // If getAllPlayers fails, silently exit
+      }
+      
+      // Check if players is iterable
+      if (!players) return;
+      if (typeof players[Symbol.iterator] !== "function") {
+        // Try array-like access if not iterable
+        if (typeof players.length !== "number") return;
+      }
+      
+      // Iterate and send messages
+      try {
+        for (const player of players) {
+          try {
+            if (player && typeof player === "object" && typeof player.sendMessage === "function") {
+              player.sendMessage(msgStr);
+            }
+          } catch {
+            // Ignore individual player errors - continue to next player
+          }
+        }
+      } catch {
+        // If iteration fails, silently exit
+      }
+    } catch {
+      // Ignore ALL errors - initialization logging should never break the system
+      // This is intentionally silent - errors here should not propagate
+    }
+  }
+  
+  // INIT DEBUG: Controller creation started (delayed to ensure world is ready)
+  try {
+    sendInitMessage("§b[Init] Creating NetworkTransferController...");
+    
+    // Safely validate dependencies without template literals that could cause issues
+    const hasWorld = !!(world && typeof world === "object");
+    const hasSystem = !!(system && typeof system === "object");
+    const hasFX = !!(FX && typeof FX === "object");
+    const hasPathfinder = !!(findPathForInput && typeof findPathForInput === "function");
+    sendInitMessage("§b[Init] Dependencies: world=" + hasWorld + ", system=" + hasSystem + ", FX=" + hasFX + ", pathfinder=" + hasPathfinder);
+  } catch {
+    // Ignore - initialization messages are optional
+  }
 
   let cursor = 0;
   let tickId = null;
   let nowTick = 0;
 
   const nextAllowed = new Map();
+  const nextQueueTransferAllowed = new Map(); // Track when each prism can process queue transfers (tier-based intervals)
   const inflight = [];
   const fluxFxInflight = [];
   let inflightDirty = false;
@@ -161,28 +223,29 @@ export function createNetworkTransferController(deps, opts) {
   // Helper function for error handling during manager creation
   function handleManagerCreationError(managerName, err) {
     try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] Error creating ${managerName}: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
+      const managerNameStr = String(managerName || "unknown");
+      const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
+      sendInitMessage("§c[Chaos Transfer] Error creating " + managerNameStr + ": " + errMsg);
+    } catch {
+      // If logging fails, continue to throw the original error
+    }
     throw err; // Re-throw to bubble up to transferLoop.js catch handler
   }
 
   // Helper function for non-fatal error logging (doesn't re-throw)
   function logError(message, err) {
     try {
-      const players = world.getAllPlayers();
-      for (const player of players) {
-        if (typeof player.sendMessage === "function") {
-          player.sendMessage(`§c[Chaos Transfer] ${message}: ${err?.message || String(err)}`);
-        }
-      }
-    } catch {}
+      const msgStr = String(message || "Error");
+      const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
+      sendInitMessage("§c[Chaos Transfer] " + msgStr + ": " + errMsg);
+    } catch {
+      // Ignore logging errors
+    }
   }
-
+  
+  // INIT DEBUG: Creating managers
+  sendInitMessage(`§b[Init] Step 1/8: Creating virtualInventoryManager...`);
+  
   // Create virtual inventory manager first (needed by cache manager for capacity calculations)
   let virtualInventoryManager;
   try {
@@ -192,6 +255,8 @@ export function createNetworkTransferController(deps, opts) {
     if (!virtualInventoryManager) {
       throw new Error("createVirtualInventoryManager returned null - check cfg and deps parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ virtualInventoryManager created`);
   } catch (err) {
     handleManagerCreationError("virtualInventoryManager", err);
   }
@@ -241,6 +306,9 @@ export function createNetworkTransferController(deps, opts) {
     }
   }
 
+  // INIT DEBUG: Cache manager
+  sendInitMessage(`§b[Init] Step 2/8: Creating cacheManager...`);
+  
   // Create cache manager with required dependencies
   let cacheManager;
   try {
@@ -259,10 +327,15 @@ export function createNetworkTransferController(deps, opts) {
     if (!cacheManager) {
       throw new Error("createCacheManager returned null or undefined");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ cacheManager created`);
   } catch (err) {
     handleManagerCreationError("cacheManager", err);
   }
 
+  // INIT DEBUG: Levels manager (first time)
+  sendInitMessage(`§b[Init] Step 3/8: Creating levelsManager (initial)...`);
+  
   // Create levelsManager first (without spawnLevelUpBurst - it's optional and will be added later)
   let levelsManager;
   try {
@@ -279,10 +352,15 @@ export function createNetworkTransferController(deps, opts) {
     if (!levelsManager) {
       throw new Error("createLevelsManager returned null - check cfg and state parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ levelsManager (initial) created`);
   } catch (err) {
     handleManagerCreationError("levelsManager", err);
   }
 
+  // INIT DEBUG: FX manager
+  sendInitMessage(`§b[Init] Step 4/8: Creating fxManager...`);
+  
   // Create FX manager - needs getOrbStepTicks from levels manager
   let fxManager;
   try {
@@ -304,10 +382,15 @@ export function createNetworkTransferController(deps, opts) {
     if (!fxManager) {
       throw new Error("createFxManager returned null - check cfg and deps parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ fxManager created`);
   } catch (err) {
     handleManagerCreationError("fxManager", err);
   }
 
+  // INIT DEBUG: Levels manager (recreate)
+  sendInitMessage(`§b[Init] Step 5/8: Recreating levelsManager (with spawnLevelUpBurst)...`);
+  
   // Recreate levelsManager with spawnLevelUpBurst from FX manager
   // Note: getOrbStepTicks is a pure function (only depends on cfg), so fxManager's bound reference still works
   try {
@@ -327,10 +410,15 @@ export function createNetworkTransferController(deps, opts) {
     if (!levelsManager) {
       throw new Error("createLevelsManager (recreate) returned null - check cfg and state parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ levelsManager (recreated) created`);
   } catch (err) {
     handleManagerCreationError("levelsManager (recreate)", err);
   }
 
+  // INIT DEBUG: Queues manager
+  sendInitMessage(`§b[Init] Step 6/8: Creating queuesManager...`);
+  
   // Create queues manager - manages queue state internally (needed by other managers)
   let queuesManager;
   try {
@@ -348,10 +436,15 @@ export function createNetworkTransferController(deps, opts) {
     }
     // Initialize with existing state (if any - for persistence)
     queuesManager.initializeState(queueByContainer, fullContainers);
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ queuesManager created and initialized`);
   } catch (err) {
     handleManagerCreationError("queuesManager", err);
   }
 
+  // INIT DEBUG: Input queues manager
+  sendInitMessage(`§b[Init] Step 7/8: Creating inputQueuesManager...`);
+  
   // Create input queue manager - needs world, getContainerKey, getContainerKeyFromInfo, isPathBlock
   let inputQueuesManager;
   try {
@@ -364,10 +457,15 @@ export function createNetworkTransferController(deps, opts) {
     if (!inputQueuesManager) {
       throw new Error("createInputQueuesManager returned null - check cfg and deps parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ inputQueuesManager created`);
   } catch (err) {
     handleManagerCreationError("inputQueuesManager", err);
   }
 
+  // INIT DEBUG: Refinement manager
+  sendInitMessage(`§b[Init] Step 8/8: Creating refinementManager, finalizeManager, inflightProcessorManager...`);
+  
   // Create refinement manager - needs fxManager and cacheManager
   let refinementManager;
   try {
@@ -388,6 +486,8 @@ export function createNetworkTransferController(deps, opts) {
     if (!refinementManager) {
       throw new Error("createRefinementManager returned null - check cfg and deps parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ refinementManager created`);
   } catch (err) {
     handleManagerCreationError("refinementManager", err);
   }
@@ -419,6 +519,8 @@ export function createNetworkTransferController(deps, opts) {
     if (!finalizeManager) {
       throw new Error("createFinalizeManager returned null - check cfg and deps parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ finalizeManager created`);
   } catch (err) {
     handleManagerCreationError("finalizeManager", err);
   }
@@ -454,9 +556,14 @@ export function createNetworkTransferController(deps, opts) {
     if (!inflightProcessorManager) {
       throw new Error("createInflightProcessorManager returned null - check cfg and deps parameters");
     }
+    // INIT DEBUG: Success
+    sendInitMessage(`§a[Init] ✓ inflightProcessorManager created`);
   } catch (err) {
     handleManagerCreationError("inflightProcessorManager", err);
   }
+  
+  // INIT DEBUG: All managers created
+  sendInitMessage(`§a[Init] ✓ All managers created! Controller ready.`);
 
   function getBackoffTicks(level) {
     const safeLevel = Math.max(0, level | 0);
@@ -550,7 +657,7 @@ export function createNetworkTransferController(deps, opts) {
     let level = 1;
     if (block) {
       if (isPrismBlock(block)) {
-        level = getPrismTierFromTypeId(block);
+        level = getPrismTier(block);
       } else {
         level = (block?.permutation?.getState("chaos:level") | 0) || 1;
       }
@@ -561,11 +668,25 @@ export function createNetworkTransferController(deps, opts) {
   }
 
   function start() {
-    if (tickId !== null) return;
+    // INIT DEBUG: Start function called
+    try {
+      const hasLevels = !!(levelsManager);
+      sendInitMessage("§b[Init] start() called - tickId=" + tickId + ", levelsManager=" + hasLevels);
+    } catch {}
+    
+    if (tickId !== null) {
+      try {
+        sendInitMessage("§e[Init] Already started (tickId=" + tickId + ") - skipping");
+      } catch {}
+      return;
+    }
     if (!levelsManager) {
       logError("ERROR: Cannot start - levelsManager is null!", new Error("levelsManager is null"));
       return; // Don't start if levelsManager is null
     }
+    
+    // INIT DEBUG: Loading persistence
+    sendInitMessage(`§b[Init] Loading persistence (inflight, levels)...`);
     
     // Retry loading persistence with exponential backoff (for world load scenarios)
     let retryCount = 0;
@@ -573,16 +694,44 @@ export function createNetworkTransferController(deps, opts) {
     const retryDelays = [5, 10, 20]; // ticks to wait before retry
     
     function attemptLoadWithRetry(loadFn, name, retryIndex = 0) {
+      // INIT DEBUG: Loading attempt
+      try {
+        const attemptNum = (retryIndex || 0) + 1;
+        const maxAttempts = (maxRetries || 0) + 1;
+        const nameStr = String(name || "unknown");
+        sendInitMessage("§b[Init] Loading " + nameStr + " (attempt " + attemptNum + "/" + maxAttempts + ")...");
+      } catch {}
+      
       try {
         loadFn();
+        // INIT DEBUG: Success
+        try {
+          const nameStr = String(name || "unknown");
+          sendInitMessage("§a[Init] ✓ " + nameStr + " loaded successfully");
+        } catch {}
       } catch (err) {
         if (retryIndex < maxRetries) {
+          // INIT DEBUG: Retrying
+          try {
+            const nameStr = String(name || "unknown");
+            const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
+            const delay = retryDelays[retryIndex] || 20;
+            sendInitMessage("§e[Init] " + nameStr + " failed (" + errMsg + "), retrying in " + delay + " ticks...");
+          } catch {}
+          
           // Retry after delay
-          system.runTimeout(() => {
-            attemptLoadWithRetry(loadFn, name, retryIndex + 1);
-          }, retryDelays[retryIndex] || 20);
+          try {
+            system.runTimeout(() => {
+              attemptLoadWithRetry(loadFn, name, retryIndex + 1);
+            }, retryDelays[retryIndex] || 20);
+          } catch {
+            logError("Error scheduling retry for " + (name || "unknown"), err);
+          }
         } else {
-          logError(`Error loading ${name} (after ${maxRetries} retries)`, err);
+          try {
+            const nameStr = String(name || "unknown");
+            logError("Error loading " + nameStr + " (after " + (maxRetries || 0) + " retries)", err);
+          } catch {}
         }
       }
     }
@@ -592,9 +741,19 @@ export function createNetworkTransferController(deps, opts) {
     attemptLoadWithRetry(() => loadLevelsState(), "levels state");
     attemptLoadWithRetry(() => loadOutputLevelsState(), "output levels state");
     attemptLoadWithRetry(() => loadPrismLevelsState(), "prism levels state");
-    
+
+    // INIT DEBUG: Persistence loaded, starting tick loop
+    sendInitMessage(`§b[Init] Persistence loaded. Starting tick loop (runInterval)...`);
+
     try {
       tickId = system.runInterval(onTick, 1);
+      
+      // INIT DEBUG: Tick loop started
+      try {
+        const inflightLen = (inflight && inflight.length) ? inflight.length : 0;
+        const fluxFxLen = (fluxFxInflight && fluxFxInflight.length) ? fluxFxInflight.length : 0;
+        sendInitMessage("§a[Init] ✓ Tick loop started! tickId=" + tickId + ", inflight=" + inflightLen + ", fluxFxInflight=" + fluxFxLen);
+      } catch {}
       
       // PHASE 3: Event-driven scanning - mark prisms dirty when adjacent containers change
       // Helper: Find adjacent prisms and mark them dirty
@@ -738,12 +897,29 @@ export function createNetworkTransferController(deps, opts) {
 
   function loadInflightState() {
     try {
+      // INIT DEBUG: Before loading
+      try {
+        sendInitMessage("§b[Init] loadInflightState() called - before load");
+      } catch {}
+      
       // Clear any existing inflight state first to prevent stale jobs
       const oldInflightCount = inflight.length;
       const oldFluxFxCount = fluxFxInflight.length;
       inflight.length = 0;
       fluxFxInflight.length = 0;
+      
+      // INIT DEBUG: Calling loadInflightStateFromWorld
+      try {
+        sendInitMessage("§b[Init] Calling loadInflightStateFromWorld...");
+      } catch {}
+      
       loadInflightStateFromWorld(world, inflight, cfg);
+      
+      // INIT DEBUG: After loading
+      try {
+        const inflightLen = (inflight && inflight.length) ? inflight.length : 0;
+        sendInitMessage("§b[Init] After loadInflightStateFromWorld: inflight.length=" + inflightLen);
+      } catch {}
       
       // Validate loaded inflight jobs - remove any that are at or past the end of their path
       // (they would complete immediately and might create flux FX jobs incorrectly)
@@ -774,20 +950,27 @@ export function createNetworkTransferController(deps, opts) {
         }
       }
       
-      // Log what we loaded/cleared
-      if (debugEnabled && (oldInflightCount > 0 || oldFluxFxCount > 0 || inflight.length > 0 || removedCount > 0)) {
-        for (const player of world.getAllPlayers()) {
-          try {
-            if (typeof player.sendMessage === "function") {
-              player.sendMessage(`§7[Chaos Transfer] Loaded ${inflight.length} inflight jobs (cleared ${oldInflightCount}, removed ${removedCount} stale)`);
-            }
-          } catch {}
-        }
-      }
+      // INIT DEBUG: Always log what we loaded/cleared (unconditional)
+      try {
+        const inflightLen = (inflight && inflight.length) ? inflight.length : 0;
+        sendInitMessage("§7[Chaos Transfer] Loaded " + inflightLen + " inflight jobs (cleared " + oldInflightCount + ", removed " + removedCount + " stale)");
+      } catch {}
+      
       rebuildReservationsFromInflight();
       inflightDirty = false;
       lastSaveTick = nowTick;
+      
+      // INIT DEBUG: Completed
+      try {
+        sendInitMessage("§a[Init] loadInflightState() completed successfully");
+      } catch {}
     } catch (err) {
+      // INIT DEBUG: Error
+      try {
+        const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
+        sendInitMessage("§c[Init] loadInflightState() ERROR: " + errMsg);
+      } catch {}
+      
       // If loading fails, just start with empty state
       inflight.length = 0;
       inflightDirty = false;
@@ -915,6 +1098,11 @@ export function createNetworkTransferController(deps, opts) {
   function onTick() {
     nowTick++;
     
+    // DIAGNOSTIC: Log tick start (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick} started`);
+    // }
+    
     // SUPER SIMPLE UNCONDITIONAL TEST - Always send on first 5 ticks to confirm onTick is running
     if (nowTick <= 5) {
       try {
@@ -930,12 +1118,23 @@ export function createNetworkTransferController(deps, opts) {
     
     const tickStart = debugEnabled ? Date.now() : 0;
     const cacheStart = debugEnabled ? Date.now() : 0;
+    
+    // DIAGNOSTIC: Log before cache updates (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: Before cache updates`);
+    // }
+    
     cacheManager.updateTick(nowTick);
     cacheManager.resetTickCaches();
     if (debugEnabled) {
       debugState.msCache = (debugState.msCache || 0) + (Date.now() - cacheStart);
     }
     orbFxBudgetUsed.value = 0;
+
+    // DIAGNOSTIC: Log before processing queues/inflight (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: Before processing queues/inflight`);
+    // }
 
     // Process existing queues and in-flight transfers first
     if (debugEnabled) {
@@ -978,81 +1177,108 @@ export function createNetworkTransferController(deps, opts) {
       ]);
     }
 
+    // DIAGNOSTIC: Log after processing queues/inflight (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: After processing queues/inflight`);
+    // }
+
+    // DIAGNOSTIC: Log immediately after to confirm we reach this line (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: About to enter virtual inventory section`);
+    // }
+
     // Update virtual inventory state AFTER processing queues/in-flight
     // This ensures virtual inventory reflects current state (items that just finalized are no longer pending)
     // Then we can accurately predict future capacity for new transfers
-    if (virtualInventoryManager && typeof virtualInventoryManager.updateState === "function") {
-      const queueState = queuesManager.getState();
-      // Get input queues for virtual inventory (if available)
-      let inputQueueByPrism = null;
-      if (inputQueuesManager && typeof inputQueuesManager.getQueuesForPrism === "function") {
-        inputQueueByPrism = new Map();
-        const prismKeys = getPrismKeys();
-        for (const prismKey of prismKeys) {
-          const queues = inputQueuesManager.getQueuesForPrism(prismKey);
-          if (queues && queues.length > 0) {
-            inputQueueByPrism.set(prismKey, queues);
+    // DIAGNOSTIC: Log before virtual inventory section (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: About to check virtual inventory - manager=${!!virtualInventoryManager}`);
+    // }
+    
+    try {
+      if (virtualInventoryManager && typeof virtualInventoryManager.updateState === "function") {
+        const queueState = queuesManager.getState();
+        // Get input queues for virtual inventory (if available)
+        let inputQueueByPrism = null;
+        if (inputQueuesManager && typeof inputQueuesManager.getQueuesForPrism === "function") {
+          inputQueueByPrism = new Map();
+          const prismKeys = getPrismKeys();
+          // DIAGNOSTIC: Log prism count (disabled - was too spammy)
+          // if (nowTick <= 10 || nowTick % 100 === 0) {
+          //   sendInitMessage(`§7[Flow] Tick ${nowTick}: Found ${prismKeys.length} prisms for virtual inventory`);
+          // }
+          for (const prismKey of prismKeys) {
+            const queues = inputQueuesManager.getQueuesForPrism(prismKey);
+            if (queues && queues.length > 0) {
+              inputQueueByPrism.set(prismKey, queues);
+            }
           }
         }
+        
+        virtualInventoryManager.updateState(inflight, queueState.queueByContainer, inputQueueByPrism);
+        
+        // DIAGNOSTIC: Log completed (disabled - was too spammy)
+        // if (nowTick <= 10 || nowTick % 100 === 0) {
+        //   sendInitMessage(`§7[Flow] Tick ${nowTick}: virtualInventoryManager.updateState() completed`);
+        // }
+      } else {
+        // DIAGNOSTIC: Log skipping (disabled - was too spammy)
+        // if (nowTick <= 10 || nowTick % 100 === 0) {
+        //   sendInitMessage(`§7[Flow] Tick ${nowTick}: Skipping virtual inventory (manager=${!!virtualInventoryManager}, hasUpdateState=${virtualInventoryManager && typeof virtualInventoryManager.updateState === "function"})`);
+        // }
       }
-      virtualInventoryManager.updateState(inflight, queueState.queueByContainer, inputQueueByPrism);
+    } catch (err) {
+      const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
+      sendInitMessage(`§c[Flow] Tick ${nowTick}: ERROR in virtual inventory update: ${errMsg}`);
     }
 
+    // DIAGNOSTIC: Log after virtual inventory update (disabled - was too spammy)
+    // if (nowTick <= 50 || nowTick % 10 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: After virtual inventory update`);
+    // }
+
     // PHASE 1: Process input queues first (lazy scanning - only scan when queues empty)
+    // DIAGNOSTIC: Log entry into queue processing section (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§b[Flow] Tick ${nowTick}: Queue section START - manager=${!!inputQueuesManager}`);
+    // }
+    
     const inputQueueStart = debugEnabled ? Date.now() : 0;
     let inputQueueProcessed = 0;
     let inputQueueTransferBudget = cfg.maxTransfersPerTick;
     let inputQueueSearchBudget = cfg.maxSearchesPerTick;
     let inputQueueTransfersThisTick = 0;
     
-    // ALWAYS log every tick (first 20 ticks, then every 10 ticks) to verify system is running
-    // This is TRULY UNCONDITIONAL - doesn't require lens/goggles OR extended debug groups
-    if (nowTick <= 20 || nowTick % 10 === 0) {
-      try {
-        for (const player of world.getAllPlayers()) {
-          try {
-            if (typeof player.sendMessage !== "function") continue;
-            const hasLensDirect = isHoldingLens(player) || isWearingGoggles(player);
-            const hasTransferDebug = hasExtendedDebug(player, "transfer");
-            const totalQueueSize = inputQueuesManager && typeof inputQueuesManager.getTotalQueueSize === "function" 
-              ? inputQueuesManager.getTotalQueueSize() 
-              : -1;
-            // UNCONDITIONAL message - always send to all players
-            player.sendMessage(`§e[Queue Tick ${nowTick}] size=${totalQueueSize}, manager=${!!inputQueuesManager}, budget=${inputQueueTransferBudget}/${inputQueueSearchBudget}, lens=${hasLensDirect}, debug=${hasTransferDebug}`);
-          } catch (err) {
-            // Log errors but continue
-            console.warn(`[Queue] Error sending tick message:`, err);
-          }
-        }
-      } catch (err) {
-        console.warn(`[Queue] Error in tick logging:`, err);
-      }
-    }
+    // Aggregate failures by reason and item for summary logging (reduce spam)
+    const failureCounts = new Map(); // Map<"reason:itemType", count>
+    
+    // DIAGNOSTIC: Log queue status (disabled - was too spammy, use extended debug instead)
+    // Removed per-tick queue status logging to reduce chat spam
     
     if (inputQueuesManager && typeof inputQueuesManager.getTotalQueueSize === "function") {
       const totalQueueSize = inputQueuesManager.getTotalQueueSize();
       
-      // Basic visibility: Show when queues are active
-      if (totalQueueSize > 0) {
-        sendDiagnosticMessage(`[Queue] Active queues: ${totalQueueSize}`, null); // null = basic visibility
-      }
-      
       // Process input queues if they exist
       if (totalQueueSize > 0) {
-        // Always log when processing queues (not throttled)
-        sendDiagnosticMessage(`[Queue] Processing queues: totalQueueSize=${totalQueueSize}, budget: transfer=${inputQueueTransferBudget}, search=${inputQueueSearchBudget}`, "transfer");
+        // Only log queue status periodically (every 100 ticks) or on first few ticks
+        const shouldLogQueueStatus = (nowTick <= 3 || nowTick % 100 === 0);
+        if (shouldLogQueueStatus) {
+          sendDiagnosticMessage(`[Queue] Active: ${totalQueueSize} queues, budget: transfer=${inputQueueTransferBudget}, search=${inputQueueSearchBudget}`, "transfer");
+        }
         const prismKeys = getPrismKeys();
-        sendDiagnosticMessage(`[Queue] Prisms to check: ${prismKeys.length}`, "transfer");
         if (prismKeys.length > 0) {
           // Process queues for prisms that have them
           for (const prismKey of prismKeys) {
             if (inputQueueTransferBudget <= 0 && inputQueueSearchBudget <= 0) {
-              sendDiagnosticMessage(`[Queue] Budget exhausted: transfer=${inputQueueTransferBudget}, search=${inputQueueSearchBudget}`, "transfer");
+              // Only log budget exhaustion occasionally
+              if (nowTick % 100 === 0) {
+                sendDiagnosticMessage(`[Queue] Budget exhausted: transfer=${inputQueueTransferBudget}, search=${inputQueueSearchBudget}`, "transfer");
+              }
               break;
             }
             if (!inputQueuesManager.hasQueueForPrism(prismKey)) continue;
             
-            sendDiagnosticMessage(`[Queue] Prism ${prismKey} has queue, processing...`, "transfer");
+            // Don't log every prism processing - too spammy
             
             const prismInfo = resolveBlockInfo(prismKey);
             if (!prismInfo) continue;
@@ -1061,6 +1287,20 @@ export function createNetworkTransferController(deps, opts) {
             const prismBlock = prismInfo.block;
             if (!prismBlock || !isPrismBlock(prismBlock)) continue;
             
+            // Apply tier-based transfer interval (0.25-1.25 seconds)
+            // Lower tiers = slower transfer rate (more ticks between transfers)
+            // Tier 1 = 25 ticks (1.25s), Tier 5 = 5 ticks (0.25s)
+            const prismTier = getPrismTier(prismBlock);
+            const baseInterval = cfg.perPrismIntervalTicks || 5; // Base for tier 5
+            // Formula: interval = baseInterval * (6 - tier)
+            // Tier 1: 5 * 5 = 25 ticks (1.25s), Tier 5: 5 * 1 = 5 ticks (0.25s)
+            const tierInterval = baseInterval * (6 - prismTier);
+            const allowedAt = nextQueueTransferAllowed.has(prismKey) ? nextQueueTransferAllowed.get(prismKey) : 0;
+            if (nowTick < allowedAt) {
+              // Prism is on cooldown - skip this tick
+              continue;
+            }
+            
             // Get filter for this prism
             const filter = getFilterForBlock(prismBlock);
             const filterSet = filter ? (filter instanceof Set ? filter : getFilterSet(filter)) : null;
@@ -1068,20 +1308,23 @@ export function createNetworkTransferController(deps, opts) {
             // Get next queue entry for this prism
             const queueEntry = inputQueuesManager.getNextQueueEntry(prismKey, filterSet);
             if (!queueEntry) {
-              if (debugEnabled && inputQueuesManager.hasQueueForPrism(prismKey)) {
-                sendDiagnosticMessage(`[Queue] Prism ${prismKey}: no queue entry found (hasQueue=true but getNextQueueEntry=null)`);
+              // Only log missing queue entries if extended debug enabled and occasionally
+              if (debugEnabled && inputQueuesManager.hasQueueForPrism(prismKey) && nowTick % 200 === 0) {
+                sendDiagnosticMessage(`[Queue] Prism ${prismKey}: no queue entry found (hasQueue=true but getNextQueueEntry=null)`, "transfer");
               }
               continue;
             }
             
-            // DIAGNOSTIC: Log queue entry processing (extended debug)
-            sendDiagnosticMessage(`[Queue] Processing entry: prism=${prismKey}, item=${queueEntry.itemTypeId}, remaining=${queueEntry.remainingAmount}, container=${queueEntry.containerKey}, slot=${queueEntry.slot}`, "transfer");
+            // Don't log every entry processing - too spammy (only in extended debug and occasionally)
+            // sendDiagnosticMessage(`[Queue] Processing entry: prism=${prismKey}, item=${queueEntry.itemTypeId}, remaining=${queueEntry.remainingAmount}`, "transfer");
             
             // Validate queue entry
             const isValid = inputQueuesManager.validateInputQueue(queueEntry, nowTick);
             if (!isValid) {
-              // Entry invalid - remove it
-              sendDiagnosticMessage(`[Queue] Entry invalid: prism=${prismKey}, item=${queueEntry.itemTypeId} - removing`, "transfer");
+              // Entry invalid - only log occasionally (invalid entries are common/expected)
+              if (nowTick % 100 === 0) {
+                sendDiagnosticMessage(`[Queue] Entry invalid: prism=${prismKey}, item=${queueEntry.itemTypeId} - removing`, "transfer");
+              }
               inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
               continue;
             }
@@ -1123,21 +1366,28 @@ export function createNetworkTransferController(deps, opts) {
             if (!route || route.length === 0 || !destinationKey) {
               // Need to find route
               if (inputQueueSearchBudget <= 0) {
-                sendDiagnosticMessage(`[Queue] No search budget for route finding: prism=${prismKey}, item=${queueEntry.itemTypeId}`, "transfer");
+                // Only log budget issues occasionally
+                if (nowTick % 100 === 0) {
+                  sendDiagnosticMessage(`[Queue] No search budget for route finding: prism=${prismKey}, item=${queueEntry.itemTypeId}`, "transfer");
+                }
                 continue;
               }
               
-              sendDiagnosticMessage(`[Queue] Finding route: prism=${prismKey}, item=${queueEntry.itemTypeId}, searchBudget=${inputQueueSearchBudget}`, "transfer");
+              // Don't log route finding - too spammy (route caching means this shouldn't happen often)
+              // sendDiagnosticMessage(`[Queue] Finding route: prism=${prismKey}, item=${queueEntry.itemTypeId}`, "transfer");
               
               const pathResult = findPathForInput(prismKey, nowTick);
               if (!pathResult || !Array.isArray(pathResult) || pathResult.length === 0) {
-                // No route found - invalidate entry
-                sendDiagnosticMessage(`[Queue] No route found: prism=${prismKey}, item=${queueEntry.itemTypeId} - invalidating entry`, "transfer");
+                // No route found - only log occasionally (expected in some scenarios)
+                if (nowTick % 100 === 0) {
+                  sendDiagnosticMessage(`[Queue] No route found: prism=${prismKey}, item=${queueEntry.itemTypeId} - invalidating entry`, "transfer");
+                }
                 inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
                 continue;
               }
               
-              sendDiagnosticMessage(`[Queue] Route found: prism=${prismKey}, item=${queueEntry.itemTypeId}, options=${pathResult.length}`, "transfer");
+              // Don't log successful route finds - too spammy
+              // sendDiagnosticMessage(`[Queue] Route found: prism=${prismKey}, item=${queueEntry.itemTypeId}, options=${pathResult.length}`, "transfer");
               
               // Pick a destination from the path results
               const pick = pickWeightedRandomWithBias(pathResult, (opt) => {
@@ -1168,20 +1418,28 @@ export function createNetworkTransferController(deps, opts) {
             }
             
             // Attempt transfer using the queue entry
-            const transferResult = attemptPushTransferWithDestination(
-              prismKey,
-              prismBlock,
-              dim,
-              inventories,
-              itemSource,
-              { ...destInfo, key: destinationKey },
-              route,
-              filterSet,
-              queueEntry
-            );
+            let transferResult;
+            try {
+              transferResult = attemptPushTransferWithDestination(
+                prismKey,
+                prismBlock,
+                dim,
+                inventories,
+                itemSource,
+                { ...destInfo, key: destinationKey },
+                route,
+                filterSet,
+                queueEntry
+              );
+            } catch (err) {
+              // ALWAYS log errors - these are important
+              const errorMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
+              sendDiagnosticMessage(`[Queue] Transfer ERROR: prism=${prismKey}, item=${queueEntry.itemTypeId}, error=${errorMsg}`, "transfer");
+              transferResult = { ...makeResult(false, "transfer_error"), amount: 0, searchesUsed: 0 };
+            }
             
-            // DIAGNOSTIC: Log transfer result (extended debug)
-            sendDiagnosticMessage(`[Queue] Transfer result: prism=${prismKey}, item=${queueEntry.itemTypeId}, ok=${transferResult.ok}, reason=${transferResult.reason || 'unknown'}, amount=${transferResult.amount || 0}, searchesUsed=${transferResult.searchesUsed || 0}`, "transfer");
+            // Don't log every transfer result - too spammy (only log failures occasionally)
+            // sendDiagnosticMessage(`[Queue] Transfer result: ...`, "transfer");
             
             if (transferResult.ok) {
               inputQueueTransfersThisTick++;
@@ -1192,24 +1450,57 @@ export function createNetworkTransferController(deps, opts) {
               inputQueuesManager.updateQueueEntry(prismKey, queueEntry.itemTypeId, transferResult.amount || 1);
               inputQueueProcessed++;
               
-              sendDiagnosticMessage(`[Queue] Transfer SUCCESS: updated queue entry, remaining budget: transfer=${inputQueueTransferBudget}, search=${inputQueueSearchBudget}`, "transfer");
+              // Set cooldown for this prism based on tier (prevent transfers every tick)
+              nextQueueTransferAllowed.set(prismKey, nowTick + tierInterval);
+              
+              // Don't log every success - too spammy
+              // sendDiagnosticMessage(`[Queue] Transfer SUCCESS: ...`, "transfer");
             } else {
               inputQueueSearchBudget -= transferResult.searchesUsed || 0;
-              sendDiagnosticMessage(`[Queue] Transfer FAILED: reason=${transferResult.reason || 'unknown'}, remaining budget: transfer=${inputQueueTransferBudget}, search=${inputQueueSearchBudget}`, "transfer");
+              
+              // Aggregate failures for summary logging (reduce spam)
+              const reason = transferResult.reason || 'unknown';
+              const failureKey = `${reason}:${queueEntry.itemTypeId}`;
+              failureCounts.set(failureKey, (failureCounts.get(failureKey) || 0) + 1);
+              
+              // Only log transfer_error immediately (these are critical)
+              if (reason === "transfer_error") {
+                sendDiagnosticMessage(`[Queue] Transfer ERROR: reason=${reason}, item=${queueEntry.itemTypeId}`, "transfer");
+              }
+              // Other failures are aggregated and logged in summary below
             }
           }
         }
       }
       
-      // Summary: Log queue processing results (always log)
+      // Summary: Log queue processing results periodically (every 100 ticks) or when queues change significantly
       if (totalQueueSize > 0) {
-        sendDiagnosticMessage(`[Queue] Processed: entries=${inputQueueProcessed}, transfers=${inputQueueTransfersThisTick}, remaining=${inputQueuesManager.getTotalQueueSize()}`, "transfer");
+        const newTotalQueueSize = inputQueuesManager.getTotalQueueSize();
+        // Log summary every 100 ticks, or if queue size changed significantly (reduced by >50% in one tick)
+        const shouldLogSummary = (nowTick % 100 === 0) || (inputQueueTransfersThisTick > 0 && (totalQueueSize - newTotalQueueSize) > (totalQueueSize * 0.5));
+        if (shouldLogSummary) {
+          let summaryMsg = `[Queue] Summary: processed=${inputQueueProcessed}, transfers=${inputQueueTransfersThisTick}, remaining=${newTotalQueueSize}`;
+          
+          // Append failure summary if there were failures (aggregated to reduce spam)
+          if (failureCounts.size > 0) {
+            const failureSummary = Array.from(failureCounts.entries())
+              .map(([key, count]) => {
+                const [reason, item] = key.split(':');
+                return `${reason}(${item})=${count}`;
+              })
+              .join(', ');
+            summaryMsg += ` | Failures: ${failureSummary}`;
+          }
+          
+          sendDiagnosticMessage(summaryMsg, "transfer");
+          failureCounts.clear(); // Clear for next summary period
+        }
       }
     } else {
-      // Log when no queues exist (every 100 ticks to avoid spam)
-      if (nowTick % 100 === 0) {
-        sendDiagnosticMessage(`[Queue] No active queues (totalQueueSize=0)`, "transfer");
-      }
+      // Don't log when no queues exist - too spammy (only extended debug if needed)
+      // if (nowTick % 100 === 0) {
+      //   sendDiagnosticMessage(`[Queue] No active queues`, "transfer");
+      // }
     }
     
     if (debugEnabled) {
@@ -1218,8 +1509,26 @@ export function createNetworkTransferController(deps, opts) {
 
     // PHASE 4: Lazy scanning - only scan when input queues are empty (or dirty prisms exist)
     const scanStart = debugEnabled ? Date.now() : 0;
+    
+    // DIAGNOSTIC: Log BEFORE calling getPrismKeys (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§b[Flow] Tick ${nowTick}: Scanning section START - about to call getPrismKeys()`);
+    // }
+    
     const prismKeys = getPrismKeys();
-    if (prismKeys.length === 0) return;
+    
+    // DIAGNOSTIC: Log prism key count (disabled - was too spammy)
+    // if (nowTick <= 10 || nowTick % 100 === 0) {
+    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: getPrismKeys() returned ${prismKeys.length} prisms`);
+    // }
+    
+    if (prismKeys.length === 0) {
+      // DIAGNOSTIC: Log early return due to no prisms (disabled - was too spammy)
+      // if (nowTick <= 10 || nowTick % 100 === 0) {
+      //   sendInitMessage(`§c[Flow] Tick ${nowTick}: EARLY RETURN - No prisms found, skipping scanning section`);
+      // }
+      return;
+    }
     
     // PHASE 4: Lazy scanning - only scan when input queues are empty OR dirty prisms exist
     // Check if we should scan (queues empty OR dirty prisms exist)
@@ -1238,47 +1547,34 @@ export function createNetworkTransferController(deps, opts) {
     // Scan if: queues are empty OR dirty prisms exist
     const shouldScan = totalQueueSize === 0 || dirtyPrismsCount > 0;
     
-    // DIAGNOSTIC: Log scanning decision - UNCONDITIONAL (always send to all players)
-    if (nowTick <= 20 || nowTick % 10 === 0 || !shouldScan || dirtyPrismsCount > 0) {
-      try {
-        for (const player of world.getAllPlayers()) {
-          try {
-            if (typeof player.sendMessage === "function") {
-              player.sendMessage(`§7[Scan Tick ${nowTick}] Decision: queues=${totalQueueSize}, dirty=${dirtyPrismsCount}, shouldScan=${shouldScan}, prisms=${prismKeys.length}`);
-            }
-          } catch {}
-        }
-      } catch {}
-      // Also send via diagnostic message for extended debug users
-      sendDiagnosticMessage(`[Scan] Decision: queues=${totalQueueSize}, dirty=${dirtyPrismsCount}, shouldScan=${shouldScan}, scanDirtyOnly=${totalQueueSize > 0 && dirtyPrismsCount > 0}`, "transfer");
-    }
+    // Scan decision messages removed - too spammy and not helpful
+    // Only track state internally for logic, don't log it
+    // if (typeof onTick.lastScanState === "undefined") onTick.lastScanState = "";
+    // const currentScanState = `${totalQueueSize}-${dirtyPrismsCount}-${shouldScan}`;
+    // const scanStateChanged = onTick.lastScanState !== currentScanState;
+    // onTick.lastScanState = currentScanState;
     
     if (!shouldScan) {
       // Skip scanning - queues are active and no dirty prisms
       debugState.msScan += (Date.now() - scanStart);
-      // Log frequently - UNCONDITIONAL
-      if (nowTick <= 20 || nowTick % 10 === 0) {
-        try {
-          for (const player of world.getAllPlayers()) {
-            try {
-              if (typeof player.sendMessage === "function") {
-                player.sendMessage(`§7[Scan] Skipped: queues active (${totalQueueSize}), no dirty prisms`);
-              }
-            } catch {}
-          }
-        } catch {}
-        sendDiagnosticMessage(`[Scan] Skipped: queues active (${totalQueueSize}), no dirty prisms`, "transfer");
-      }
+      // Don't log when scanning skipped - state change already logged above
+      // sendDiagnosticMessage(`[Scan] Skipped: queues active (${totalQueueSize}), no dirty prisms`, "transfer");
       return;
+    }
+    
+    // DIAGNOSTIC: Log when scanning starts only occasionally (every 200 ticks) or first few times
+    if (nowTick <= 3 || nowTick % 200 === 0) {
+      sendDiagnosticMessage(`[Scan] Starting scan: queues=${totalQueueSize}, dirty=${dirtyPrismsCount}, prisms=${prismKeys.length}`, "transfer");
     }
     
     // If queues exist but dirty prisms also exist, limit scanning to dirty prisms only (with limited budget)
     const scanDirtyOnly = totalQueueSize > 0 && dirtyPrismsCount > 0;
     const dirtyScanBudget = scanDirtyOnly ? Math.min(cfg.maxPrismsScannedPerTick || 5, dirtyPrismsCount) : Infinity;
     
-    if (scanDirtyOnly) {
-      sendDiagnosticMessage(`[Scan] Scanning dirty prisms only: budget=${dirtyScanBudget}, dirtyCount=${dirtyPrismsCount}`, "transfer");
-    }
+    // Don't log dirty-only scan mode - too spammy (included in "Starting scan" message above)
+    // if (scanDirtyOnly) {
+    //   sendDiagnosticMessage(`[Scan] Scanning dirty prisms only: ...`, "transfer");
+    // }
 
     if (cursor >= prismKeys.length) cursor = 0;
     let scanned = 0;
@@ -1316,7 +1612,24 @@ export function createNetworkTransferController(deps, opts) {
       }
 
       const allowedAt = nextAllowed.has(prismKey) ? nextAllowed.get(prismKey) : 0;
-      if (nowTick < allowedAt) continue;
+      if (nowTick < allowedAt) {
+        // Log when prism is skipped due to backoff (first 10 ticks only to avoid spam)
+        if (nowTick <= 10 && scanned === 1) {
+          try {
+            for (const player of world.getAllPlayers()) {
+              try {
+                if (typeof player.sendMessage === "function") {
+                  player.sendMessage(`§7[Scan] Prism ${prismKey} skipped: backoff (allowed at ${allowedAt}, now ${nowTick})`);
+                }
+              } catch {}
+            }
+          } catch {}
+        }
+        continue;
+      }
+
+      // DIAGNOSTIC: Log when scanning a prism (disabled from chat - use extended debug instead)
+      // sendDiagnosticMessage(`[Scan] Scanning prism ${prismKey} (${scanned}/${scanLimit})`, "transfer");
 
       // Attempt transfer with budgeted searches
       const result = attemptTransferForPrism(prismKey, searchBudget);
@@ -1368,24 +1681,12 @@ export function createNetworkTransferController(deps, opts) {
         postDebugStats(prismKeys.length);
       } catch (err) {
         // If postDebugStats fails, send error message
-        for (const player of world.getAllPlayers()) {
-          try {
-            if (typeof player.sendMessage === "function") {
-              player.sendMessage(`§c[Chaos Transfer] Error in postDebugStats: ${err?.message || String(err)}`);
-            }
-          } catch {}
-        }
+        sendInitMessage(`§c[Chaos Transfer] Error in postDebugStats: ${err?.message || String(err)}`);
       }
     } else {
       // Debug is disabled - send message every 100 ticks to confirm
       if (nowTick % 100 === 0) {
-        for (const player of world.getAllPlayers()) {
-          try {
-            if (typeof player.sendMessage === "function") {
-              player.sendMessage(`§c[Chaos Transfer] DEBUG IS DISABLED! cfg.debugTransferStats=${cfg.debugTransferStats}, FX.debugTransferStats=${FX?.debugTransferStats}`);
-            }
-          } catch {}
-        }
+        sendInitMessage(`§c[Chaos Transfer] DEBUG IS DISABLED! cfg.debugTransferStats=${cfg.debugTransferStats}, FX.debugTransferStats=${FX?.debugTransferStats}`);
       }
     }
   }
@@ -1418,7 +1719,7 @@ export function createNetworkTransferController(deps, opts) {
     const prismKeys = [];
     for (const k of allKeys) {
       const info = cacheManager.resolveBlockInfoCached(k);
-      if (info && info.block && info.block.typeId === PRISM_ID) {
+      if (info && info.block && isPrismBlock(info.block)) {
         prismKeys.push(k);
       }
     }
@@ -1470,22 +1771,18 @@ export function createNetworkTransferController(deps, opts) {
     
     // PHASE 1: If input queues enabled, queue items instead of transferring immediately
     // Queue items when scanning finds them (only if no queue exists for this prism yet)
+    const hasExistingQueue = inputQueuesManager && typeof inputQueuesManager.hasQueueForPrism === "function" 
+      ? inputQueuesManager.hasQueueForPrism(prismKey)
+      : false;
+    
+    // DIAGNOSTIC: Log queue status (disabled from chat - use extended debug instead)
+    // sendDiagnosticMessage(`[Queue Check] Prism ${prismKey}: hasQueue=${hasExistingQueue}`, "transfer");
+    
     if (inputQueuesManager && typeof inputQueuesManager.hasQueueForPrism === "function" && 
-        !inputQueuesManager.hasQueueForPrism(prismKey)) {
+        !hasExistingQueue) {
       // No queue exists yet - find all items and queue them
-      // Log when scanning starts for this prism - UNCONDITIONAL (first 20 ticks or every 10 ticks)
-      if (nowTick <= 20 || nowTick % 10 === 0) {
-        try {
-          for (const player of world.getAllPlayers()) {
-            try {
-              if (typeof player.sendMessage === "function") {
-                player.sendMessage(`§b[Scan] Checking prism ${prismKey}: inventories=${inventories.length}, searchBudget=${searchBudget}`);
-              }
-            } catch {}
-          }
-        } catch {}
-        sendDiagnosticMessage(`[Scan] Checking prism ${prismKey} for items: inventories=${inventories.length}, searchBudget=${searchBudget}`, "transfer");
-      }
+      // Don't log every prism check - too spammy (only log when items found or errors)
+      // sendDiagnosticMessage(`[Scan] Checking prism ${prismKey} for items: ...`, "transfer");
       
       // Scan for items (regardless of budget - we need to know if items exist)
       const allItems = [];
@@ -1512,42 +1809,23 @@ export function createNetworkTransferController(deps, opts) {
         }
       }
       
-      // ALWAYS log item count found (not throttled) - UNCONDITIONAL
+      // DIAGNOSTIC: Log item discovery (only when items found - this is useful info)
       if (allItems.length > 0) {
         const itemSummary = allItems.map(i => `${i.stack.typeId}x${i.stack.amount}`).join(", ");
-        try {
-          for (const player of world.getAllPlayers()) {
-            try {
-              if (typeof player.sendMessage === "function") {
-                player.sendMessage(`§a[Scan] ✓ Found ${allItems.length} item(s) in prism ${prismKey}: ${itemSummary}`);
-              }
-            } catch {}
-          }
-        } catch {}
         sendDiagnosticMessage(`[Scan] ✓ Found ${allItems.length} item(s) in prism ${prismKey}: ${itemSummary}`, "transfer");
-      } else if (nowTick <= 20 || nowTick % 50 === 0) {
-        try {
-          for (const player of world.getAllPlayers()) {
-            try {
-              if (typeof player.sendMessage === "function") {
-                player.sendMessage(`§7[Scan] No items found in prism ${prismKey} (inventories=${inventories.length})`);
-              }
-            } catch {}
-          }
-        } catch {}
-        sendDiagnosticMessage(`[Scan] No items found in prism ${prismKey} (inventories=${inventories.length}, hasFilter=${hasFilter})`, "transfer");
       }
+      // Don't log when no items found - too spammy
       
       if (allItems.length > 0 && searchBudget > 0) {
-        // DIAGNOSTIC: Log when items are found (always log - not throttled)
-        sendDiagnosticMessage(`[Queue] Found ${allItems.length} items in prism ${prismKey}, finding routes...`, "transfer");
+        // Don't log route finding - too spammy (already logged item discovery above)
+        // sendDiagnosticMessage(`[Queue] Found ${allItems.length} items in prism ${prismKey}, finding routes...`, "transfer");
         
         // Find routes for all item types
         searchesUsed = 1;
         const pathResult = findPathForInput(prismKey, nowTick);
         if (pathResult && Array.isArray(pathResult) && pathResult.length > 0) {
-          // Always log route found (not throttled)
-          sendDiagnosticMessage(`[Queue] Found ${pathResult.length} route options for prism ${prismKey}`, "transfer");
+          // Don't log route found - too spammy (queue creation will be logged)
+          // sendDiagnosticMessage(`[Queue] Found ${pathResult.length} route options for prism ${prismKey}`, "transfer");
           // Create routes map by item type (use first route found for each type)
           const routesByType = new Map();
           for (const item of allItems) {
@@ -1576,8 +1854,8 @@ export function createNetworkTransferController(deps, opts) {
               // Store outputKey in queue entry's lastDestination
             }
             
-            // DIAGNOSTIC: Log queue creation (always log - not throttled)
-            sendDiagnosticMessage(`[Queue] Creating queue: prism=${prismKey}, items=${allItems.length}, types=${routesByType.size}`, "transfer");
+            // DIAGNOSTIC: Log queue creation - this is useful info (items queued for transfer)
+            sendDiagnosticMessage(`[Queue] ✓ Queued ${allItems.length} item type(s) for prism ${prismKey}`, "transfer");
             
             inputQueuesManager.enqueueInputStacks(prismKey, allItems, routesMap);
             
@@ -1593,15 +1871,15 @@ export function createNetworkTransferController(deps, opts) {
               }
             }
             
-            // DIAGNOSTIC: Log queue creation result (always log - not throttled)
-            const queueSize = inputQueuesManager.getTotalQueueSize();
-            sendDiagnosticMessage(`[Queue] ✓ Queue created: prism=${prismKey}, totalQueueSize=${queueSize}`, "transfer");
+            // Don't log queue size after creation - already logged creation above
+            // const queueSize = inputQueuesManager.getTotalQueueSize();
+            // sendDiagnosticMessage(`[Queue] ✓ Queue created: ...`, "transfer");
             
             // Return success - items are queued
             return { ...makeResult(true, "queued"), searchesUsed };
           } else {
-            // DIAGNOSTIC: Log when no routes found (extended debug)
-            sendDiagnosticMessage(`[Queue] No routes found: prism=${prismKey}, items=${allItems.length}, pathResult=${pathResult?.length || 0}`, "transfer");
+            // DIAGNOSTIC: Log when no routes found - this is important (items can't transfer)
+            sendDiagnosticMessage(`[Queue] ⚠ No routes found: prism=${prismKey}, items=${allItems.length}`, "transfer");
           }
         }
       }
@@ -1736,8 +2014,41 @@ export function createNetworkTransferController(deps, opts) {
             }
           );
 
+          // Don't log routine balance checks - too spammy
+          // Only log if cancelled with capacity > 0 (unexpected) and it's the first few ticks
+          // This indicates a potential logic issue, not routine capacity checks
+          const shouldLogBalance = queueEntry && nowTick <= 3 && 
+            balanceResult.cancelled && virtualCapacity > 0 && balanceResult.reason === "destination_balanced";
+          if (shouldLogBalance) {
+            sendDiagnosticMessage(`[Queue] ⚠ Unexpected balance block: source=${adjustedSourceCount}, dest=${adjustedDestCount}, capacity=${virtualCapacity} (should transfer)`, "transfer");
+          }
+
           if (balanceResult.cancelled) {
-            if (sourceCount > destCount && virtualCapacity > 0 && sourceStack.amount > 0) {
+            // For queue-based transfers, be more lenient - transfer if capacity allows
+            // Queue entries exist because items were found and should be moved
+            if (queueEntry) {
+              // Queue-based transfer: allow transfer if we have capacity, even if balanced
+              if (virtualCapacity > 0 && sourceStack.amount > 0) {
+                const minTransfer = cfg.balanceMinTransfer || 1;
+                const levelAmount = (levelsManager && typeof levelsManager.getTransferAmount === "function")
+                  ? levelsManager.getTransferAmount(previewLevel, sourceStack)
+                  : 1;
+                desiredAmount = Math.min(levelAmount, virtualCapacity, sourceStack.amount, maxTransfer || Infinity);
+                // Ensure we transfer at least minTransfer if possible
+                if (desiredAmount < minTransfer && virtualCapacity >= minTransfer && sourceStack.amount >= minTransfer) {
+                  desiredAmount = minTransfer;
+                }
+                // If balance cancelled but we have capacity, still transfer
+                if (desiredAmount > 0) {
+                  // Continue with transfer
+                } else {
+                  return { ...makeResult(false, "no_capacity"), amount: 0 };
+                }
+              } else {
+                return { ...makeResult(false, "no_capacity"), amount: 0 };
+              }
+            } else if (sourceCount > destCount && virtualCapacity > 0 && sourceStack.amount > 0) {
+              // Regular transfer: only transfer if source > dest
               desiredAmount = (levelsManager && typeof levelsManager.getTransferAmount === "function")
                 ? Math.min(levelsManager.getTransferAmount(previewLevel, sourceStack), virtualCapacity, sourceStack.amount)
                 : Math.min(1, virtualCapacity, sourceStack.amount);
@@ -1789,7 +2100,11 @@ export function createNetworkTransferController(deps, opts) {
 
     // Create inflight job (same as attemptPushTransfer)
     const suppressOrb = (outputType === "crystal" && isFluxTypeId(sourceStack.typeId));
-    const prismPos = prismInfo.pos;
+    // Get prism position - construct from prismBlock.location since prismBlock is already available
+    const prismPos = prismBlock.location ? { x: prismBlock.location.x, y: prismBlock.location.y, z: prismBlock.location.z, dimId: dim.id } : resolveBlockInfo(prismKey)?.pos;
+    if (!prismPos) {
+      return { ...makeResult(false, "no_prism_pos"), amount: 0 };
+    }
     const nodePath = buildNodePathSegments(dim, route, prismPos);
     const travelPath = nodePath?.points || route;
     const segmentLengths = nodePath?.lengths || null;
@@ -1799,7 +2114,7 @@ export function createNetworkTransferController(deps, opts) {
       levelsManager.notePrismPassage(prismKey, prismBlock);
     }
 
-    const prismTier = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock) : 1;
+    const prismTier = isPrismBlock(prismBlock) ? getPrismTier(prismBlock) : 1;
     const baseStepTicks = (levelsManager && typeof levelsManager.getOrbStepTicks === "function")
       ? levelsManager.getOrbStepTicks(prismTier)
       : cfg.orbStepTicks;
@@ -2183,7 +2498,7 @@ export function createNetworkTransferController(deps, opts) {
       levelsManager.notePrismPassage(prismKey, prismBlock);
     }
     // Get level from prism block for orb step ticks (prisms now use tier block IDs, not state)
-    const prismTier = isPrismBlock(prismBlock) ? getPrismTierFromTypeId(prismBlock) : 1;
+    const prismTier = isPrismBlock(prismBlock) ? getPrismTier(prismBlock) : 1;
     const baseStepTicks = (levelsManager && typeof levelsManager.getOrbStepTicks === "function")
       ? levelsManager.getOrbStepTicks(prismTier)
       : cfg.orbStepTicks;

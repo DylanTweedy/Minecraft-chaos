@@ -1,6 +1,5 @@
 // scripts/chaos/features/links/beam/validation.js
 import {
-  PRISM_ID,
   CRYSTALLIZER_ID,
   BEAM_ID,
   isPassThrough,

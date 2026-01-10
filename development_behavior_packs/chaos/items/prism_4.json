@@ -3,7 +3,7 @@
   "minecraft:item": {
     "description": {
       "identifier": "chaos:prism_4",
-      "menu_category": { "category": "construction" }
+      "menu_category": { "category": "construction", "group": "chaos:prisms" }
     },
     "components": {
       "minecraft:display_name": { "value": "item.chaos:prism_4.name" },

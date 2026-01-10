@@ -1,7 +1,6 @@
 // scripts/chaos/features/links/beam/rebuild.js
 import { BlockPermutation } from "@minecraft/server";
 import {
-  PRISM_ID,
   CRYSTALLIZER_ID,
   BEAM_ID,
   AXIS_X,
@@ -18,7 +17,7 @@ import {
   enqueueRelayForRescan,
   enqueueInputForRescan,
 } from "./queue.js";
-import { getPrismTierFromTypeId, isPrismBlock } from "../transfer/config.js";
+import { getPrismTier, isPrismBlock } from "../transfer/config.js";
 
 function getTierFromBlock(block) {
   if (!block) return 1;
@@ -35,7 +34,7 @@ function getTierFromBlock(block) {
   }
   
   // Prisms now use separate block IDs (prism_1, prism_2, etc.) instead of state
-  return getPrismTierFromTypeId(block);
+  return getPrismTier(block);
 }
 
 function placeBeamIfAir(dim, x, y, z, axis, tier = 1) {
@@ -336,7 +335,7 @@ export function clearBeamsFromBreak(world, dim, loc) {
         continue;
       }
       if (id === "minecraft:air") break;
-      if (id === PRISM_ID || id === CRYSTALLIZER_ID) break;
+      if (isPrismBlock(b) || id === CRYSTALLIZER_ID) break;
       break;
     }
   }

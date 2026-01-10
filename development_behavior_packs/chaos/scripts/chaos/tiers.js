@@ -1,13 +1,13 @@
 // scripts/chaos/tiers.js
-import { getPrismTierFromTypeId, isPrismBlock } from "./features/links/transfer/config.js";
+import { getPrismTier, isPrismBlock } from "./features/links/transfer/config.js";
 
 function getTierFromBlock(block) {
   try {
     if (!block) return 1;
     // Extract tier from block typeId
     if (isPrismBlock(block)) {
-      // getPrismTierFromTypeId accepts either a block object or a typeId string
-      return getPrismTierFromTypeId(block);
+      // getPrismTier accepts either a block object or a typeId string
+      return getPrismTier(block);
     }
   } catch {
     // ignore
@@ -23,6 +23,5 @@ export function getOutputTier(block) {
   return getTierFromBlock(block);
 }
 
-export function getPrismTier(block) {
-  return getTierFromBlock(block);
-}
+// Re-export getPrismTier from config.js for convenience
+export { getPrismTier } from "./features/links/transfer/config.js";

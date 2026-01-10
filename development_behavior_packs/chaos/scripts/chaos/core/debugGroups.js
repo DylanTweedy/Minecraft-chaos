@@ -218,7 +218,7 @@ export function getGroupForBlock(block) {
   const typeId = block.typeId;
   
   // Prism blocks
-  if (typeId === "chaos:prism" || typeId.startsWith("chaos:prism_")) {
+  if (typeId && typeId.startsWith("chaos:prism_")) {
     return "prism";
   }
   

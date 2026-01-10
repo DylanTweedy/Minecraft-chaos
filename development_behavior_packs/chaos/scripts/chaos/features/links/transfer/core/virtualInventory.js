@@ -5,9 +5,11 @@
  * Predicts future inventory state by accounting for:
  * - In-flight transfers heading to containers
  * - Queued output items waiting to be inserted
- * - Future: Queued input items waiting to be extracted
+ * - Queued input items waiting to be extracted
  * 
  * This prevents sending items to containers that will be full once pending operations complete.
+ * 
+ * State is persistent - only updated on actual changes (events/scans), not rebuilt every tick.
  */
 
 /**
@@ -18,98 +20,331 @@
  */
 export function createVirtualInventoryManager(cfg, deps) {
   const { getContainerKey } = deps;
+  let nowTick = 0;
+  
+  // Store deps for use in updateState
+  deps = { ...deps, getContainerKey };
 
-  // Track pending items per container
-  // Map<containerKey, { byType: Map<typeId, amount>, total: number, lastUpdated: tick }>
-  const pendingByContainer = new Map();
+  // Persistent inventory state per container
+  // Map<containerKey, {
+  //   actual: { byType: Map<typeId, amount>, totalItems: number, capacity: number, lastScannedTick: number },
+  //   pending: { incoming: { byType: Map<typeId, amount>, total: number }, outgoing: { byType: Map<typeId, amount>, total: number } },
+  //   virtual: { byType: Map<typeId, amount>, totalItems: number, capacity: number },
+  //   dirty: boolean,
+  //   dirtyReason: string | null,
+  //   lastValidatedTick: number
+  // }>
+  const virtualInventoryState = new Map();
+
+  // Track which prisms have dirty inventories (need scanning)
+  const dirtyPrisms = new Set();
 
   /**
-   * Update pending items tracking from in-flight transfers
+   * Update pending items tracking from in-flight transfers and queues
+   * Called each tick to update pending items (does NOT update actual state)
    * @param {Array} inflight - Array of in-flight transfer jobs
+   * @param {Map} queueByContainer - Map of container output queues
+   * @param {Map} inputQueueByPrism - Optional: Map of input queues by prism
    */
-  function updateFromInflight(inflight) {
-    // Clear old pending items
-    pendingByContainer.clear();
+  function updatePendingItems(inflight, queueByContainer, inputQueueByPrism = null) {
+    // Update pending incoming (in-flight + output queues)
+    for (const [containerKey, state] of virtualInventoryState.entries()) {
+      // Clear pending incoming
+      state.pending.incoming.byType.clear();
+      state.pending.incoming.total = 0;
+      state.pending.outgoing.byType.clear();
+      state.pending.outgoing.total = 0;
+    }
 
-    // Aggregate pending items from in-flight transfers
-    for (const job of inflight) {
+    // Aggregate pending incoming items from in-flight transfers
+    for (const job of inflight || []) {
       if (!job || !job.containerKey || !job.itemTypeId || !job.amount) continue;
       
       const containerKey = job.containerKey;
-      let entry = pendingByContainer.get(containerKey);
-      if (!entry) {
-        entry = { byType: new Map(), total: 0 };
-        pendingByContainer.set(containerKey, entry);
+      let state = virtualInventoryState.get(containerKey);
+      if (!state) {
+        // Create state if doesn't exist (will be populated on next scan)
+        state = createEmptyState();
+        virtualInventoryState.set(containerKey, state);
       }
 
-      // Track by type for better capacity calculation
-      const currentByType = entry.byType.get(job.itemTypeId) || 0;
-      entry.byType.set(job.itemTypeId, currentByType + job.amount);
-      entry.total += job.amount;
+      const currentByType = state.pending.incoming.byType.get(job.itemTypeId) || 0;
+      state.pending.incoming.byType.set(job.itemTypeId, currentByType + job.amount);
+      state.pending.incoming.total += job.amount;
+    }
+
+    // Aggregate pending incoming items from output queues
+    for (const [containerKey, queue] of (queueByContainer || new Map()).entries()) {
+      if (!queue || !Array.isArray(queue) || queue.length === 0) continue;
+
+      let state = virtualInventoryState.get(containerKey);
+      if (!state) {
+        state = createEmptyState();
+        virtualInventoryState.set(containerKey, state);
+      }
+
+      for (const job of queue) {
+        if (!job || !job.itemTypeId || !job.amount) continue;
+        
+        const currentByType = state.pending.incoming.byType.get(job.itemTypeId) || 0;
+        state.pending.incoming.byType.set(job.itemTypeId, currentByType + job.amount);
+        state.pending.incoming.total += job.amount;
+      }
+    }
+
+    // Aggregate pending outgoing items from input queues (future extraction)
+    if (inputQueueByPrism) {
+      for (const queues of inputQueueByPrism.values()) {
+        if (!Array.isArray(queues)) continue;
+        for (const entry of queues) {
+          if (!entry || !entry.containerKey || !entry.itemTypeId || !entry.remainingAmount) continue;
+          
+          const containerKey = entry.containerKey;
+          let state = virtualInventoryState.get(containerKey);
+          if (!state) {
+            state = createEmptyState();
+            virtualInventoryState.set(containerKey, state);
+          }
+
+          const currentByType = state.pending.outgoing.byType.get(entry.itemTypeId) || 0;
+          state.pending.outgoing.byType.set(entry.itemTypeId, currentByType + entry.remainingAmount);
+          state.pending.outgoing.total += entry.remainingAmount;
+        }
+      }
+    }
+
+    // Update virtual state (actual + pending.incoming - pending.outgoing)
+    updateVirtualState();
+  }
+
+  /**
+   * Create empty state structure
+   * @returns {Object} Empty state
+   */
+  function createEmptyState() {
+    return {
+      actual: {
+        byType: new Map(),
+        totalItems: 0,
+        capacity: 0,
+        lastScannedTick: 0,
+      },
+      pending: {
+        incoming: { byType: new Map(), total: 0 },
+        outgoing: { byType: new Map(), total: 0 },
+      },
+      virtual: {
+        byType: new Map(),
+        totalItems: 0,
+        capacity: 0,
+      },
+      dirty: false,
+      dirtyReason: null,
+      lastValidatedTick: 0,
+    };
+  }
+
+  /**
+   * Update virtual state from actual + pending
+   */
+  function updateVirtualState() {
+    for (const [containerKey, state] of virtualInventoryState.entries()) {
+      // Clear virtual state
+      state.virtual.byType.clear();
+      state.virtual.totalItems = 0;
+
+      // Virtual = actual + pending.incoming - pending.outgoing
+      // Copy actual by-type amounts
+      for (const [typeId, amount] of state.actual.byType.entries()) {
+        state.virtual.byType.set(typeId, amount);
+      }
+
+      // Add pending incoming
+      for (const [typeId, amount] of state.pending.incoming.byType.entries()) {
+        const current = state.virtual.byType.get(typeId) || 0;
+        state.virtual.byType.set(typeId, current + amount);
+      }
+
+      // Subtract pending outgoing
+      for (const [typeId, amount] of state.pending.outgoing.byType.entries()) {
+        const current = state.virtual.byType.get(typeId) || 0;
+        const next = Math.max(0, current - amount);
+        if (next <= 0) {
+          state.virtual.byType.delete(typeId);
+        } else {
+          state.virtual.byType.set(typeId, next);
+        }
+      }
+
+      // Calculate totals
+      state.virtual.totalItems = 0;
+      for (const amount of state.virtual.byType.values()) {
+        state.virtual.totalItems += amount;
+      }
+
+      // Virtual capacity = actual capacity (capacity doesn't change with pending items)
+      state.virtual.capacity = state.actual.capacity;
     }
   }
 
   /**
-   * Update pending items tracking from output queues
-   * @param {Map} queueByContainer - Map of container queues
+   * Update actual inventory state (only called on events/scans)
+   * @param {string} containerKey - Container key
+   * @param {Object} actualState - Actual inventory state: { byType: Map<typeId, amount>, totalItems: number, capacity: number }
+   * @param {number} scannedTick - Tick when scanned
    */
-  function updateFromOutputQueues(queueByContainer) {
-    // Add queued items to pending tracking
-    for (const [containerKey, queue] of queueByContainer.entries()) {
-      if (!queue || !Array.isArray(queue) || queue.length === 0) continue;
+  function updateInventoryState(containerKey, actualState, scannedTick = 0) {
+    if (!containerKey || !actualState) return;
 
-      let entry = pendingByContainer.get(containerKey);
-      if (!entry) {
-        entry = { byType: new Map(), total: 0 };
-        pendingByContainer.set(containerKey, entry);
-      }
-
-      // Aggregate all queued items for this container
-      for (const job of queue) {
-        if (!job || !job.itemTypeId || !job.amount) continue;
-        
-        const currentByType = entry.byType.get(job.itemTypeId) || 0;
-        entry.byType.set(job.itemTypeId, currentByType + job.amount);
-        entry.total += job.amount;
-      }
+    let state = virtualInventoryState.get(containerKey);
+    if (!state) {
+      state = createEmptyState();
+      virtualInventoryState.set(containerKey, state);
     }
+
+    // Update actual state
+    state.actual.byType.clear();
+    for (const [typeId, amount] of actualState.byType.entries()) {
+      state.actual.byType.set(typeId, amount);
+    }
+    state.actual.totalItems = actualState.totalItems || 0;
+    state.actual.capacity = actualState.capacity || 0;
+    state.actual.lastScannedTick = scannedTick || 0;
+
+    // Clear dirty flag after updating
+    state.dirty = false;
+    state.dirtyReason = null;
+
+    // Update virtual state
+    updateVirtualState();
+  }
+
+  /**
+   * Mark inventory as dirty (needs rescan)
+   * @param {string} containerKey - Container key
+   * @param {string} reason - Reason for dirty flag (e.g., "block_changed", "manual_change", "validation_failed")
+   */
+  function markInventoryDirty(containerKey, reason = null) {
+    if (!containerKey) return;
+
+    let state = virtualInventoryState.get(containerKey);
+    if (!state) {
+      state = createEmptyState();
+      virtualInventoryState.set(containerKey, state);
+    }
+
+    state.dirty = true;
+    state.dirtyReason = reason || "unknown";
+  }
+
+  /**
+   * Clear dirty flag (mark as clean after rescan)
+   * @param {string} containerKey - Container key
+   */
+  function clearDirty(containerKey) {
+    if (!containerKey) return;
+    const state = virtualInventoryState.get(containerKey);
+    if (state) {
+      state.dirty = false;
+      state.dirtyReason = null;
+    }
+  }
+
+  /**
+   * Mark a prism as dirty (needs scanning)
+   * @param {string} prismKey - Prism key
+   * @param {string} reason - Reason for dirty flag
+   */
+  function markPrismDirty(prismKey, reason = null) {
+    if (!prismKey) return;
+    dirtyPrisms.add(prismKey);
+  }
+
+  /**
+   * Clear dirty flag for a prism (after scanning)
+   * @param {string} prismKey - Prism key
+   */
+  function clearPrismDirty(prismKey) {
+    if (!prismKey) return;
+    dirtyPrisms.delete(prismKey);
+  }
+
+  /**
+   * Get all dirty prisms (prisms that need scanning)
+   * @returns {Set<string>} Set of prism keys that are dirty
+   */
+  function getDirtyPrisms() {
+    return new Set(dirtyPrisms); // Return a copy
   }
 
   /**
    * Get pending items for a container (for a specific type)
    * @param {string} containerKey - Container key
-   * @param {string} typeId - Item type ID (optional, if not provided returns total)
-   * @returns {number} Pending amount for type, or total if typeId not provided
+   * @param {string} typeId - Item type ID (optional, if not provided returns total incoming)
+   * @returns {number} Pending incoming amount for type, or total incoming if typeId not provided
    */
   function getPendingForContainer(containerKey, typeId = null) {
     if (!containerKey) return 0;
-    const entry = pendingByContainer.get(containerKey);
-    if (!entry) return 0;
+    const state = virtualInventoryState.get(containerKey);
+    if (!state) return 0;
     
     if (typeId) {
-      return entry.byType.get(typeId) || 0;
+      return state.pending.incoming.byType.get(typeId) || 0;
     }
-    return entry.total || 0;
+    return state.pending.incoming.total || 0;
   }
 
   /**
    * Get all pending items for a container
    * @param {string} containerKey - Container key
-   * @returns {Object} { byType: Map<typeId, amount>, total: number }
+   * @returns {Object} { incoming: { byType: Map<typeId, amount>, total: number }, outgoing: { byType: Map<typeId, amount>, total: number } }
    */
   function getAllPendingForContainer(containerKey) {
-    if (!containerKey) return { byType: new Map(), total: 0 };
-    const entry = pendingByContainer.get(containerKey);
-    if (!entry) return { byType: new Map(), total: 0 };
+    if (!containerKey) {
+      return {
+        incoming: { byType: new Map(), total: 0 },
+        outgoing: { byType: new Map(), total: 0 },
+      };
+    }
+    const state = virtualInventoryState.get(containerKey);
+    if (!state) {
+      return {
+        incoming: { byType: new Map(), total: 0 },
+        outgoing: { byType: new Map(), total: 0 },
+      };
+    }
     return {
-      byType: new Map(entry.byType),
-      total: entry.total
+      incoming: {
+        byType: new Map(state.pending.incoming.byType),
+        total: state.pending.incoming.total,
+      },
+      outgoing: {
+        byType: new Map(state.pending.outgoing.byType),
+        total: state.pending.outgoing.total,
+      },
+    };
+  }
+
+  /**
+   * Get virtual inventory state for a container (predicted state)
+   * @param {string} containerKey - Container key
+   * @returns {Object|null} Virtual inventory state: { byType: Map<typeId, amount>, totalItems: number, capacity: number }
+   */
+  function getVirtualInventory(containerKey) {
+    if (!containerKey) return null;
+    const state = virtualInventoryState.get(containerKey);
+    if (!state) return null;
+
+    return {
+      byType: new Map(state.virtual.byType),
+      totalItems: state.virtual.totalItems,
+      capacity: state.virtual.capacity,
     };
   }
 
   /**
    * Calculate virtual capacity for a container
-   * Accounts for: current capacity - reservations - pending items
+   * Accounts for: current capacity - reservations - pending incoming items + pending outgoing items
    * @param {string} containerKey - Container key
    * @param {number} currentCapacity - Current available capacity (from cache)
    * @param {number} reserved - Currently reserved capacity
@@ -120,17 +355,28 @@ export function createVirtualInventoryManager(cfg, deps) {
   function getVirtualCapacity(containerKey, currentCapacity, reserved, typeId = null, reservedForType = 0) {
     if (!containerKey || currentCapacity <= 0) return 0;
 
-    // Get pending items for this container
-    const pendingForType = typeId ? getPendingForContainer(containerKey, typeId) : getPendingForContainer(containerKey);
-    
-    // Virtual capacity = current - reserved - pending
-    // If type-specific, use type-specific pending and reservations
+    const state = virtualInventoryState.get(containerKey);
+    if (!state) {
+      // No virtual state - use current capacity
+      return Math.max(0, currentCapacity - reserved);
+    }
+
+    // Get pending incoming items for this type (items being added)
+    const pendingIncoming = typeId 
+      ? (state.pending.incoming.byType.get(typeId) || 0)
+      : state.pending.incoming.total;
+
+    // Get pending outgoing items for this type (items being removed)
+    const pendingOutgoing = typeId
+      ? (state.pending.outgoing.byType.get(typeId) || 0)
+      : state.pending.outgoing.total;
+
+    // Virtual capacity = current - reserved - pending incoming + pending outgoing
     if (typeId) {
-      const virtual = currentCapacity - reservedForType - pendingForType;
+      const virtual = currentCapacity - reservedForType - pendingIncoming + pendingOutgoing;
       return Math.max(0, virtual);
     } else {
-      const pending = getPendingForContainer(containerKey);
-      const virtual = currentCapacity - reserved - pending;
+      const virtual = currentCapacity - reserved - pendingIncoming + pendingOutgoing;
       return Math.max(0, virtual);
     }
   }
@@ -151,7 +397,7 @@ export function createVirtualInventoryManager(cfg, deps) {
   }
 
   /**
-   * Add pending items (for future input queue integration)
+   * Add pending items (legacy function - now handled by updatePendingItems)
    * @param {string} containerKey - Container key
    * @param {string} typeId - Item type ID
    * @param {number} amount - Amount to add as pending
@@ -159,19 +405,21 @@ export function createVirtualInventoryManager(cfg, deps) {
   function addPending(containerKey, typeId, amount) {
     if (!containerKey || !typeId || amount <= 0) return;
     
-    let entry = pendingByContainer.get(containerKey);
-    if (!entry) {
-      entry = { byType: new Map(), total: 0 };
-      pendingByContainer.set(containerKey, entry);
+    let state = virtualInventoryState.get(containerKey);
+    if (!state) {
+      state = createEmptyState();
+      virtualInventoryState.set(containerKey, state);
     }
 
-    const current = entry.byType.get(typeId) || 0;
-    entry.byType.set(typeId, current + amount);
-    entry.total += amount;
+    const current = state.pending.incoming.byType.get(typeId) || 0;
+    state.pending.incoming.byType.set(typeId, current + amount);
+    state.pending.incoming.total += amount;
+
+    updateVirtualState();
   }
 
   /**
-   * Remove pending items (when items are inserted/extracted)
+   * Remove pending items (legacy function - now handled by updatePendingItems)
    * @param {string} containerKey - Container key
    * @param {string} typeId - Item type ID
    * @param {number} amount - Amount to remove from pending
@@ -179,24 +427,48 @@ export function createVirtualInventoryManager(cfg, deps) {
   function removePending(containerKey, typeId, amount) {
     if (!containerKey || !typeId || amount <= 0) return;
     
-    const entry = pendingByContainer.get(containerKey);
-    if (!entry) return;
+    const state = virtualInventoryState.get(containerKey);
+    if (!state) return;
 
-    const current = entry.byType.get(typeId) || 0;
+    const current = state.pending.incoming.byType.get(typeId) || 0;
     const next = Math.max(0, current - amount);
     
     if (next === 0) {
-      entry.byType.delete(typeId);
+      state.pending.incoming.byType.delete(typeId);
     } else {
-      entry.byType.set(typeId, next);
+      state.pending.incoming.byType.set(typeId, next);
     }
     
-    entry.total = Math.max(0, entry.total - amount);
+    state.pending.incoming.total = Math.max(0, state.pending.incoming.total - amount);
     
-    // Clean up if empty
-    if (entry.total <= 0 && entry.byType.size === 0) {
-      pendingByContainer.delete(containerKey);
+    updateVirtualState();
+  }
+
+  /**
+   * Cleanup stale entries (remove entries not touched for >maxAge ticks)
+   * @param {number} maxAge - Maximum age in ticks (default: 1000)
+   */
+  function cleanupStaleEntries(maxAge = 1000) {
+    const cutoffTick = nowTick - maxAge;
+    const toDelete = [];
+
+    for (const [containerKey, state] of virtualInventoryState.entries()) {
+      const lastTouched = Math.max(
+        state.actual.lastScannedTick || 0,
+        state.lastValidatedTick || 0
+      );
+
+      // If entry hasn't been touched recently and has no pending items, mark for deletion
+      if (lastTouched < cutoffTick && state.pending.incoming.total === 0 && state.pending.outgoing.total === 0) {
+        toDelete.push(containerKey);
+      }
     }
+
+    for (const containerKey of toDelete) {
+      virtualInventoryState.delete(containerKey);
+    }
+
+    return toDelete.length;
   }
 
   /**
@@ -204,13 +476,11 @@ export function createVirtualInventoryManager(cfg, deps) {
    * Call this each tick before checking capacities
    * @param {Array} inflight - In-flight transfers array
    * @param {Map} queueByContainer - Output queue map
+   * @param {Map} inputQueueByPrism - Optional: Input queues by prism (Map<prismKey, Array<queueEntries>>)
    */
-  function updateState(inflight, queueByContainer) {
-    // Clear and rebuild from current state
-    pendingByContainer.clear();
-    updateFromInflight(inflight);
-    updateFromOutputQueues(queueByContainer);
-    // Future: updateFromInputQueues(inputQueues)
+  function updateState(inflight, queueByContainer, inputQueueByPrism = null) {
+    // Update pending items tracking from all sources
+    updatePendingItems(inflight, queueByContainer, inputQueueByPrism);
   }
 
   /**
@@ -238,5 +508,10 @@ export function createVirtualInventoryManager(cfg, deps) {
     addPending,
     removePending,
     getInventoryContainerKey,
+    markPrismDirty,
+    clearPrismDirty,
+    getDirtyPrisms,
+    markInventoryDirty,
+    clearDirty,
   };
 }

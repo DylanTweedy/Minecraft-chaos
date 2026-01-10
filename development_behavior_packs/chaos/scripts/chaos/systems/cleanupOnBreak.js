@@ -1,11 +1,6 @@
 // scripts/chaos/cleanupOnBreak.js
 import { world, system } from "@minecraft/server";
-
-import { getPairsMap, savePairsToWorldSafe, isPersistenceEnabled } from "../features/links/pairs.js";
-import { fxPairSuccess } from "../fx/fx.js";
-import { makeUnpairFx } from "../fx/presets.js";
-
-const PRISM_ID = "chaos:prism";
+import { PRISM_IDS } from "../features/links/transfer/config.js";
 
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
@@ -21,9 +16,6 @@ const INV_SCAN_MAX_PER_TICK = 4;
 
 const pendingTierDrops = [];
 const pendingInventoryTags = [];
-
-// cap visuals so breaking a hub with 200 outputs doesn't nuke FPS
-const MAX_UNPAIR_FX_BEAMS = 12;
 
 function makeKeyFromParts(dimId, loc) {
   // matches your persisted format: "dimId|x,y,z"
@@ -132,7 +124,7 @@ function getLevelFromPermutation(perm) {
 
 function getDropDpKey(typeId) {
   // Unified system - all prisms use DP_PRISM_LEVELS
-  if (typeId === PRISM_ID) return DP_PRISM_LEVELS;
+  if (typeId && PRISM_IDS.includes(typeId)) return DP_PRISM_LEVELS;
   return null;
 }
 
@@ -375,80 +367,10 @@ function scanPendingInventoryTags() {
     }
   }
 }
-function pruneAndCollectFx(deadKey) {
-  const pairs = getPairsMap();
-  let changed = false;
-
-  // We'll collect a few beam endpoints to visualize the unlinking.
-  // Each entry: { fromPos, toPos }
-  const fxBeams = [];
-
-  // If it was an input, remove the whole entry and collect its outputs for FX
-  const outSet = pairs.get(deadKey);
-  if (outSet && outSet.size) {
-    const inParsed = parseKey(deadKey);
-    if (inParsed) {
-      for (const outKey of outSet) {
-        if (fxBeams.length >= MAX_UNPAIR_FX_BEAMS) break;
-        const outParsed = parseKey(outKey);
-        if (!outParsed) continue;
-        if (outParsed.dimId !== inParsed.dimId) continue;
-        fxBeams.push({ fromPos: inParsed.pos, toPos: outParsed.pos });
-      }
-    }
-
-    pairs.delete(deadKey);
-    changed = true;
-  }
-
-  // If it was an output anywhere, remove it from all sets
-  for (const [inKey, set] of pairs) {
-    if (!set || set.size === 0) continue;
-
-    if (set.has(deadKey)) {
-      // FX: show unlink beam from input -> dead output
-      if (fxBeams.length < MAX_UNPAIR_FX_BEAMS) {
-        const inParsed = parseKey(inKey);
-        const deadParsed = parseKey(deadKey);
-        if (inParsed && deadParsed && inParsed.dimId === deadParsed.dimId) {
-          fxBeams.push({ fromPos: inParsed.pos, toPos: deadParsed.pos });
-        }
-      }
-
-      set.delete(deadKey);
-      changed = true;
-
-      if (set.size === 0) pairs.delete(inKey);
-    }
-  }
-
-  return { changed, fxBeams };
-}
-
 function handleBrokenNode(player, dimId, loc) {
-  try {
-    const deadKey = makeKeyFromParts(dimId, loc);
-
-    const { changed, fxBeams } = pruneAndCollectFx(deadKey);
-
-    if (!changed) return;
-
-    // Persist best-effort (only if DP is still healthy)
-    if (isPersistenceEnabled()) {
-      savePairsToWorldSafe();
-    }
-
-    // Play unpair animation beams (visual reinforcement)
-    // Best effort: if player is missing, just skip FX silently.
-    if (!player) return;
-
-    const fx = makeUnpairFx();
-    for (const beam of fxBeams) {
-      fxPairSuccess(player, beam.fromPos, beam.toPos, fx);
-    }
-  } catch {
-    // silent failure by design
-  }
+  // Pairs cleanup removed - beam simulation handles connection cleanup automatically
+  // This function is kept for potential future use but currently does nothing
+  // Level counts cleanup is handled separately below
 }
 
 export function startCleanupOnBreak() {
@@ -461,7 +383,7 @@ export function startCleanupOnBreak() {
       if (!block) return;
 
       const brokenId = ev.brokenBlockPermutation?.type?.id;
-      if (brokenId !== PRISM_ID) return;
+      if (!brokenId || !PRISM_IDS.includes(brokenId)) return;
 
       const dimId = block.dimension?.id;
       const loc = block.location;
@@ -491,7 +413,7 @@ export function startCleanupOnBreak() {
         if (!itemInfo || !itemInfo.stack) return;
 
         const typeId = itemInfo.stack.typeId;
-        if (typeId !== PRISM_ID) return;
+        if (!typeId || !PRISM_IDS.includes(typeId)) return;
 
         const pending = matchPendingDrop(loc, dimId, typeId);
         if (!pending) return;
@@ -520,7 +442,7 @@ export function startCleanupOnBreak() {
       const block = ev?.block;
       if (!block) return;
       const typeId = block.typeId;
-      if (typeId !== PRISM_ID) return;
+      if (!typeId || !PRISM_IDS.includes(typeId)) return;
 
       const dimId = block.dimension?.id;
       const loc = block.location;

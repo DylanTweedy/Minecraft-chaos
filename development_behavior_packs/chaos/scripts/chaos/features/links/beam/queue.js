@@ -1,7 +1,6 @@
 // scripts/chaos/features/links/beam/queue.js
 import {
   BEAM_ID,
-  PRISM_ID,
   CRYSTALLIZER_ID,
 } from "./config.js";
 import { isPrismBlock } from "../transfer/config.js";
@@ -129,7 +128,7 @@ export function enqueueBeamsInLine(dim, loc) {
         enqueueBeamValidation(key(dim.id, x, y, z));
         continue;
       }
-      if (id === PRISM_ID) continue; // Prisms are pass-through
+      if (isPrismBlock(b)) continue; // Prisms are pass-through
       if (id === CRYSTALLIZER_ID) break; // Crystallizers stop
       if (id === "minecraft:air") break;
       break;

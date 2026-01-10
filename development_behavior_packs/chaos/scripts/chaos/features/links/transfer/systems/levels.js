@@ -1,5 +1,5 @@
 // scripts/chaos/features/links/transfer/systems/levels.js
-import { isPrismBlock, getPrismTierFromTypeId, getPrismTypeIdForTier } from "../config.js";
+import { isPrismBlock, getPrismTier, getPrismTypeIdForTier } from "../config.js";
 
 export function createLevelsManager(cfg, state, deps = {}) {
   // State maps and flags are maintained by controller, passed in
@@ -72,10 +72,11 @@ export function createLevelsManager(cfg, state, deps = {}) {
 
   function getOrbStepTicks(level) {
     const safeLevel = Math.max(1, level | 0);
-    const base = Math.max(1, cfg.orbStepTicks | 0);
-    const minTicks = Math.max(1, cfg.minOrbStepTicks | 0);
-    const scale = Math.pow(2, Math.max(0, safeLevel - 1));
-    return Math.max(minTicks, Math.floor(base / scale));
+    // Direct tier-based speed: Tier 1 = 16 ticks, Tier 5 = 1 tick
+    // Formula: 16 / (2^(tier-1)) = 2^(5-tier)
+    // This gives: T1=16, T2=8, T3=4, T4=2, T5=1
+    const stepTicks = Math.pow(2, 5 - safeLevel);
+    return Math.max(1, Math.floor(stepTicks)); // Ensure at least 1 tick
   }
 
   function notePrismPassage(prismKey, block) {
@@ -97,7 +98,7 @@ export function createLevelsManager(cfg, state, deps = {}) {
     }
     
     const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
-    const blockLevel = isPrismBlock(block) ? getPrismTierFromTypeId(block) : 1;
+    const blockLevel = isPrismBlock(block) ? getPrismTier(block) : 1;
     const minCount = getMinCountForLevel(blockLevel, prismStep);
     const stored = prismCounts.has(actualKey) ? prismCounts.get(actualKey) : 0;
     const storedLevel = getLevelForCount(stored, prismStep, cfg.maxLevel);
@@ -116,7 +117,7 @@ export function createLevelsManager(cfg, state, deps = {}) {
       const newTypeId = getPrismTypeIdForTier(safeLevel);
       
       // Check if already at correct tier
-      const currentTier = getPrismTierFromTypeId(block);
+      const currentTier = getPrismTier(block);
       if (currentTier === safeLevel) return;
       
       // Get current block location and states

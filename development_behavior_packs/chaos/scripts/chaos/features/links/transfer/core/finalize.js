@@ -161,6 +161,7 @@ export function createFinalizeManager(cfg, deps) {
       if (debugEnabled && debugState) debugState.fluxGenChecks++;
       const crystalRoute = findCrystallizerRouteFromPrism(outBlock, job.dimId);
       const outContainerInfo = outInventories[0] || null;
+      
       const fluxGenerated = tryGenerateFluxOnTransfer({
         outputBlock: outBlock,
         destinationInventory: outContainerInfo?.container || null,
@@ -179,9 +180,10 @@ export function createFinalizeManager(cfg, deps) {
         transferStepTicks: job.stepTicks || cfg.orbStepTicks,
         transferSpeedScale: 1.0,
         FX: FX,
-        consumeFluxOutput: !!crystalRoute,
+        consumeFluxOutput: !!crystalRoute, // Only consume if crystallizer route exists
       });
       if (debugEnabled && debugState && fluxGenerated > 0) debugState.fluxGenHits++;
+      // If crystallizer route exists, route flux directly to crystallizer
       if (fluxGenerated > 0 && crystalRoute) {
         if (typeof fxManager.enqueueFluxTransferFxPositions === "function") {
           fxManager.enqueueFluxTransferFxPositions(
@@ -202,6 +204,7 @@ export function createFinalizeManager(cfg, deps) {
           );
         }
       }
+      // If no crystallizer route, tryGenerateFluxOnTransfer will handle routing to available inventory via scheduleFluxTransferFx
       return;
     }
   }

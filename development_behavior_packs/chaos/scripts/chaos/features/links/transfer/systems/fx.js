@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/systems/fx.js
 import { MolangVariableMap } from "@minecraft/server";
-import { isPrismBlock, getPrismTierFromTypeId } from "../config.js";
+import { isPrismBlock, getPrismTier } from "../config.js";
 import { buildFluxFxSegments } from "../pathfinding/path.js";
 import { queueFxParticle } from "../../../../fx/fx.js";
 import { getFluxTier, isFluxTypeId } from "../../../../flux.js";
@@ -105,7 +105,7 @@ export function createFxManager(cfg, deps) {
       // Get tier from source prism (fromBlock) for orb color tinting
       // This ensures orbs are colored based on the tier of the prism that fired them
       const sourceTier = fromBlock && isPrismBlock(fromBlock) 
-        ? getPrismTierFromTypeId(fromBlock)
+        ? getPrismTier(fromBlock)
         : level; // Fallback to job level if fromBlock is not a prism
       
       const color = isFluxTypeId(itemTypeId)

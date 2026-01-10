@@ -1,0 +1,221 @@
+# Chaos Logistics - Project Conventions for AI Assistants
+
+This file provides guidelines and conventions for AI assistants working on this project.
+
+## Project Context
+
+- **Minecraft Bedrock Edition Script API** - JavaScript/ES modules
+- Uses `@minecraft/server` module from Minecraft Bedrock
+- **CRITICAL: No console available** - This runs in-game, not in Node.js/browser environment
+- Performance-critical per-tick processing with bounded sampling
+- Wireless item transfer network system ("Chaos Logistics")
+
+## Debugging and Logging (CRITICAL)
+
+### NEVER use console methods
+- **NEVER use `console.log()`, `console.warn()`, `console.error()`, or any console methods**
+- Console is not available in Minecraft Bedrock Script API runtime
+- All debug output must use in-game chat messages
+
+### ALWAYS use chat messages
+Use one of these approaches:
+
+1. **Direct world message** (for general messages):
+   ```javascript
+   if (world && typeof world.sendMessage === "function") {
+     world.sendMessage("§a[Chaos] Message text");
+   }
+   ```
+
+2. **Player-specific message**:
+   ```javascript
+   if (player && typeof player.sendMessage === "function") {
+     player.sendMessage("§a[Chaos] Message text");
+   }
+   ```
+
+3. **Debug utility functions** (preferred - from `core/debug.js`):
+   - `sendError(message, context)` - Shown to all players (red §c)
+   - `sendWarning(message, context)` - Shown only to players with lens/goggles (yellow §e)
+   - `sendDebug(message, context, group)` - Shown only to players with lens/goggles (gray §7)
+   - `sendExtendedDebug(message, context, group)` - Shown only with extended debug enabled for that group
+
+   Example:
+   ```javascript
+   import { sendError, sendDebug } from "../core/debug.js";
+   sendError("Failed to initialize", "Transfer");
+   sendDebug("Queue size: " + size, "Transfer", "transfer");
+   ```
+
+### Message formatting
+- Use Minecraft color codes:
+  - `§a` = green (success)
+  - `§c` = red (error)
+  - `§e` = yellow (warning)
+  - `§7` = gray (debug/info)
+  - `§b` = aqua (info/init)
+  - `§f` = white (highlight)
+- Format: `§a[Chaos] message` or `§c[ModuleName] message` with context prefix
+- Always wrap message sending in try-catch for graceful degradation:
+  ```javascript
+  try {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage(message);
+    }
+  } catch {}
+  ```
+
+### Debug groups
+Extended debugging uses groups (defined in `core/debugGroups.js`):
+- `transfer` - Transfer system operations
+- `prism` - Prism network operations
+- `beam` - Beam rendering
+- `fx` - Particle effects
+- `vision` - Link vision rendering
+- `pathfinding` - Route finding
+- `inventory` - Inventory operations
+- `cache` - Cache system
+
+## Code Organization
+
+### Folder Structure
+- `bootstrap/` - Startup wiring only: registers components, starts systems, starts loops. Avoid feature logic here.
+- `core/` - Shared core utilities and constants. Should be safe to import anywhere (no import-time world access).
+- `features/` - Feature modules (e.g., `links/` contains transfer system, wand, pairs, etc.)
+- `systems/` - Background systems (e.g., link vision, cleanup-on-break)
+- `fx/` - Visual/sound effects and presets. No import-time world access.
+
+### Import Boundaries (STRICT)
+These are conventions to avoid circular imports and keep startup predictable:
+
+- `bootstrap/` can import anything else
+- `systems/` should import from `features/*`, `core/`, and `fx/`
+- `features/*` can import `core/` and `fx/`, but should NOT import `bootstrap/`
+- `core/` should NOT import from other folders (only external dependencies like `@minecraft/server`)
+
+### Module Structure
+- Module-based architecture with clear separation of concerns
+- Use factory functions for main components (e.g., `createNetworkTransferController()`)
+- Controller maintains state, modules operate on parameters (don't own state)
+- State passed as parameters, not accessed via closures
+
+## Code Style
+
+### General
+- ES6 modules (import/export statements)
+- camelCase for functions and variables
+- UPPER_CASE for constants
+- File path comment at top of each file: `// scripts/chaos/...` (relative to scripts folder)
+- Minimal inline comments, focus on code clarity
+- Use meaningful variable names
+
+### Error Handling
+- Always use try-catch for world/block/entity access
+- Graceful degradation - return null/empty instead of throwing when possible
+- Empty catch blocks (`catch {}`) for non-critical errors (this is acceptable and common)
+- Check for null/undefined before accessing properties
+- Example:
+  ```javascript
+  try {
+    const block = dim.getBlock({ x, y, z });
+    if (!block) return null;
+    // ... use block
+  } catch {
+    return null;
+  }
+  ```
+
+### Performance Patterns
+- **Bounded sampling per tick** - Don't process everything every tick
+- **Cache management** - Use TTL values (in ticks, not milliseconds)
+  - Example cache TTLs: Block cache = 5 ticks, Container cache = 10 ticks, Dimension cache = 1000 ticks
+- **Avoid import-time world access** - Prevents startup issues, delays world access until runtime
+- **Optimize for 20 TPS** - Minecraft Bedrock runs at 20 ticks per second
+- **Use cache cleanup intervals** - Clean up caches every N ticks (e.g., every 20 ticks), not every tick to avoid O(n) costs
+- **Limit cache sizes** - Set MAX_CACHE_SIZE (e.g., 500 entries) to prevent unbounded growth
+- **Lazy scanning** - Only scan when queues are empty OR dirty prisms exist
+
+### Architecture Patterns
+- **No circular dependencies** - Structure imports to prevent cycles
+- **Single responsibility** - Each module should have one clear purpose
+- **Factory functions** - Main components created via factory functions that accept dependencies
+- **Dependency injection** - Pass dependencies (world, system, config) to factory functions
+- Example:
+  ```javascript
+  export function createComponent(deps, opts) {
+    const { world, system } = deps;
+    // ... implementation
+    return { /* public API */ };
+  }
+  ```
+
+## Minecraft Bedrock Specific
+
+### Block/Entity Access
+- Always check if block/entity exists before accessing properties
+- Use `getDimension()` to get dimension, check if it exists
+- Block coordinates must be integers (use `Math.floor()` or `| 0`)
+- Use `getDynamicProperty()` / `setDynamicProperty()` for persistent storage (strings only - use JSON for objects)
+
+### Timing
+- Use `system.runTimeout()` for delayed execution
+- Use `system.runInterval()` for recurring tasks
+- Tick count is available via `system.currentTick` or custom tracking
+- Delays are in ticks (20 ticks = 1 second)
+
+### Key Format
+- Uses `"dimension|x,y,z"` format for block keys (see `features/links/transfer/keys.js`)
+- Example: `"minecraft:overworld|10,64,20"`
+
+## Common Patterns
+
+### Safe Property Access
+```javascript
+const value = obj?.property?.nested; // Optional chaining
+if (!obj || !obj.property) return null;
+```
+
+### Key Generation
+```javascript
+import { key, parseKey } from "./keys.js";
+const blockKey = key(dimId, x, y, z);
+const pos = parseKey(blockKey);
+```
+
+### Message Sending Pattern
+```javascript
+try {
+  const players = world.getAllPlayers();
+  for (const player of players) {
+    try {
+      if (typeof player.sendMessage === "function") {
+        player.sendMessage(message);
+      }
+    } catch {}
+  }
+} catch {}
+```
+
+### Configuration Merging
+```javascript
+import { mergeCfg } from "./utils.js";
+const config = mergeCfg(defaultConfig, userOptions);
+```
+
+## Testing and Iteration
+
+- Use `/reload` command in-game to reload packs while world is running
+- For faster iteration, place folders directly in development pack directories
+- Behavior Pack: `com.mojang/development_behavior_packs/ChaosLogisticsBP`
+- Resource Pack: `com.mojang/development_resource_packs/ChaosLogisticsRP`
+- On load, systems send chat messages reporting status (e.g., "X transfer modules loaded")
+
+## Important Reminders
+
+1. **No console** - Always use chat messages for debugging
+2. **Performance matters** - This runs every tick, optimize accordingly
+3. **Import boundaries** - Follow the folder import rules strictly
+4. **Graceful degradation** - Return null/empty instead of crashing
+5. **Cache everything expensive** - Block lookups, dimension access, container info
+6. **Bounded operations** - Don't process all items/blocks every tick
+7. **File path comments** - Include `// scripts/chaos/...` at top of each file

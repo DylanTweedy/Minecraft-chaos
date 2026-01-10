@@ -12,8 +12,8 @@ import {
   parseKey,
   resolveBlockForKey,
 } from "./crystallizer.js";
+import { isPrismBlock, getPrismTier, getPrismTypeIdForTier } from "./features/links/transfer/config.js";
 
-const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
 
@@ -75,7 +75,7 @@ function makeDirs() {
 
 function getNodeType(id) {
   // Unified system - only prisms and crystallizers
-  if (id === PRISM_ID) return "prism";
+  if (id && isPrismBlock({ typeId: id })) return "prism";
   if (id === CRYSTALLIZER_ID) return "crystal";
   return null;
 }
@@ -171,12 +171,17 @@ function traverseNetworkFromStart(dim, dimId, startNodes) {
 
 function setTierToOne(block) {
   try {
-    const perm = block?.permutation;
-    if (!perm) return false;
-    const current = perm.getState("chaos:level");
-    if ((current | 0) === 1) return true;
-    const next = perm.withState("chaos:level", 1);
-    block.setPermutation(next);
+    if (!block) return false;
+    // New system: prisms use separate block IDs, not states
+    // Replace block with tier 1 prism if it's a higher tier
+    if (!isPrismBlock(block)) return false;
+    const currentTier = getPrismTier(block);
+    if (currentTier === 1) return true; // Already tier 1
+    const tierOneId = getPrismTypeIdForTier(1);
+    const loc = block.location;
+    const dim = block.dimension;
+    if (!dim || !loc) return false;
+    dim.setBlock(loc, tierOneId);
     return true;
   } catch {
     return false;
@@ -293,15 +298,15 @@ function performPrestige(player, entity, crystalKey) {
   // Unified system - all nodes are prisms
   for (const key of network.inputs) {
     const b = resolveBlockForKey(key);
-    if (b?.typeId === PRISM_ID) setTierToOne(b);
+    if (b && isPrismBlock(b)) setTierToOne(b);
   }
   for (const key of network.outputs) {
     const b = resolveBlockForKey(key);
-    if (b?.typeId === PRISM_ID) setTierToOne(b);
+    if (b && isPrismBlock(b)) setTierToOne(b);
   }
   for (const key of network.prisms) {
     const b = resolveBlockForKey(key);
-    if (b?.typeId === PRISM_ID) setTierToOne(b);
+    if (b && isPrismBlock(b)) setTierToOne(b);
   }
 
   resetCountsForKeys(DP_INPUT_LEVELS, network.inputs);

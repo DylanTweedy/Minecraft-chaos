@@ -7,7 +7,7 @@ import { isHoldingLens, getTargetBlockForObservation } from "../items/insightLen
 import { isWearingGoggles, getTargetBlockForObservation as getGogglesTargetBlock } from "../items/insightGoggles.js";
 import { renderLinkVisionForPlayer } from "../vision/linkVisionExposed.js";
 import { getGroupForBlock, updateInsightCache } from "../core/debugGroups.js";
-import { PRISM_ID } from "../features/links/transfer/config.js";
+import { isPrismBlock, getPrismTier } from "../features/links/transfer/config.js";
 
 const OBSERVATION_TICK_INTERVAL = 3; // Every 3 ticks
 const MAX_OBSERVATION_DISTANCE = 32;
@@ -30,11 +30,11 @@ function showBlockInfo(player, block, nowTick) {
     const loc = block.location;
     const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
 
-    if (typeId === PRISM_ID || typeId.startsWith("chaos:prism_")) {
-      // Show prism info
-      const level = block.permutation?.getState("chaos:level") || 1;
+    if (isPrismBlock(block)) {
+      // Show prism info - prisms now use separate block IDs, not states
+      const tier = getPrismTier(block);
       player.onScreenDisplay.setActionBar(
-        `§7[Insight] Prism L${level} at ${loc.x},${loc.y},${loc.z}`
+        `§7[Insight] Prism Tier ${tier} at ${loc.x},${loc.y},${loc.z}`
       );
     } else if (typeId === "chaos:crystallizer") {
       // Could show crystallizer info if needed

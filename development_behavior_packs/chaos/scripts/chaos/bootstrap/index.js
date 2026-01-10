@@ -1,23 +1,17 @@
 // scripts/chaos/bootstrap/index.js
 import { bootChaos } from "./bootChaos.js";
 import { startSystems } from "./startSystems.js";
-// TESTING: Uncommented to test pathfinder import
-import { startTransferLoop } from "./transferLoop.js";
-import { registerWandComponent, registerMagicMirrorComponent, registerDeathmarkComponent } from "./components.js";
-
-import { setPending, getPending, clearPending } from "../core/state.js";
-import { getPairsMap, loadPairsFromWorldSafe, savePairsToWorldSafe, isPersistenceEnabled } from "../features/links/pairs.js";
-import { toggleOutput } from "../features/links/pairs.js";
-import { fxSelectInput, fxPairSuccess, fxTransferItem } from "../fx/fx.js";
-import { FX } from "../fx/fxConfig.js";
-import { makeLinkFx, makeTransferFx } from "../fx/presets.js";
-import { getGlobalInputCount, getGlobalLinkCount, getPerInputOutputCount } from "../core/stats.js";
-import { makeKeyFromBlock, pendingToKey } from "../features/links/shared/keys.js";
-import { handleWandUseOn } from "../features/links/wand.js";
+// STEP 1: Enable script loader utilities (already used by startSystems, should be safe)
+import { registerScript, markScriptLoaded, notifyPlayers } from "../core/scriptLoader.js";
+// STEP 2: Enable component registrations
+import { registerMagicMirrorComponent, registerDeathmarkComponent, registerInsightLensComponent, registerInsightGogglesComponent } from "./components.js";
 import { handleMirrorUse, handleMirrorUseOn, handleMirrorEntityAttack } from "../features/magicMirror.js";
+// STEP 3: Enable transfer loop
+import { startTransferLoop } from "./transferLoop.js";
+import { fxTransferItem } from "../fx/fx.js";
+import { FX } from "../fx/fxConfig.js";
+import { makeTransferFx } from "../fx/presets.js";
 
-const WAND_ID = "chaos:wand";
-const PRISM_ID = "chaos:prism";
 const MIRROR_ID = "chaos:magic_mirror";
 
 export function startChaos(ctx) {
@@ -31,67 +25,43 @@ export function startChaos(ctx) {
       throw new Error("system is undefined in startChaos context");
     }
 
+    // Minimal test message
     try {
-      world.sendMessage("§7[Chaos] startChaos: Starting systems...");
+      if (world && typeof world.sendMessage === "function") {
+        world.sendMessage("§a[StartChaos] startChaos() called");
+      }
     } catch {}
 
-    let pairsReady = false;
+    // Comment out everything for testing
+    /*
+    // Register main systems
+    registerScript("Main Bootstrap");
+    registerScript("Transfer Loop");
+    registerScript("Magic Mirror");
+    registerScript("Deathmark");
+    registerScript("Insight Lens");
+    registerScript("Insight Goggles");
 
     startSystems();
 
-  // Boot (DP load delayed inside bootstrap)
+  // Boot (simplified - no pairs loading needed)
   bootChaos({
     world,
     system,
-    loadPairsFromWorldSafe,
-    isPersistenceEnabled,
-    getPairsMap,
-    getGlobalInputCount,
-    getGlobalLinkCount,
-    onReady: () => {
-      pairsReady = true;
-    },
   });
+  markScriptLoaded("Main Bootstrap");
 
-  const linkFx = makeLinkFx();
   const transferFx = makeTransferFx();
 
-  // TESTING: Uncommented to test pathfinder import
+  // Start transfer loop
   startTransferLoop({
     world,
     system,
-    isPairsReady: () => pairsReady,
-    getPairsMap,
     fxTransferItem,
     FX: transferFx,
   });
   
-  try {
-    world.sendMessage("§7[Chaos] Transfer loop enabled for testing");
-  } catch {}
-
-  registerWandComponent({
-    system,
-    isPairsReady: () => pairsReady,
-    WAND_ID,
-    PRISM_ID, // Unified prism system
-    getPending,
-    setPending,
-    clearPending,
-    toggleOutput,
-    savePairsToWorldSafe,
-    isPersistenceEnabled,
-    getPairsMap,
-    getGlobalInputCount,
-    getGlobalLinkCount,
-    getPerInputOutputCount,
-    makeKeyFromBlock,
-    pendingToKey,
-    fxSelectInput,
-    fxPairSuccess,
-    handleWandUseOn,
-    FX: linkFx,
-  });
+  markScriptLoaded("Transfer Loop");
 
   registerMagicMirrorComponent({
     system,
@@ -101,13 +71,157 @@ export function startChaos(ctx) {
     handleMirrorUseOn,
     handleMirrorEntityAttack,
   });
+  markScriptLoaded("Magic Mirror");
 
   registerDeathmarkComponent(system);
-    
+  markScriptLoaded("Deathmark");
+
+  registerInsightLensComponent({
+    system,
+    world,
+  });
+  markScriptLoaded("Insight Lens");
+
+  registerInsightGogglesComponent({
+    system,
+  });
+  markScriptLoaded("Insight Goggles");
+  
+  // Send consolidated startup message after everything is loaded
+  system.runTimeout(() => {
     try {
-      world.sendMessage("§7[Chaos] startChaos: All components registered");
-      world.sendMessage("§a[Chaos] Magic Mirror script loaded! Right-click to teleport, crouch+right-click to go up, punch entity to send to spawn.");
+      const status = notifyPlayers(); // This will send script loading status if needed
+      // Send a single clean startup summary
+      world.sendMessage("§a[Chaos] ✓ Systems loaded and ready");
     } catch {}
+  }, 30);
+  */
+  
+  // STEP 1: Use script loader utilities for better logging
+  registerScript("Main Bootstrap");
+  registerScript("Transfer Loop");
+  registerScript("Magic Mirror");
+  registerScript("Deathmark");
+  registerScript("Insight Lens");
+  registerScript("Insight Goggles");
+  
+  // Call basic functions
+  try {
+    startSystems();
+    markScriptLoaded("Main Bootstrap");
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§a[StartChaos] startSystems() completed");
+    }
+  } catch (err) {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§c[StartChaos] startSystems error: " + (err?.message || String(err)));
+    }
+  }
+  
+  try {
+    bootChaos({ world, system });
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§a[StartChaos] bootChaos() completed");
+    }
+  } catch (err) {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§c[StartChaos] bootChaos error: " + (err?.message || String(err)));
+    }
+  }
+  
+  // STEP 3: Start transfer loop
+  try {
+    const transferFx = makeTransferFx();
+    startTransferLoop({
+      world,
+      system,
+      fxTransferItem,
+      FX: transferFx,
+    });
+    markScriptLoaded("Transfer Loop");
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§a[StartChaos] Transfer Loop started");
+    }
+  } catch (err) {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§c[StartChaos] Transfer Loop error: " + (err?.message || String(err)));
+    }
+  }
+  
+  // STEP 2: Register component systems
+  try {
+    registerMagicMirrorComponent({
+      system,
+      world,
+      MIRROR_ID,
+      handleMirrorUse,
+      handleMirrorUseOn,
+      handleMirrorEntityAttack,
+    });
+    markScriptLoaded("Magic Mirror");
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§a[StartChaos] Magic Mirror registered");
+    }
+  } catch (err) {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§c[StartChaos] Magic Mirror error: " + (err?.message || String(err)));
+    }
+  }
+  
+  try {
+    registerDeathmarkComponent(system);
+    markScriptLoaded("Deathmark");
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§a[StartChaos] Deathmark registered");
+    }
+  } catch (err) {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§c[StartChaos] Deathmark error: " + (err?.message || String(err)));
+    }
+  }
+  
+  try {
+    registerInsightLensComponent({
+      system,
+      world,
+    });
+    markScriptLoaded("Insight Lens");
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§a[StartChaos] Insight Lens registered");
+    }
+  } catch (err) {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§c[StartChaos] Insight Lens error: " + (err?.message || String(err)));
+    }
+  }
+  
+  try {
+    registerInsightGogglesComponent({
+      system,
+    });
+    markScriptLoaded("Insight Goggles");
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§a[StartChaos] Insight Goggles registered");
+    }
+  } catch (err) {
+    if (world && typeof world.sendMessage === "function") {
+      world.sendMessage("§c[StartChaos] Insight Goggles error: " + (err?.message || String(err)));
+    }
+  }
+  
+  // STEP 4: Send consolidated startup message after everything is loaded
+  system.runTimeout(() => {
+    try {
+      if (notifyPlayers && typeof notifyPlayers === "function") {
+        notifyPlayers(); // This will send script loading status if needed
+      }
+      if (world && typeof world.sendMessage === "function") {
+        world.sendMessage("§a[Chaos] ✓ Systems loaded and ready");
+      }
+    } catch (err) {
+      // Ignore errors in notification
+    }
+  }, 30);
   } catch (err) {
     try {
       if (ctx?.world) {

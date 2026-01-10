@@ -1,12 +1,11 @@
 // scripts/chaos/features/links/transfer/config.js
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 
-const PRISM_ID = "chaos:prism";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
 // Legacy IDs for migration (will be removed eventually)
-const INPUT_ID = "chaos:extractor"; // Deprecated - use PRISM_ID
-const OUTPUT_ID = "chaos:inserter"; // Deprecated - use PRISM_ID
+const INPUT_ID = "chaos:extractor"; // Deprecated - use PRISM_IDS
+const OUTPUT_ID = "chaos:inserter"; // Deprecated - use PRISM_IDS
 const FURNACE_BLOCK_IDS = new Set([
   "minecraft:furnace",
   "minecraft:lit_furnace",
@@ -59,12 +58,12 @@ function isPrismBlock(block) {
   if (!block) return false;
   const typeId = block.typeId || (typeof block === "string" ? block : null);
   if (!typeId) return false;
-  return PRISM_IDS.includes(typeId) || typeId === PRISM_ID; // Also support legacy PRISM_ID
+  return PRISM_IDS.includes(typeId);
 }
 
 // Helper to get prism tier from typeId (1-5, or 1 if not a prism)
 // Accepts either a block object or a typeId string
-function getPrismTierFromTypeId(blockOrTypeId) {
+function getPrismTier(blockOrTypeId) {
   let typeId;
   if (typeof blockOrTypeId === "string") {
     typeId = blockOrTypeId;
@@ -76,7 +75,6 @@ function getPrismTierFromTypeId(blockOrTypeId) {
   
   const index = PRISM_IDS.indexOf(typeId);
   if (index >= 0) return index + 1; // Return 1-5 based on array index
-  if (typeId === PRISM_ID) return 1; // Legacy support
   return 1; // Default tier 1 if not a prism
 }
 
@@ -87,13 +85,13 @@ function getPrismTypeIdForTier(tier) {
 }
 
 const DEFAULTS = {
-  maxTransfersPerTick: 4, // Budget for item transfers started per tick
+  maxTransfersPerTick: 4, // Budget for item transfers started per tick (base - will scale with tier)
   maxSearchesPerTick: 4, // Budget for pathfinding searches per tick (reduced from 8 for performance)
-  perPrismIntervalTicks: 10, // Base interval between prism scans
+  perPrismIntervalTicks: 5, // Base interval for tier 5 (0.25s) - scales up for lower tiers (tier 1 = 25 ticks = 1.25s)
   cacheTicks: 10,
   cacheTicksWithStamp: 60,
   maxVisitedPerSearch: 120, // Reduced from 200 for performance (matches transferLoop.js)
-  orbStepTicks: 20,
+  orbStepTicks: 16, // Tier 1 speed (16 ticks per step) - now calculated directly from tier: T1=16, T2=8, T3=4, T4=2, T5=1
   maxOutputOptions: 4, // Reduced from 6 for performance (matches transferLoop.js)
   levelStep: 2000, // Massively increased for natural progression
   prismLevelStep: 4000, // Massively increased for natural progression
@@ -101,7 +99,7 @@ const DEFAULTS = {
   itemsPerOrbBase: 1,
   itemsPerOrbGrowth: 2,
   maxItemsPerOrb: 64,
-  minOrbStepTicks: 1,
+  minOrbStepTicks: 1, // Minimum step ticks for tier 5 (1 tick = instant at max speed)
   orbVisualMinSpeedScale: 1.0,
   orbVisualMaxSpeedScale: 1.0,
   maxOrbFxPerTick: 160,
@@ -112,12 +110,16 @@ const DEFAULTS = {
   orbLifetimeScale: 0.5,
   maxPrismsScannedPerTick: 8, // Budget for prisms to scan per tick (reduced from 24 for performance)
   debugTransferStats: true, // Enable debug timing messages
-  debugTransferStatsIntervalTicks: 100,
+  debugTransferStatsIntervalTicks: 20, // Reduced to 20 ticks (1 second) for easier testing
   backoffBaseTicks: 10, // Base backoff when prism finds nothing
   backoffMaxTicks: 200,
   backoffMaxLevel: 6,
   maxFluxFxInFlight: 24,
   inflightSaveIntervalTicks: 40,
+  // 50/50 balance distribution settings
+  useBalanceDistribution: true,        // Enable 50/50 balance mode for unfiltered prisms (default: true)
+  balanceMinTransfer: 1,               // Minimum transfer amount (default: 1)
+  balanceCapByLevel: false,            // Cap balance amount by level (default: false, unlimited)
   // Legacy - kept for compatibility
   perInputIntervalTicks: 10,
   maxInputsScannedPerTick: 8, // Reduced to match maxPrismsScannedPerTick
@@ -126,7 +128,6 @@ const DEFAULTS = {
 export {
   INPUT_ID,
   OUTPUT_ID,
-  PRISM_ID,
   PRISM_IDS,
   CRYSTALLIZER_ID,
   BEAM_ID,
@@ -150,7 +151,7 @@ export {
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
   isPrismBlock,
-  getPrismTierFromTypeId,
+  getPrismTier,
   getPrismTypeIdForTier,
   DEFAULTS,
 };

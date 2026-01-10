@@ -1,7 +1,6 @@
 // scripts/chaos/beamSim.js
 import { world, system } from "@minecraft/server";
 import {
-  PRISM_ID,
   BEAM_ID,
   INPUTS_PER_TICK,
   RELAYS_PER_TICK,

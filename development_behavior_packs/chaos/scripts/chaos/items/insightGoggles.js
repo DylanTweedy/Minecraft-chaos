@@ -9,7 +9,6 @@ import { showDebugMenu } from "../core/debugMenu.js";
 const GOGGLES_ID = "chaos:insight_goggles";
 const WAND_ID = "chaos:wand";
 const PRISM_ITEM_IDS = [
-  "chaos:prism",
   "chaos:prism_1",
   "chaos:prism_2",
   "chaos:prism_3",
