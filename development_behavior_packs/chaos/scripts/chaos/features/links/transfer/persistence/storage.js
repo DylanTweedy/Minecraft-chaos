@@ -70,11 +70,60 @@ export function loadInflight(world) {
 
 export function saveInflight(world, inflight) {
   try {
+    const stringifyStart = Date.now();
     const raw = safeJsonStringify(inflight);
+    const stringifyTime = Date.now() - stringifyStart;
+    if (stringifyTime > 50) {
+      // Log slow stringify - could indicate large data
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] saveInflight stringify: ${stringifyTime}ms (${inflight.length} entries, ${raw ? raw.length : 0} bytes)`);
+            break; // Only send to first player
+          }
+        }
+      } catch {}
+    }
     if (typeof raw !== "string") return;
+    if (raw.length > 500000) { // 500KB limit
+      // Data too large - skip save to prevent watchdog
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] ⚠ saveInflight SKIPPED: Data too large (${raw.length} bytes, ${inflight.length} entries)`);
+            break;
+          }
+        }
+      } catch {}
+      return;
+    }
+    const saveStart = Date.now();
     world.setDynamicProperty(DP_TRANSFERS, raw);
-  } catch {
-    // ignore
+    const saveTime = Date.now() - saveStart;
+    if (saveTime > 50) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] saveInflight setDynamicProperty: ${saveTime}ms (${raw.length} bytes)`);
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch (err) {
+    // Log errors - they're important
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (player && typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[PERF] saveInflight ERROR: ${err?.message || String(err)}`);
+          break;
+        }
+      }
+    } catch {}
   }
 }
 
@@ -91,11 +140,58 @@ export function loadInputLevels(world) {
 
 export function saveInputLevels(world, levels) {
   try {
+    const stringifyStart = Date.now();
     const raw = safeJsonStringify(levels);
+    const stringifyTime = Date.now() - stringifyStart;
+    if (stringifyTime > 50) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            const keyCount = Object.keys(levels || {}).length;
+            player.sendMessage(`§c[PERF] saveInputLevels stringify: ${stringifyTime}ms (${keyCount} keys, ${raw ? raw.length : 0} bytes)`);
+            break;
+          }
+        }
+      } catch {}
+    }
     if (typeof raw !== "string") return;
+    if (raw.length > 500000) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] ⚠ saveInputLevels SKIPPED: Data too large (${raw.length} bytes)`);
+            break;
+          }
+        }
+      } catch {}
+      return;
+    }
+    const saveStart = Date.now();
     world.setDynamicProperty(DP_INPUT_LEVELS, raw);
-  } catch {
-    // ignore
+    const saveTime = Date.now() - saveStart;
+    if (saveTime > 50) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] saveInputLevels setDynamicProperty: ${saveTime}ms`);
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (player && typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[PERF] saveInputLevels ERROR: ${err?.message || String(err)}`);
+          break;
+        }
+      }
+    } catch {}
   }
 }
 
@@ -112,11 +208,58 @@ export function loadOutputLevels(world) {
 
 export function saveOutputLevels(world, levels) {
   try {
+    const stringifyStart = Date.now();
     const raw = safeJsonStringify(levels);
+    const stringifyTime = Date.now() - stringifyStart;
+    if (stringifyTime > 50) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            const keyCount = Object.keys(levels || {}).length;
+            player.sendMessage(`§c[PERF] saveOutputLevels stringify: ${stringifyTime}ms (${keyCount} keys, ${raw ? raw.length : 0} bytes)`);
+            break;
+          }
+        }
+      } catch {}
+    }
     if (typeof raw !== "string") return;
+    if (raw.length > 500000) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] ⚠ saveOutputLevels SKIPPED: Data too large (${raw.length} bytes)`);
+            break;
+          }
+        }
+      } catch {}
+      return;
+    }
+    const saveStart = Date.now();
     world.setDynamicProperty(DP_OUTPUT_LEVELS, raw);
-  } catch {
-    // ignore
+    const saveTime = Date.now() - saveStart;
+    if (saveTime > 50) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] saveOutputLevels setDynamicProperty: ${saveTime}ms`);
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (player && typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[PERF] saveOutputLevels ERROR: ${err?.message || String(err)}`);
+          break;
+        }
+      }
+    } catch {}
   }
 }
 
@@ -133,10 +276,57 @@ export function loadPrismLevels(world) {
 
 export function savePrismLevels(world, levels) {
   try {
+    const stringifyStart = Date.now();
     const raw = safeJsonStringify(levels);
+    const stringifyTime = Date.now() - stringifyStart;
+    if (stringifyTime > 50) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            const keyCount = Object.keys(levels || {}).length;
+            player.sendMessage(`§c[PERF] savePrismLevels stringify: ${stringifyTime}ms (${keyCount} keys, ${raw ? raw.length : 0} bytes)`);
+            break;
+          }
+        }
+      } catch {}
+    }
     if (typeof raw !== "string") return;
+    if (raw.length > 500000) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] ⚠ savePrismLevels SKIPPED: Data too large (${raw.length} bytes)`);
+            break;
+          }
+        }
+      } catch {}
+      return;
+    }
+    const saveStart = Date.now();
     world.setDynamicProperty(DP_PRISM_LEVELS, raw);
-  } catch {
-    // ignore
+    const saveTime = Date.now() - saveStart;
+    if (saveTime > 50) {
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] savePrismLevels setDynamicProperty: ${saveTime}ms`);
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch (err) {
+    try {
+      const players = world.getAllPlayers();
+      for (const player of players) {
+        if (player && typeof player.sendMessage === "function") {
+          player.sendMessage(`§c[PERF] savePrismLevels ERROR: ${err?.message || String(err)}`);
+          break;
+        }
+      }
+    } catch {}
   }
 }

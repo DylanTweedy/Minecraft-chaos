@@ -47,9 +47,15 @@ export function createInputQueuesManager(cfg, deps) {
     if (!prismKey || !Array.isArray(itemSources) || itemSources.length === 0) return;
 
     const queue = inputQueues.get(prismKey) || [];
-    const existingTypes = new Set(queue.map(entry => entry.itemTypeId));
+    // Track existing entries by type AND container to allow re-queuing if items remain after processing
+    const existingEntriesByType = new Map(); // typeId -> entry (for updating remainingAmount)
+    for (const entry of queue) {
+      if (!existingEntriesByType.has(entry.itemTypeId)) {
+        existingEntriesByType.set(entry.itemTypeId, entry);
+      }
+    }
 
-    // Queue ALL item types (one entry per type)
+    // Queue ALL item types (update existing entries if same type, or create new entry)
     for (const itemSource of itemSources) {
       if (!itemSource || !itemSource.stack || !itemSource.container || itemSource.slot === undefined) continue;
       
@@ -59,8 +65,22 @@ export function createInputQueuesManager(cfg, deps) {
       const containerKey = getContainerKeyFromInfo({ container, entity: itemSource.entity, block: itemSource.block });
       if (!containerKey) continue;
 
-      // Skip if already queued for this type
-      if (existingTypes.has(stack.typeId)) continue;
+      // Check if entry already exists for this type and container/slot
+      const existingEntry = existingEntriesByType.get(stack.typeId);
+      if (existingEntry) {
+        // Entry exists for this type - update if same container/slot, otherwise skip (avoid duplicates)
+        if (existingEntry.containerKey === containerKey && existingEntry.slot === slot) {
+          // Same container and slot - update remaining amount to reflect current stack size
+          existingEntry.remainingAmount = stack.amount;
+          existingEntry.totalAmount = stack.amount;
+          // Update route if provided
+          if (routesByType && routesByType.has(stack.typeId)) {
+            existingEntry.cachedRoute = routesByType.get(stack.typeId);
+          }
+        }
+        // Skip creating duplicate entry (but existing entry was updated above)
+        continue;
+      }
 
       const entry = {
         prismKey,
@@ -263,25 +283,30 @@ export function createInputQueuesManager(cfg, deps) {
   }
 
   /**
-   * Get next queue entry to process (priority-based: filtered items first, then FIFO)
+   * Get next queue entry to process (for filtered prisms: extract non-filtered items, FIFO)
    * @param {string} prismKey - Prism key
-   * @param {Set|null} filterSet - Optional: filter set (prioritize items in filter)
+   * @param {Set|null} filterSet - Optional: filter set (for filtered prisms, extract items NOT in filter)
    * @returns {InputQueueEntry|null} Next entry to process
    */
   function getNextQueueEntry(prismKey, filterSet = null) {
     const queue = inputQueues.get(prismKey);
     if (!queue || queue.length === 0) return null;
 
-    // If filter exists, prioritize filtered items
+    // For filtered prisms, extract non-filtered items (items NOT in filter)
+    // Filtered items should never be in the queue (they're skipped during queue creation)
+    // But if they somehow are, skip them here
     if (filterSet && filterSet.size > 0) {
-      const filtered = queue.filter(entry => filterSet.has(entry.itemTypeId));
-      if (filtered.length > 0) {
-        // Return first filtered item (FIFO within filtered)
-        return filtered[0];
+      // Find non-filtered items (items NOT in the filter - these are what we want to extract)
+      const nonFiltered = queue.filter(entry => !filterSet.has(entry.itemTypeId));
+      if (nonFiltered.length > 0) {
+        // Return first non-filtered item (FIFO)
+        return nonFiltered[0];
       }
+      // If only filtered items in queue (shouldn't happen, but handle it), return null
+      return null;
     }
 
-    // No filter or no filtered items - return first item (FIFO)
+    // No filter - return first item (FIFO)
     return queue[0] || null;
   }
 

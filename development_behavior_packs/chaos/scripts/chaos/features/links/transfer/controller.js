@@ -991,6 +991,19 @@ export function createNetworkTransferController(deps, opts) {
     }
     const interval = Math.max(1, cfg.inflightSaveIntervalTicks | 0);
     if ((nowTick - lastSaveTick) < interval) return;
+    
+    // Check inflight size - skip save if too large (prevent watchdog)
+    // Estimate size: each entry is roughly 500-1000 bytes when stringified
+    const estimatedSize = inflight.length * 800;
+    if (estimatedSize > 400000) { // 400KB limit
+      sendDiagnosticMessage(`[PERF] ⚠ SKIPPING inflight save: Too large (${inflight.length} entries, ~${Math.round(estimatedSize/1024)}KB)`, "transfer");
+      // Still clear dirty flags to prevent retrying every tick
+      inflightDirty = false;
+      inflightStepDirty = false;
+      lastSaveTick = nowTick;
+      return;
+    }
+    
     persistInflightStateToWorld(world, inflight);
     if (debugEnabled) debugState.dpSaves++;
     inflightDirty = false;
@@ -1095,18 +1108,60 @@ export function createNetworkTransferController(deps, opts) {
     return queuesManager.resolveContainerInfo(containerKey);
   }
 
+    // Track tick timing to detect watchdog issues
+    let lastTickEndTime = 0;
+    let consecutiveLongTicks = 0;
+    let emergencyDisableTicks = 0; // Track how many ticks to skip
+  
   function onTick() {
     nowTick++;
     
-    // DIAGNOSTIC: Log tick start (disabled - was too spammy)
-    // if (nowTick <= 10 || nowTick % 100 === 0) {
-    //   sendInitMessage(`§7[Flow] Tick ${nowTick} started`);
-    // }
+    // EMERGENCY SAFEGUARD: Skip ticks if emergency disable is active
+    if (emergencyDisableTicks > 0) {
+      emergencyDisableTicks--;
+      if (emergencyDisableTicks % 20 === 0 && emergencyDisableTicks > 0) {
+        try {
+          const players = world.getAllPlayers();
+          for (const player of players) {
+            if (player && typeof player.sendMessage === "function") {
+              player.sendMessage(`§c[PERF] ⚠ EMERGENCY MODE: Transfer disabled for ${emergencyDisableTicks} more ticks`);
+              break;
+            }
+          }
+        } catch {}
+      }
+      lastTickEndTime = Date.now();
+      return; // Skip entire tick
+    }
+    
+    // EMERGENCY SAFEGUARD: Check if previous tick was too long - skip this tick if so
+    if (lastTickEndTime > 0) {
+      const timeSinceLastTick = Date.now() - lastTickEndTime;
+      // If last tick ended more than 50ms ago, we might be in watchdog territory
+      // Skip this entire tick to avoid compounding the problem
+      if (timeSinceLastTick > 50 && consecutiveLongTicks > 2) {
+        consecutiveLongTicks++;
+        if (consecutiveLongTicks % 10 === 0) {
+          try {
+            const players = world.getAllPlayers();
+            for (const player of players) {
+              if (player && typeof player.sendMessage === "function") {
+                player.sendMessage(`§c[PERF] ⚠⚠⚠ EMERGENCY SKIP: ${consecutiveLongTicks} consecutive long ticks detected, skipping tick ${nowTick}`);
+                break;
+              }
+            }
+          } catch {}
+        }
+        lastTickEndTime = Date.now();
+        return; // Skip entire tick to avoid watchdog
+      }
+    }
     
     // SUPER SIMPLE UNCONDITIONAL TEST - Always send on first 5 ticks to confirm onTick is running
     if (nowTick <= 5) {
       try {
-        for (const player of world.getAllPlayers()) {
+        const players = world.getAllPlayers();
+        for (const player of players) {
           try {
             if (typeof player.sendMessage === "function") {
               player.sendMessage(`§e[TICK ${nowTick}] onTick() is running!`);
@@ -1116,20 +1171,21 @@ export function createNetworkTransferController(deps, opts) {
       } catch {}
     }
     
-    const tickStart = debugEnabled ? Date.now() : 0;
-    const cacheStart = debugEnabled ? Date.now() : 0;
-    
-    // DIAGNOSTIC: Log before cache updates (disabled - was too spammy)
-    // if (nowTick <= 10 || nowTick % 100 === 0) {
-    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: Before cache updates`);
-    // }
+    const tickStart = Date.now();
+    const cacheStart = Date.now();
     
     cacheManager.updateTick(nowTick);
     cacheManager.resetTickCaches();
+    const cacheTime = Date.now() - cacheStart;
     if (debugEnabled) {
-      debugState.msCache = (debugState.msCache || 0) + (Date.now() - cacheStart);
+      debugState.msCache = (debugState.msCache || 0) + cacheTime;
     }
     orbFxBudgetUsed.value = 0;
+    
+    // PERF: Log cache update timing if it's slow (>5ms) or every 200 ticks
+    if (cacheTime > 5 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] Cache: ${cacheTime}ms`, "transfer");
+    }
 
     // DIAGNOSTIC: Log before processing queues/inflight (disabled - was too spammy)
     // if (nowTick <= 10 || nowTick % 100 === 0) {
@@ -1137,13 +1193,18 @@ export function createNetworkTransferController(deps, opts) {
     // }
 
     // Process existing queues and in-flight transfers first
+    const queuesStart = Date.now();
     if (debugEnabled) {
       runTransferPipeline([
         () => {
           const t0 = Date.now();
           queuesManager.tickOutputQueues();
           queuesManager.tickFullContainers();
-          debugState.msQueues += (Date.now() - t0);
+          const queueTime = Date.now() - t0;
+          debugState.msQueues += queueTime;
+          if (queueTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+            sendDiagnosticMessage(`[PERF] OutputQueues: ${queueTime}ms`, "transfer");
+          }
         },
         () => {
           const t1 = Date.now();
@@ -1152,29 +1213,52 @@ export function createNetworkTransferController(deps, opts) {
             inflightDirty = result.inflightDirty || inflightDirty;
             inflightStepDirty = result.inflightStepDirty || inflightStepDirty;
           }
-          debugState.msInflight += (Date.now() - t1);
+          const inflightTime = Date.now() - t1;
+          debugState.msInflight += inflightTime;
+          if (inflightTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+            sendDiagnosticMessage(`[PERF] Inflight: ${inflightTime}ms (${inflight.length} jobs)`, "transfer");
+          }
         },
         () => {
           const t2 = Date.now();
           inflightProcessorManager.tickFluxFxInFlight(fluxFxInflight, debugState);
-          debugState.msFluxFx += (Date.now() - t2);
+          const fluxFxTime = Date.now() - t2;
+          debugState.msFluxFx += fluxFxTime;
+          if (fluxFxTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+            sendDiagnosticMessage(`[PERF] FluxFX: ${fluxFxTime}ms (${fluxFxInflight.length} jobs)`, "transfer");
+          }
         },
       ]);
     } else {
-      runTransferPipeline([
-        queuesManager.tickOutputQueues.bind(queuesManager),
-        queuesManager.tickFullContainers.bind(queuesManager),
-        () => {
-          const result = inflightProcessorManager.tickInFlight(inflight, nowTick);
-          if (result) {
-            inflightDirty = result.inflightDirty || inflightDirty;
-            inflightStepDirty = result.inflightStepDirty || inflightStepDirty;
-          }
-        },
-        () => {
-          inflightProcessorManager.tickFluxFxInFlight(fluxFxInflight, debugState);
-        },
-      ]);
+      const queueStart = Date.now();
+      queuesManager.tickOutputQueues();
+      queuesManager.tickFullContainers();
+      const queueTime = Date.now() - queueStart;
+      if (queueTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+        sendDiagnosticMessage(`[PERF] OutputQueues: ${queueTime}ms`, "transfer");
+      }
+      
+      const inflightStart = Date.now();
+      const result = inflightProcessorManager.tickInFlight(inflight, nowTick);
+      if (result) {
+        inflightDirty = result.inflightDirty || inflightDirty;
+        inflightStepDirty = result.inflightStepDirty || inflightStepDirty;
+      }
+      const inflightTime = Date.now() - inflightStart;
+      if (inflightTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+        sendDiagnosticMessage(`[PERF] Inflight: ${inflightTime}ms (${inflight.length} jobs)`, "transfer");
+      }
+      
+      const fluxFxStart = Date.now();
+      inflightProcessorManager.tickFluxFxInFlight(fluxFxInflight, debugState);
+      const fluxFxTime = Date.now() - fluxFxStart;
+      if (fluxFxTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+        sendDiagnosticMessage(`[PERF] FluxFX: ${fluxFxTime}ms (${fluxFxInflight.length} jobs)`, "transfer");
+      }
+    }
+    const queuesTotalTime = Date.now() - queuesStart;
+    if (queuesTotalTime > 20 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] Queues+Inflight Total: ${queuesTotalTime}ms`, "transfer");
     }
 
     // DIAGNOSTIC: Log after processing queues/inflight (disabled - was too spammy)
@@ -1195,18 +1279,16 @@ export function createNetworkTransferController(deps, opts) {
     //   sendInitMessage(`§7[Flow] Tick ${nowTick}: About to check virtual inventory - manager=${!!virtualInventoryManager}`);
     // }
     
+    const virtualInvStart = Date.now();
     try {
       if (virtualInventoryManager && typeof virtualInventoryManager.updateState === "function") {
         const queueState = queuesManager.getState();
         // Get input queues for virtual inventory (if available)
         let inputQueueByPrism = null;
+        const prismKeysStart = Date.now();
         if (inputQueuesManager && typeof inputQueuesManager.getQueuesForPrism === "function") {
           inputQueueByPrism = new Map();
           const prismKeys = getPrismKeys();
-          // DIAGNOSTIC: Log prism count (disabled - was too spammy)
-          // if (nowTick <= 10 || nowTick % 100 === 0) {
-          //   sendInitMessage(`§7[Flow] Tick ${nowTick}: Found ${prismKeys.length} prisms for virtual inventory`);
-          // }
           for (const prismKey of prismKeys) {
             const queues = inputQueuesManager.getQueuesForPrism(prismKey);
             if (queues && queues.length > 0) {
@@ -1214,22 +1296,25 @@ export function createNetworkTransferController(deps, opts) {
             }
           }
         }
+        const prismKeysTime = Date.now() - prismKeysStart;
+        if (prismKeysTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+          sendDiagnosticMessage(`[PERF] GetPrismKeys (virtualInv): ${prismKeysTime}ms`, "transfer");
+        }
         
+        const updateStart = Date.now();
         virtualInventoryManager.updateState(inflight, queueState.queueByContainer, inputQueueByPrism);
-        
-        // DIAGNOSTIC: Log completed (disabled - was too spammy)
-        // if (nowTick <= 10 || nowTick % 100 === 0) {
-        //   sendInitMessage(`§7[Flow] Tick ${nowTick}: virtualInventoryManager.updateState() completed`);
-        // }
-      } else {
-        // DIAGNOSTIC: Log skipping (disabled - was too spammy)
-        // if (nowTick <= 10 || nowTick % 100 === 0) {
-        //   sendInitMessage(`§7[Flow] Tick ${nowTick}: Skipping virtual inventory (manager=${!!virtualInventoryManager}, hasUpdateState=${virtualInventoryManager && typeof virtualInventoryManager.updateState === "function"})`);
-        // }
+        const updateTime = Date.now() - updateStart;
+        if (updateTime > 10 || (nowTick % 200 === 0 && nowTick > 0)) {
+          sendDiagnosticMessage(`[PERF] VirtualInv.updateState: ${updateTime}ms`, "transfer");
+        }
       }
     } catch (err) {
       const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
       sendInitMessage(`§c[Flow] Tick ${nowTick}: ERROR in virtual inventory update: ${errMsg}`);
+    }
+    const virtualInvTime = Date.now() - virtualInvStart;
+    if (virtualInvTime > 15 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] VirtualInv Total: ${virtualInvTime}ms`, "transfer");
     }
 
     // DIAGNOSTIC: Log after virtual inventory update (disabled - was too spammy)
@@ -1243,11 +1328,13 @@ export function createNetworkTransferController(deps, opts) {
     //   sendInitMessage(`§b[Flow] Tick ${nowTick}: Queue section START - manager=${!!inputQueuesManager}`);
     // }
     
-    const inputQueueStart = debugEnabled ? Date.now() : 0;
+    const inputQueueStart = Date.now();
     let inputQueueProcessed = 0;
     let inputQueueTransferBudget = cfg.maxTransfersPerTick;
     let inputQueueSearchBudget = cfg.maxSearchesPerTick;
     let inputQueueTransfersThisTick = 0;
+    let inputQueueMaxEntryTime = 0; // Track max time for a single queue entry processing
+    let inputQueueTotalEntries = 0; // Count total entries processed
     
     // Aggregate failures by reason and item for summary logging (reduce spam)
     const failureCounts = new Map(); // Map<"reason:itemType", count>
@@ -1260,10 +1347,10 @@ export function createNetworkTransferController(deps, opts) {
       
       // Process input queues if they exist
       if (totalQueueSize > 0) {
-        // Only log queue status periodically (every 100 ticks) or on first few ticks
-        const shouldLogQueueStatus = (nowTick <= 3 || nowTick % 100 === 0);
+        // Only log queue status occasionally (every 200 ticks) to reduce clutter
+        const shouldLogQueueStatus = (nowTick <= 3 || nowTick % 200 === 0);
         if (shouldLogQueueStatus) {
-          sendDiagnosticMessage(`[Queue] Active: ${totalQueueSize} queues, budget: transfer=${inputQueueTransferBudget}, search=${inputQueueSearchBudget}`, "transfer");
+          sendDiagnosticMessage(`[Queue] Active: ${totalQueueSize} queues`, "transfer");
         }
         const prismKeys = getPrismKeys();
         if (prismKeys.length > 0) {
@@ -1287,14 +1374,15 @@ export function createNetworkTransferController(deps, opts) {
             const prismBlock = prismInfo.block;
             if (!prismBlock || !isPrismBlock(prismBlock)) continue;
             
-            // Apply tier-based transfer interval (0.25-1.25 seconds)
-            // Lower tiers = slower transfer rate (more ticks between transfers)
-            // Tier 1 = 25 ticks (1.25s), Tier 5 = 5 ticks (0.25s)
+            // Apply tier-based transfer interval (conservative scaling for performance)
+            // Higher tiers = faster checks (fewer ticks between transfers)
+            // Formula uses conservative scaling to avoid performance impact
             const prismTier = getPrismTier(prismBlock);
             const baseInterval = cfg.perPrismIntervalTicks || 5; // Base for tier 5
-            // Formula: interval = baseInterval * (6 - tier)
-            // Tier 1: 5 * 5 = 25 ticks (1.25s), Tier 5: 5 * 1 = 5 ticks (0.25s)
-            const tierInterval = baseInterval * (6 - prismTier);
+            // Conservative tier scaling: interval = baseInterval * (7 - tier * 1.2)
+            // This gives: T1=~23, T2=~18, T3=~13, T4=~8, T5=5 ticks
+            // More aggressive for higher tiers while being conservative
+            const tierInterval = Math.max(1, Math.floor(baseInterval * (7 - prismTier * 1.2)));
             const allowedAt = nextQueueTransferAllowed.has(prismKey) ? nextQueueTransferAllowed.get(prismKey) : 0;
             if (nowTick < allowedAt) {
               // Prism is on cooldown - skip this tick
@@ -1305,194 +1393,262 @@ export function createNetworkTransferController(deps, opts) {
             const filter = getFilterForBlock(prismBlock);
             const filterSet = filter ? (filter instanceof Set ? filter : getFilterSet(filter)) : null;
             
-            // Get next queue entry for this prism
-            const queueEntry = inputQueuesManager.getNextQueueEntry(prismKey, filterSet);
-            if (!queueEntry) {
-              // Only log missing queue entries if extended debug enabled and occasionally
-              if (debugEnabled && inputQueuesManager.hasQueueForPrism(prismKey) && nowTick % 200 === 0) {
-                sendDiagnosticMessage(`[Queue] Prism ${prismKey}: no queue entry found (hasQueue=true but getNextQueueEntry=null)`, "transfer");
-              }
-              continue;
-            }
+            // For filtered prisms, reduce interval further to extract non-filtered items faster
+            // This ensures filtered prisms empty their non-filtered items quickly
+            const isFilteredPrism = filterSet && filterSet.size > 0;
+            const effectiveInterval = isFilteredPrism ? Math.max(1, Math.floor(tierInterval * 0.6)) : tierInterval;
             
-            // Don't log every entry processing - too spammy (only in extended debug and occasionally)
-            // sendDiagnosticMessage(`[Queue] Processing entry: prism=${prismKey}, item=${queueEntry.itemTypeId}, remaining=${queueEntry.remainingAmount}`, "transfer");
+            // For filtered prisms, allow processing multiple entries per tick to extract non-filtered items faster
+            // For unfiltered prisms, process one entry per tick (by design for budget control)
+            const maxEntriesPerTick = isFilteredPrism ? 3 : 1; // Filtered prisms: up to 3 entries per tick
+            let entriesProcessedThisPrism = 0;
+            let consecutiveFailures = 0; // Track consecutive failures to prevent infinite loops
+            const maxConsecutiveFailures = 5; // Safety limit to prevent infinite loops
             
-            // Validate queue entry
-            const isValid = inputQueuesManager.validateInputQueue(queueEntry, nowTick);
-            if (!isValid) {
-              // Entry invalid - only log occasionally (invalid entries are common/expected)
-              if (nowTick % 100 === 0) {
-                sendDiagnosticMessage(`[Queue] Entry invalid: prism=${prismKey}, item=${queueEntry.itemTypeId} - removing`, "transfer");
-              }
-              inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
-              continue;
-            }
-            
-            // Get inventories for this prism
+            // Get inventories for this prism (do this once outside the loop)
             const inventories = cacheManager.getPrismInventoriesCached(prismKey, prismBlock, dim);
             if (!inventories || inventories.length === 0) continue;
             
-            // Find the item source from the queue entry
-            let itemSource = null;
-            for (const inv of inventories) {
-              if (!inv.container) continue;
-              const containerKey = getContainerKey(inv.entity || inv.block);
-              if (containerKey === queueEntry.containerKey) {
-                // Found the container - get the item from the slot
-                const item = inv.container.getItem(queueEntry.slot);
-                if (item && item.typeId === queueEntry.itemTypeId && item.amount > 0) {
-                  itemSource = {
-                    container: inv.container,
-                    slot: queueEntry.slot,
-                    stack: item,
-                    inventoryIndex: inventories.indexOf(inv),
-                  };
+            // Process multiple entries for filtered prisms, single entry for others
+            const prismQueueStart = Date.now();
+            while (entriesProcessedThisPrism < maxEntriesPerTick && 
+                   inputQueueTransferBudget > 0 && 
+                   inputQueueSearchBudget > 0 &&
+                   inputQueuesManager.hasQueueForPrism(prismKey) &&
+                   consecutiveFailures < maxConsecutiveFailures) {
+              
+              const entryStart = Date.now();
+              inputQueueTotalEntries++;
+              
+              // Get next queue entry for this prism
+              const queueEntry = inputQueuesManager.getNextQueueEntry(prismKey, filterSet);
+              if (!queueEntry) {
+                // No more entries for this prism
+                break;
+              }
+              
+              // Validate queue entry
+              const isValid = inputQueuesManager.validateInputQueue(queueEntry, nowTick);
+              if (!isValid) {
+                // Entry invalid - remove and try next
+                inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
+                consecutiveFailures++;
+                continue; // Continue to next entry (don't break - try next entry)
+              }
+              // Reset failure counter on valid entry
+              consecutiveFailures = 0;
+            
+              // Find the item source from the queue entry
+              let itemSource = null;
+              for (const inv of inventories) {
+                if (!inv.container) continue;
+                const containerKey = getContainerKey(inv.entity || inv.block);
+                if (containerKey === queueEntry.containerKey) {
+                  // Found the container - get the item from the slot
+                  const item = inv.container.getItem(queueEntry.slot);
+                  if (item && item.typeId === queueEntry.itemTypeId && item.amount > 0) {
+                    itemSource = {
+                      container: inv.container,
+                      slot: queueEntry.slot,
+                      stack: item,
+                      inventoryIndex: inventories.indexOf(inv),
+                    };
+                    break;
+                  }
+                }
+              }
+              
+              if (!itemSource || !itemSource.stack) {
+                // Item no longer in slot - invalidate queue entry and try next
+                inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
+                consecutiveFailures++;
+                continue; // Continue to next entry
+              }
+              // Reset failure counter on valid item source
+              consecutiveFailures = 0;
+            
+              // Use cached route if available, otherwise find new route
+              let route = queueEntry.cachedRoute;
+              let destinationKey = queueEntry.lastDestination;
+              
+              if (!route || route.length === 0 || !destinationKey) {
+                // Need to find route
+                if (inputQueueSearchBudget <= 0) {
+                  // Out of search budget - break to allow other prisms to process
                   break;
                 }
-              }
-            }
-            
-            if (!itemSource || !itemSource.stack) {
-              // Item no longer in slot - invalidate queue entry
-              inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
-              continue;
-            }
-            
-            // Use cached route if available, otherwise find new route
-            let route = queueEntry.cachedRoute;
-            let destinationKey = queueEntry.lastDestination;
-            
-            if (!route || route.length === 0 || !destinationKey) {
-              // Need to find route
-              if (inputQueueSearchBudget <= 0) {
-                // Only log budget issues occasionally
-                if (nowTick % 100 === 0) {
-                  sendDiagnosticMessage(`[Queue] No search budget for route finding: prism=${prismKey}, item=${queueEntry.itemTypeId}`, "transfer");
+                
+                const pathfindStart = Date.now();
+                let pathResult = null;
+                try {
+                  pathResult = findPathForInput(prismKey, nowTick);
+                  const pathfindTime = Date.now() - pathfindStart;
+                  if (pathfindTime > 50 || (nowTick % 200 === 0 && nowTick > 0)) {
+                    sendDiagnosticMessage(`[PERF] Pathfind (queue): ${pathfindTime}ms for ${prismKey}`, "transfer");
+                  }
+                  // EMERGENCY: If pathfinding takes too long, abort and skip
+                  if (pathfindTime > 100) {
+                    sendDiagnosticMessage(`[PERF] ⚠ Pathfind TIMEOUT (queue): ${pathfindTime}ms - aborting for ${prismKey}`, "transfer");
+                    inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
+                    consecutiveFailures++;
+                    continue;
+                  }
+                } catch (err) {
+                  const pathfindTime = Date.now() - pathfindStart;
+                  sendDiagnosticMessage(`[PERF] Pathfind ERROR (queue) after ${pathfindTime}ms: ${err?.message || String(err)}`, "transfer");
+                  inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
+                  consecutiveFailures++;
+                  continue;
                 }
+                
+                if (!pathResult || !Array.isArray(pathResult) || pathResult.length === 0) {
+                  // No route found - invalidate entry and try next
+                  inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
+                  consecutiveFailures++;
+                  continue; // Continue to next entry
+                }
+                // Reset failure counter on route found
+                consecutiveFailures = 0;
+                
+                const pickStart = Date.now();
+                // Pick a destination from the path results (prioritize filtered prisms that match this item)
+                const pick = pickWeightedRandomWithBias(pathResult, (opt) => {
+                  const type = opt?.outputType || "prism";
+                  if (isFluxTypeId(itemSource.stack.typeId) && type === "crystal") return CRYSTAL_FLUX_WEIGHT;
+                  
+                  // Prioritize filtered prisms that match this item (20x weight)
+                  if (type === "prism" && opt?.outputKey) {
+                    const targetInfo = resolveBlockInfo(opt.outputKey);
+                    if (targetInfo?.block && isPrismBlock(targetInfo.block)) {
+                      const targetFilter = getFilterForBlock(targetInfo.block);
+                      const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
+                      if (targetFilterSet && targetFilterSet.size > 0 && targetFilterSet.has(itemSource.stack.typeId)) {
+                        return 20.0; // Heavily prioritize filtered prisms (20x weight)
+                      }
+                    }
+                  }
+                  
+                  return 1.0; // Normal weight for unfiltered prisms
+                });
+                const pickTime = Date.now() - pickStart;
+                if (pickTime > 20) {
+                  sendDiagnosticMessage(`[PERF] Pick destination (queue): ${pickTime}ms (${pathResult.length} candidates)`, "transfer");
+                }
+                
+                if (pick && Array.isArray(pick.path) && pick.path.length > 0) {
+                  route = pick.path;
+                  destinationKey = pick.outputKey;
+                  inputQueuesManager.setCachedRoute(prismKey, queueEntry.itemTypeId, route);
+                  queueEntry.lastDestination = destinationKey;
+                } else {
+                  // No valid pick - invalidate and try next entry
+                  inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
+                  consecutiveFailures++;
+                  continue;
+                }
+                
+                inputQueueSearchBudget--;
+              }
+              
+              // Get destination info
+              const destInfo = resolveBlockInfo(destinationKey);
+              if (!destInfo || !destInfo.block) {
+                // Destination invalid - clear route and try next entry
+                queueEntry.cachedRoute = null;
+                queueEntry.lastDestination = null;
+                consecutiveFailures++;
                 continue;
               }
+              // Reset failure counter on valid destination
+              consecutiveFailures = 0;
               
-              // Don't log route finding - too spammy (route caching means this shouldn't happen often)
-              // sendDiagnosticMessage(`[Queue] Finding route: prism=${prismKey}, item=${queueEntry.itemTypeId}`, "transfer");
+              // Attempt transfer using the queue entry
+              const transferStart = Date.now();
+              let transferResult;
+              try {
+                transferResult = attemptPushTransferWithDestination(
+                  prismKey,
+                  prismBlock,
+                  dim,
+                  inventories,
+                  itemSource,
+                  { ...destInfo, key: destinationKey },
+                  route,
+                  filterSet,
+                  queueEntry
+                );
+              } catch (err) {
+                // ALWAYS log errors - these are important
+                const errorMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
+                sendDiagnosticMessage(`[Queue] Transfer ERROR: prism=${prismKey}, item=${queueEntry.itemTypeId}, error=${errorMsg}`, "transfer");
+                transferResult = { ...makeResult(false, "transfer_error"), amount: 0, searchesUsed: 0 };
+              }
+              const transferTime = Date.now() - transferStart;
               
-              const pathResult = findPathForInput(prismKey, nowTick);
-              if (!pathResult || !Array.isArray(pathResult) || pathResult.length === 0) {
-                // No route found - only log occasionally (expected in some scenarios)
-                if (nowTick % 100 === 0) {
-                  sendDiagnosticMessage(`[Queue] No route found: prism=${prismKey}, item=${queueEntry.itemTypeId} - invalidating entry`, "transfer");
-                }
-                inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
-                continue;
+              const entryTime = Date.now() - entryStart;
+              if (entryTime > inputQueueMaxEntryTime) {
+                inputQueueMaxEntryTime = entryTime;
+              }
+              if (entryTime > 50 || transferTime > 30) {
+                sendDiagnosticMessage(`[PERF] Queue Entry: ${entryTime}ms total (transfer: ${transferTime}ms)`, "transfer");
               }
               
-              // Don't log successful route finds - too spammy
-              // sendDiagnosticMessage(`[Queue] Route found: prism=${prismKey}, item=${queueEntry.itemTypeId}, options=${pathResult.length}`, "transfer");
-              
-              // Pick a destination from the path results
-              const pick = pickWeightedRandomWithBias(pathResult, (opt) => {
-                const type = opt?.outputType || "prism";
-                if (isFluxTypeId(itemSource.stack.typeId) && type === "crystal") return CRYSTAL_FLUX_WEIGHT;
-                return 1.0;
-              });
-              
-              if (pick && Array.isArray(pick.path) && pick.path.length > 0) {
-                route = pick.path;
-                destinationKey = pick.outputKey;
-                inputQueuesManager.setCachedRoute(prismKey, queueEntry.itemTypeId, route);
-                queueEntry.lastDestination = destinationKey;
+              if (transferResult.ok) {
+                inputQueueTransfersThisTick++;
+                inputQueueTransferBudget--;
+                inputQueueSearchBudget -= transferResult.searchesUsed || 0;
+                
+                // Update queue entry with transferred amount
+                inputQueuesManager.updateQueueEntry(prismKey, queueEntry.itemTypeId, transferResult.amount || 1);
+                inputQueueProcessed++;
+                entriesProcessedThisPrism++;
+                consecutiveFailures = 0; // Reset failure counter on success
+                
+                // Set cooldown for this prism based on tier and filter status
+                // Filtered prisms use shorter interval to extract non-filtered items faster
+                nextQueueTransferAllowed.set(prismKey, nowTick + effectiveInterval);
+                
+                // For filtered prisms processing multiple entries, don't break yet - continue to next entry
+                // Only break if we hit budget limits or run out of entries
               } else {
-                continue;
+                inputQueueSearchBudget -= transferResult.searchesUsed || 0;
+                consecutiveFailures++; // Increment failure counter
+                
+                // Aggregate failures for summary logging (reduce spam)
+                const reason = transferResult.reason || 'unknown';
+                const failureKey = `${reason}:${queueEntry.itemTypeId}`;
+                failureCounts.set(failureKey, (failureCounts.get(failureKey) || 0) + 1);
+                
+                // Only log transfer_error immediately (these are critical)
+                if (reason === "transfer_error") {
+                  sendDiagnosticMessage(`[Queue] Transfer ERROR: reason=${reason}, item=${queueEntry.itemTypeId}`, "transfer");
+                }
+                
+                // For filtered prisms, continue trying next entry even if this one failed (up to failure limit)
+                // For unfiltered prisms, break after first entry (processed or failed)
+                if (!isFilteredPrism || consecutiveFailures >= maxConsecutiveFailures) {
+                  break; // Unfiltered prisms: process one entry per tick, or too many failures
+                }
+                // Filtered prisms: continue to next entry (unless too many consecutive failures)
               }
-              
-              inputQueueSearchBudget--;
-            }
+            } // End of while loop for multiple entries per prism
             
-            // Get destination info
-            const destInfo = resolveBlockInfo(destinationKey);
-            if (!destInfo || !destInfo.block) {
-              // Destination invalid - clear route and try again next time
-              queueEntry.cachedRoute = null;
-              queueEntry.lastDestination = null;
-              continue;
+            const prismQueueTime = Date.now() - prismQueueStart;
+            if (prismQueueTime > 100) {
+              sendDiagnosticMessage(`[PERF] Prism Queue (${prismKey}): ${prismQueueTime}ms (${entriesProcessedThisPrism} entries)`, "transfer");
             }
-            
-            // Attempt transfer using the queue entry
-            let transferResult;
-            try {
-              transferResult = attemptPushTransferWithDestination(
-                prismKey,
-                prismBlock,
-                dim,
-                inventories,
-                itemSource,
-                { ...destInfo, key: destinationKey },
-                route,
-                filterSet,
-                queueEntry
-              );
-            } catch (err) {
-              // ALWAYS log errors - these are important
-              const errorMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
-              sendDiagnosticMessage(`[Queue] Transfer ERROR: prism=${prismKey}, item=${queueEntry.itemTypeId}, error=${errorMsg}`, "transfer");
-              transferResult = { ...makeResult(false, "transfer_error"), amount: 0, searchesUsed: 0 };
-            }
-            
-            // Don't log every transfer result - too spammy (only log failures occasionally)
-            // sendDiagnosticMessage(`[Queue] Transfer result: ...`, "transfer");
-            
-            if (transferResult.ok) {
-              inputQueueTransfersThisTick++;
-              inputQueueTransferBudget--;
-              inputQueueSearchBudget -= transferResult.searchesUsed || 0;
-              
-              // Update queue entry with transferred amount
-              inputQueuesManager.updateQueueEntry(prismKey, queueEntry.itemTypeId, transferResult.amount || 1);
-              inputQueueProcessed++;
-              
-              // Set cooldown for this prism based on tier (prevent transfers every tick)
-              nextQueueTransferAllowed.set(prismKey, nowTick + tierInterval);
-              
-              // Don't log every success - too spammy
-              // sendDiagnosticMessage(`[Queue] Transfer SUCCESS: ...`, "transfer");
-            } else {
-              inputQueueSearchBudget -= transferResult.searchesUsed || 0;
-              
-              // Aggregate failures for summary logging (reduce spam)
-              const reason = transferResult.reason || 'unknown';
-              const failureKey = `${reason}:${queueEntry.itemTypeId}`;
-              failureCounts.set(failureKey, (failureCounts.get(failureKey) || 0) + 1);
-              
-              // Only log transfer_error immediately (these are critical)
-              if (reason === "transfer_error") {
-                sendDiagnosticMessage(`[Queue] Transfer ERROR: reason=${reason}, item=${queueEntry.itemTypeId}`, "transfer");
-              }
-              // Other failures are aggregated and logged in summary below
-            }
-          }
-        }
-      }
+          } // End of for (const prismKey of prismKeys) loop
+        } // End of if (prismKeys.length > 0)
+      } // End of if (totalQueueSize > 0)
       
-      // Summary: Log queue processing results periodically (every 100 ticks) or when queues change significantly
+      // Summary: Log queue processing results only when significant changes occur (reduced frequency)
       if (totalQueueSize > 0) {
-        const newTotalQueueSize = inputQueuesManager.getTotalQueueSize();
-        // Log summary every 100 ticks, or if queue size changed significantly (reduced by >50% in one tick)
-        const shouldLogSummary = (nowTick % 100 === 0) || (inputQueueTransfersThisTick > 0 && (totalQueueSize - newTotalQueueSize) > (totalQueueSize * 0.5));
+        const finalQueueSize = inputQueuesManager.getTotalQueueSize();
+        // Log summary only every 200 ticks, or if queue size changed significantly (>75% reduction)
+        const shouldLogSummary = (nowTick % 200 === 0) || (inputQueueTransfersThisTick > 0 && (totalQueueSize - finalQueueSize) > (totalQueueSize * 0.75));
         if (shouldLogSummary) {
-          let summaryMsg = `[Queue] Summary: processed=${inputQueueProcessed}, transfers=${inputQueueTransfersThisTick}, remaining=${newTotalQueueSize}`;
-          
-          // Append failure summary if there were failures (aggregated to reduce spam)
-          if (failureCounts.size > 0) {
-            const failureSummary = Array.from(failureCounts.entries())
-              .map(([key, count]) => {
-                const [reason, item] = key.split(':');
-                return `${reason}(${item})=${count}`;
-              })
-              .join(', ');
-            summaryMsg += ` | Failures: ${failureSummary}`;
-          }
-          
-          sendDiagnosticMessage(summaryMsg, "transfer");
+          // Simplified summary - only show essential info
+          sendDiagnosticMessage(`[Queue] ${finalQueueSize} remaining (${inputQueueTransfersThisTick} transferred)`, "transfer");
           failureCounts.clear(); // Clear for next summary period
         }
       }
@@ -1503,36 +1659,88 @@ export function createNetworkTransferController(deps, opts) {
       // }
     }
     
+    const inputQueueTime = Date.now() - inputQueueStart;
     if (debugEnabled) {
-      debugState.msInputQueues = (debugState.msInputQueues || 0) + (Date.now() - inputQueueStart);
+      debugState.msInputQueues = (debugState.msInputQueues || 0) + inputQueueTime;
+    }
+    if (inputQueueTime > 100 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] InputQueues Total: ${inputQueueTime}ms (${inputQueueTotalEntries} entries, max entry: ${inputQueueMaxEntryTime}ms, transfers: ${inputQueueTransfersThisTick})`, "transfer");
     }
 
     // PHASE 4: Lazy scanning - only scan when input queues are empty (or dirty prisms exist)
-    const scanStart = debugEnabled ? Date.now() : 0;
-    
-    // DIAGNOSTIC: Log BEFORE calling getPrismKeys (disabled - was too spammy)
-    // if (nowTick <= 10 || nowTick % 100 === 0) {
-    //   sendInitMessage(`§b[Flow] Tick ${nowTick}: Scanning section START - about to call getPrismKeys()`);
-    // }
+    const scanStart = Date.now();
+    let scanTotalTime = 0; // Initialize to avoid undefined if we return early
     
     const prismKeys = getPrismKeys();
     
-    // DIAGNOSTIC: Log prism key count (disabled - was too spammy)
-    // if (nowTick <= 10 || nowTick % 100 === 0) {
-    //   sendInitMessage(`§7[Flow] Tick ${nowTick}: getPrismKeys() returned ${prismKeys.length} prisms`);
-    // }
-    
     if (prismKeys.length === 0) {
-      // DIAGNOSTIC: Log early return due to no prisms (disabled - was too spammy)
-      // if (nowTick <= 10 || nowTick % 100 === 0) {
-      //   sendInitMessage(`§c[Flow] Tick ${nowTick}: EARLY RETURN - No prisms found, skipping scanning section`);
-      // }
+      scanTotalTime = Date.now() - scanStart;
+      const timeBeforePersist = Date.now() - tickStart;
+      const shouldSkipSaves = timeBeforePersist > 80;
+      
+      const persistStart = Date.now();
+      let inflightSaveTime = 0;
+      let levelsSaveTime = 0;
+      let outputLevelsSaveTime = 0;
+      let prismLevelsSaveTime = 0;
+      
+      if (!shouldSkipSaves) {
+        const inflightSaveStart = Date.now();
+        persistInflightIfNeeded();
+        inflightSaveTime = Date.now() - inflightSaveStart;
+        if (inflightSaveTime > 30) {
+          sendDiagnosticMessage(`[PERF] persistInflightIfNeeded: ${inflightSaveTime}ms`, "transfer");
+        }
+        const levelsSaveStart = Date.now();
+        persistLevelsIfNeeded();
+        levelsSaveTime = Date.now() - levelsSaveStart;
+        if (levelsSaveTime > 30) {
+          sendDiagnosticMessage(`[PERF] persistLevelsIfNeeded: ${levelsSaveTime}ms`, "transfer");
+        }
+        const outputLevelsSaveStart = Date.now();
+        persistOutputLevelsIfNeeded();
+        outputLevelsSaveTime = Date.now() - outputLevelsSaveStart;
+        if (outputLevelsSaveTime > 30) {
+          sendDiagnosticMessage(`[PERF] persistOutputLevelsIfNeeded: ${outputLevelsSaveTime}ms`, "transfer");
+        }
+        const prismLevelsSaveStart = Date.now();
+        persistPrismLevelsIfNeeded();
+        prismLevelsSaveTime = Date.now() - prismLevelsSaveStart;
+        if (prismLevelsSaveTime > 30) {
+          sendDiagnosticMessage(`[PERF] persistPrismLevelsIfNeeded: ${prismLevelsSaveTime}ms`, "transfer");
+        }
+      } else {
+        sendDiagnosticMessage(`[PERF] ⚠ SKIPPING SAVES: Tick already at ${timeBeforePersist}ms (>80ms threshold)`, "transfer");
+      }
+      const persistTime = Date.now() - persistStart;
+      if (debugEnabled) {
+        debugState.msPersist += persistTime;
+        debugState.msTotal += (Date.now() - tickStart);
+        try {
+          postDebugStats(prismKeys.length);
+        } catch (err) {
+          sendInitMessage(`§c[Chaos Transfer] Error in postDebugStats: ${err?.message || String(err)}`);
+        }
+      }
+      if (persistTime > 50 || (nowTick % 200 === 0 && nowTick > 0)) {
+        sendDiagnosticMessage(`[PERF] Persist Total: ${persistTime}ms (Inflight: ${inflightSaveTime}ms | InputLevels: ${levelsSaveTime}ms | OutputLevels: ${outputLevelsSaveTime}ms | PrismLevels: ${prismLevelsSaveTime}ms)`, "transfer");
+      }
+      if (persistTime > 100) {
+        sendDiagnosticMessage(`[PERF] ⚠⚠⚠ WATCHDOG RISK: Persistence took ${persistTime}ms (>100ms)`, "transfer");
+      }
+      const tickTotalTime = Date.now() - tickStart;
+      if (tickTotalTime > 80 || (nowTick % 200 === 0 && nowTick > 0)) {
+        sendDiagnosticMessage(`[PERF] ⚠ TICK TOTAL: ${tickTotalTime}ms (Cache: ${cacheTime}ms | Queues+Inflight: ${queuesTotalTime}ms | VirtualInv: ${virtualInvTime}ms | InputQueues: ${inputQueueTime}ms | Scan: ${scanTotalTime}ms | Persist: ${persistTime}ms)`, "transfer");
+      }
+      if (tickTotalTime > 100) {
+        sendDiagnosticMessage(`[PERF] ⚠⚠⚠ WATCHDOG RISK: Tick took ${tickTotalTime}ms (>100ms threshold)`, "transfer");
+      }
       return;
     }
     
-    // PHASE 4: Lazy scanning - only scan when input queues are empty OR dirty prisms exist
-    // Check if we should scan (queues empty OR dirty prisms exist)
-    const totalQueueSize = inputQueuesManager && typeof inputQueuesManager.getTotalQueueSize === "function"
+    // PHASE 4: Always scan to discover new items, but prioritize based on queue state
+    // Get fresh queue size for scanning decision
+    const scanQueueSize = inputQueuesManager && typeof inputQueuesManager.getTotalQueueSize === "function"
       ? inputQueuesManager.getTotalQueueSize()
       : 0;
     
@@ -1544,37 +1752,26 @@ export function createNetworkTransferController(deps, opts) {
       dirtyPrismsCount = dirtyPrisms ? dirtyPrisms.size : 0;
     }
     
-    // Scan if: queues are empty OR dirty prisms exist
-    const shouldScan = totalQueueSize === 0 || dirtyPrismsCount > 0;
+    // ALWAYS scan (but with reduced budget if queues are active) - this ensures prisms continue processing
+    // Prisms should continue discovering and queuing items even while queues are being processed
+    // Only reduce scan budget when queues exist, don't skip entirely
+    const hasActiveQueues = scanQueueSize > 0;
+    const shouldScan = true; // Always scan to allow continuous item processing
     
-    // Scan decision messages removed - too spammy and not helpful
-    // Only track state internally for logic, don't log it
-    // if (typeof onTick.lastScanState === "undefined") onTick.lastScanState = "";
-    // const currentScanState = `${totalQueueSize}-${dirtyPrismsCount}-${shouldScan}`;
-    // const scanStateChanged = onTick.lastScanState !== currentScanState;
-    // onTick.lastScanState = currentScanState;
+    // Reduce scan budget if queues are active (prioritize queue processing)
+    // But still allow some scanning to discover new items
+    const baseScanLimit = Math.max(1, cfg.maxPrismsScannedPerTick | 0);
+    const scanLimitWhenQueuesActive = Math.max(1, Math.floor(baseScanLimit * 0.3)); // 30% of normal budget when queues active
     
-    if (!shouldScan) {
-      // Skip scanning - queues are active and no dirty prisms
-      debugState.msScan += (Date.now() - scanStart);
-      // Don't log when scanning skipped - state change already logged above
-      // sendDiagnosticMessage(`[Scan] Skipped: queues active (${totalQueueSize}), no dirty prisms`, "transfer");
-      return;
-    }
-    
-    // DIAGNOSTIC: Log when scanning starts only occasionally (every 200 ticks) or first few times
+    // Only log scan start occasionally to reduce clutter (every 200 ticks or first 3 ticks)
     if (nowTick <= 3 || nowTick % 200 === 0) {
-      sendDiagnosticMessage(`[Scan] Starting scan: queues=${totalQueueSize}, dirty=${dirtyPrismsCount}, prisms=${prismKeys.length}`, "transfer");
+      sendDiagnosticMessage(`[Scan] queues=${scanQueueSize}, dirty=${dirtyPrismsCount}, activeQueues=${hasActiveQueues}`, "transfer");
     }
     
-    // If queues exist but dirty prisms also exist, limit scanning to dirty prisms only (with limited budget)
-    const scanDirtyOnly = totalQueueSize > 0 && dirtyPrismsCount > 0;
-    const dirtyScanBudget = scanDirtyOnly ? Math.min(cfg.maxPrismsScannedPerTick || 5, dirtyPrismsCount) : Infinity;
-    
-    // Don't log dirty-only scan mode - too spammy (included in "Starting scan" message above)
-    // if (scanDirtyOnly) {
-    //   sendDiagnosticMessage(`[Scan] Scanning dirty prisms only: ...`, "transfer");
-    // }
+    // Prioritize dirty prisms if they exist, otherwise scan normally
+    // But always scan to allow continuous item discovery even when queues are active
+    const scanDirtyOnly = dirtyPrismsCount > 0;
+    const dirtyScanBudget = scanDirtyOnly ? Math.min(cfg.maxPrismsScannedPerTick || 8, dirtyPrismsCount) : Infinity;
 
     if (cursor >= prismKeys.length) cursor = 0;
     let scanned = 0;
@@ -1587,18 +1784,21 @@ export function createNetworkTransferController(deps, opts) {
     let scanLimit = 0;
     
     if (scanDirtyOnly && dirtyPrisms && dirtyPrisms.size > 0) {
-      // Scan only dirty prisms (limited budget)
+      // Scan only dirty prisms (prioritize them)
       prismsToScan = Array.from(dirtyPrisms);
       scanLimit = Math.min(dirtyScanBudget, prismsToScan.length);
     } else {
-      // Scan all prisms (normal behavior)
+      // Scan all prisms, but reduce limit if queues are active (to prioritize queue processing)
       prismsToScan = prismKeys;
+      const effectiveScanLimit = hasActiveQueues ? scanLimitWhenQueuesActive : baseScanLimit;
       scanLimit = Math.min(
         prismKeys.length,
-        Math.max(1, cfg.maxPrismsScannedPerTick | 0)
+        Math.max(1, effectiveScanLimit)
       );
     }
 
+    let scanLoopMaxPrismTime = 0;
+    const scanLoopStart = Date.now();
     while ((transferBudget > 0 || searchBudget > 0) && scanned < scanLimit && scanned < prismsToScan.length) {
       const prismKey = prismsToScan[scanDirtyOnly ? scanned : (cursor % prismsToScan.length)];
       if (!scanDirtyOnly) {
@@ -1613,68 +1813,199 @@ export function createNetworkTransferController(deps, opts) {
 
       const allowedAt = nextAllowed.has(prismKey) ? nextAllowed.get(prismKey) : 0;
       if (nowTick < allowedAt) {
-        // Log when prism is skipped due to backoff (first 10 ticks only to avoid spam)
-        if (nowTick <= 10 && scanned === 1) {
-          try {
-            for (const player of world.getAllPlayers()) {
-              try {
-                if (typeof player.sendMessage === "function") {
-                  player.sendMessage(`§7[Scan] Prism ${prismKey} skipped: backoff (allowed at ${allowedAt}, now ${nowTick})`);
-                }
-              } catch {}
-            }
-          } catch {}
-        }
         continue;
       }
 
-      // DIAGNOSTIC: Log when scanning a prism (disabled from chat - use extended debug instead)
-      // sendDiagnosticMessage(`[Scan] Scanning prism ${prismKey} (${scanned}/${scanLimit})`, "transfer");
-
-      // Attempt transfer with budgeted searches
-      const result = attemptTransferForPrism(prismKey, searchBudget);
-      const searchesUsed = result?.searchesUsed || 0;
-      searchBudget -= searchesUsed;
-
-      const didTransfer = !!result?.ok;
-      if (didTransfer) {
-        transfersThisTick++;
-        transferBudget--;
-      }
-
-      const info = resolveBlockInfo(prismKey);
-      let interval = cfg.perPrismIntervalTicks;
-      if (info && info.block) {
-        const s = getSpeed(info.block);
-        interval = Math.max(1, (s && s.intervalTicks) ? s.intervalTicks : cfg.perPrismIntervalTicks);
-      }
-      if (!didTransfer) {
-        const reason = result?.reason;
-        if (reason === "full" || reason === "no_options" || reason === "no_item" || reason === "no_search_budget") {
-          const level = bumpBackoff(prismKey);
-          interval += getBackoffTicks(level);
+      // Process multiple items from the same prism - continue until no more items or budgets exhausted
+      // This ensures prisms continue balancing items after finishing one transfer
+      let itemsProcessedFromPrism = 0;
+      const maxItemsPerPrismPerTick = 5; // Process up to 5 items per prism per scan cycle
+      let consecutiveFailuresForPrism = 0;
+      const maxConsecutiveFailuresForPrism = 3; // Move to next prism after 3 consecutive failures
+      
+      const prismStart = Date.now();
+      while (itemsProcessedFromPrism < maxItemsPerPrismPerTick && 
+             (transferBudget > 0 || searchBudget > 0) &&
+             consecutiveFailuresForPrism < maxConsecutiveFailuresForPrism) {
+        
+        // Attempt transfer with budgeted searches
+        const transferForPrismStart = Date.now();
+        const result = attemptTransferForPrism(prismKey, searchBudget);
+        const transferForPrismTime = Date.now() - transferForPrismStart;
+        if (transferForPrismTime > 100 || (itemsProcessedFromPrism === 0 && nowTick % 200 === 0)) {
+          sendDiagnosticMessage(`[PERF] attemptTransferForPrism (${prismKey}): ${transferForPrismTime}ms (${result?.searchesUsed || 0} searches, item #${itemsProcessedFromPrism + 1})`, "transfer");
         }
-      } else {
-        clearBackoff(prismKey);
+        
+        const searchesUsed = result?.searchesUsed || 0;
+        searchBudget -= searchesUsed;
+
+        const didTransfer = !!result?.ok;
+        if (didTransfer) {
+          transfersThisTick++;
+          transferBudget--;
+          itemsProcessedFromPrism++;
+          consecutiveFailuresForPrism = 0; // Reset failure counter on success
+          
+          // Clear backoff on successful transfer
+          clearBackoff(prismKey);
+          
+          // On successful transfer/queue, continue processing this prism to find more items
+          // Don't set cooldown yet - allow it to continue processing in this scan cycle
+          // The inner loop will continue until maxItemsPerPrismPerTick or budgets exhausted
+          // After the inner loop completes, we'll set minimal cooldown (1 tick) so it can continue soon
+        } else {
+          consecutiveFailuresForPrism++;
+          const reason = result?.reason;
+          
+          // On failure, check reason to decide if we should continue or move on
+          if (reason === "all_items_already_queued") {
+            // All items already queued - this is normal, not a failure
+            // Queue processing will handle these items, no need to scan again
+            // Don't increment failure counter - this is expected behavior
+            consecutiveFailuresForPrism = Math.max(0, consecutiveFailuresForPrism - 1);
+            // Set minimal cooldown - queue processing handles items, but allow checking for new items soon
+            nextAllowed.set(prismKey, nowTick + 1); // Minimal cooldown - queue processing handles it
+            break; // Exit inner loop, move to next prism
+          } else if (reason === "no_item" || reason === "no_transfer") {
+            // No items found - set cooldown and move to next prism
+            const info = resolveBlockInfo(prismKey);
+            let interval = cfg.perPrismIntervalTicks;
+            if (info && info.block) {
+              const s = getSpeed(info.block);
+              interval = Math.max(1, (s && s.intervalTicks) ? s.intervalTicks : cfg.perPrismIntervalTicks);
+            }
+            // Apply backoff for no items
+            const level = bumpBackoff(prismKey);
+            interval += getBackoffTicks(level);
+            nextAllowed.set(prismKey, nowTick + interval);
+            break; // Exit inner loop, move to next prism
+          } else if (reason === "full" || reason === "no_options" || reason === "no_search_budget") {
+            // Temporary failures - set shorter cooldown but don't break yet
+            // This allows retrying if budgets allow
+            if (consecutiveFailuresForPrism >= maxConsecutiveFailuresForPrism) {
+              // Too many failures - set cooldown and move on
+              const info = resolveBlockInfo(prismKey);
+              let interval = cfg.perPrismIntervalTicks;
+              if (info && info.block) {
+                const s = getSpeed(info.block);
+                interval = Math.max(1, (s && s.intervalTicks) ? s.intervalTicks : cfg.perPrismIntervalTicks);
+              }
+              const level = bumpBackoff(prismKey);
+              interval += getBackoffTicks(level);
+              nextAllowed.set(prismKey, nowTick + interval);
+              break;
+            }
+            // Continue trying if we haven't hit failure limit
+          } else if (reason === "pathfind_timeout" || reason === "pathfind_error") {
+            // Pathfinding failed - set short cooldown and move on
+            nextAllowed.set(prismKey, nowTick + 10);
+            break;
+          } else {
+            // Unknown failure - set minimal cooldown and continue to next item
+            // Don't break - allow it to try again
+          }
+        }
+        
+        // If budgets exhausted, break from inner loop
+        if (transferBudget <= 0 && searchBudget <= 0) break;
       }
-      nextAllowed.set(prismKey, nowTick + interval);
+      
+      // After processing items from this prism, set cooldown based on results
+      // CRITICAL FIX: If items were successfully processed/queued, use minimal cooldown (1 tick)
+      // This ensures prisms continue balancing items continuously after finishing one transfer
+      // Without this, prisms would wait the full interval (5+ ticks) before checking for more items
+      if (itemsProcessedFromPrism > 0) {
+        // Successfully processed/queued items - minimal cooldown (1 tick) so it can continue processing immediately
+        // This is the key fix: after balancing one item, prism should immediately start balancing the next item
+        nextAllowed.set(prismKey, nowTick + 1);
+        if (nowTick % 50 === 0) {
+          sendDiagnosticMessage(`[Scan] Prism ${prismKey}: processed ${itemsProcessedFromPrism} item(s), cooldown=1 tick (continuous processing)`, "transfer");
+        }
+      } else if (!nextAllowed.has(prismKey)) {
+        // No items processed and no cooldown set - set normal cooldown
+        const info = resolveBlockInfo(prismKey);
+        let interval = cfg.perPrismIntervalTicks;
+        if (info && info.block) {
+          const s = getSpeed(info.block);
+          interval = Math.max(1, (s && s.intervalTicks) ? s.intervalTicks : cfg.perPrismIntervalTicks);
+        }
+        nextAllowed.set(prismKey, nowTick + interval);
+      }
+      // If cooldown was already set (from failure above), keep it
+      
+      const prismTime = Date.now() - prismStart;
+      if (prismTime > scanLoopMaxPrismTime) {
+        scanLoopMaxPrismTime = prismTime;
+      }
+      if (itemsProcessedFromPrism > 0) {
+        sendDiagnosticMessage(`[Scan] Prism ${prismKey}: processed ${itemsProcessedFromPrism} item(s)`, "transfer");
+      }
 
       // If we're out of budgets, stop scanning
       if (transferBudget <= 0 && searchBudget <= 0) break;
     }
+    const scanLoopTime = Date.now() - scanLoopStart;
+    if (scanLoopTime > 200 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] Scan Loop: ${scanLoopTime}ms (${scanned} prisms, max prism: ${scanLoopMaxPrismTime}ms, transfers: ${transfersThisTick})`, "transfer");
+    }
+    
+    scanTotalTime = Date.now() - scanStart;
     if (debugEnabled) {
       debugState.inputsScanned += scanned;
       debugState.transfersStarted += transfersThisTick;
-      debugState.msScan += (Date.now() - scanStart);
+      debugState.msScan += scanTotalTime;
+    }
+    if (scanTotalTime > 200 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] Scan Total: ${scanTotalTime}ms (${scanned} prisms)`, "transfer");
     }
 
-    const persistStart = debugEnabled ? Date.now() : 0;
-    persistInflightIfNeeded();
-    persistLevelsIfNeeded();
-    persistOutputLevelsIfNeeded();
-    persistPrismLevelsIfNeeded();
+    // Check if we're already over time budget before attempting saves
+    // Skip non-critical saves if tick is taking too long to avoid watchdog
+    const timeBeforePersist = Date.now() - tickStart;
+    const shouldSkipSaves = timeBeforePersist > 80; // Skip saves if already over 80ms
+    
+    const persistStart = Date.now();
+    let inflightSaveTime = 0;
+    let levelsSaveTime = 0;
+    let outputLevelsSaveTime = 0;
+    let prismLevelsSaveTime = 0;
+    
+    if (!shouldSkipSaves) {
+      const inflightSaveStart = Date.now();
+      persistInflightIfNeeded();
+      inflightSaveTime = Date.now() - inflightSaveStart;
+      if (inflightSaveTime > 30) {
+        sendDiagnosticMessage(`[PERF] persistInflightIfNeeded: ${inflightSaveTime}ms`, "transfer");
+      }
+      
+      const levelsSaveStart = Date.now();
+      persistLevelsIfNeeded();
+      levelsSaveTime = Date.now() - levelsSaveStart;
+      if (levelsSaveTime > 30) {
+        sendDiagnosticMessage(`[PERF] persistLevelsIfNeeded: ${levelsSaveTime}ms`, "transfer");
+      }
+      
+      const outputLevelsSaveStart = Date.now();
+      persistOutputLevelsIfNeeded();
+      outputLevelsSaveTime = Date.now() - outputLevelsSaveStart;
+      if (outputLevelsSaveTime > 30) {
+        sendDiagnosticMessage(`[PERF] persistOutputLevelsIfNeeded: ${outputLevelsSaveTime}ms`, "transfer");
+      }
+      
+      const prismLevelsSaveStart = Date.now();
+      persistPrismLevelsIfNeeded();
+      prismLevelsSaveTime = Date.now() - prismLevelsSaveStart;
+      if (prismLevelsSaveTime > 30) {
+        sendDiagnosticMessage(`[PERF] persistPrismLevelsIfNeeded: ${prismLevelsSaveTime}ms`, "transfer");
+      }
+    } else {
+      // Tick already taking too long - skip saves to avoid watchdog
+      sendDiagnosticMessage(`[PERF] ⚠ SKIPPING SAVES: Tick already at ${timeBeforePersist}ms (>80ms threshold)`, "transfer");
+    }
+    
+    const persistTime = Date.now() - persistStart;
     if (debugEnabled) {
-      debugState.msPersist += (Date.now() - persistStart);
+      debugState.msPersist += persistTime;
       debugState.msTotal += (Date.now() - tickStart);
       // Always try to post debug stats (it will check interval internally)
       try {
@@ -1683,11 +2014,50 @@ export function createNetworkTransferController(deps, opts) {
         // If postDebugStats fails, send error message
         sendInitMessage(`§c[Chaos Transfer] Error in postDebugStats: ${err?.message || String(err)}`);
       }
-    } else {
-      // Debug is disabled - send message every 100 ticks to confirm
-      if (nowTick % 100 === 0) {
-        sendInitMessage(`§c[Chaos Transfer] DEBUG IS DISABLED! cfg.debugTransferStats=${cfg.debugTransferStats}, FX.debugTransferStats=${FX?.debugTransferStats}`);
+    }
+    if (persistTime > 50 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] Persist Total: ${persistTime}ms (Inflight: ${inflightSaveTime}ms | InputLevels: ${levelsSaveTime}ms | OutputLevels: ${outputLevelsSaveTime}ms | PrismLevels: ${prismLevelsSaveTime}ms)`, "transfer");
+    }
+    if (persistTime > 100) {
+      sendDiagnosticMessage(`[PERF] ⚠⚠⚠ WATCHDOG RISK: Persistence took ${persistTime}ms (>100ms)`, "transfer");
+    }
+    
+    // Overall tick timing - warn if tick is taking too long (watchdog threshold is usually around 50-100ms)
+    const tickTotalTime = Date.now() - tickStart;
+    lastTickEndTime = Date.now();
+    
+    if (tickTotalTime > 80 || (nowTick % 200 === 0 && nowTick > 0)) {
+      sendDiagnosticMessage(`[PERF] ⚠ TICK TOTAL: ${tickTotalTime}ms (Cache: ${cacheTime}ms | Queues+Inflight: ${queuesTotalTime}ms | VirtualInv: ${virtualInvTime}ms | InputQueues: ${inputQueueTime}ms | Scan: ${scanTotalTime}ms | Persist: ${persistTime}ms)`, "transfer");
+    }
+    if (tickTotalTime > 100) {
+      consecutiveLongTicks++;
+      sendDiagnosticMessage(`[PERF] ⚠⚠⚠ WATCHDOG RISK: Tick took ${tickTotalTime}ms (>100ms threshold) [Consecutive: ${consecutiveLongTicks}]`, "transfer");
+      // If we're consistently hitting 100ms+, we need to be more aggressive
+      if (consecutiveLongTicks > 3) {
+        sendDiagnosticMessage(`[PERF] ⚠⚠⚠ CRITICAL: ${consecutiveLongTicks} consecutive ticks >100ms - system may be overloaded`, "transfer");
       }
+    } else {
+      consecutiveLongTicks = 0; // Reset if tick was normal
+    }
+    
+    // EMERGENCY: If tick took way too long, disable system temporarily
+    if (tickTotalTime > 150) {
+      emergencyDisableTicks = 60; // Disable for 3 seconds (60 ticks)
+      sendDiagnosticMessage(`[PERF] ⚠⚠⚠ EMERGENCY: Tick took ${tickTotalTime}ms (>150ms) - Transfer disabled for 60 ticks`, "transfer");
+      try {
+        const players = world.getAllPlayers();
+        for (const player of players) {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage(`§c[PERF] ⚠⚠⚠ CRITICAL: Transfer system disabled for 60 ticks due to ${tickTotalTime}ms tick time`);
+            break;
+          }
+        }
+      } catch {}
+    }
+    
+    // Reset consecutive counter if tick was reasonable
+    if (tickTotalTime < 80) {
+      consecutiveLongTicks = 0;
     }
   }
 
@@ -1770,21 +2140,20 @@ export function createNetworkTransferController(deps, opts) {
     // - If attuned: push items NOT in filter
     
     // PHASE 1: If input queues enabled, queue items instead of transferring immediately
-    // Queue items when scanning finds them (only if no queue exists for this prism yet)
-    const hasExistingQueue = inputQueuesManager && typeof inputQueuesManager.hasQueueForPrism === "function" 
-      ? inputQueuesManager.hasQueueForPrism(prismKey)
-      : false;
+    // Queue non-filtered items when scanning finds them (even if queue exists - enqueueInputStacks handles duplicates)
+    // Filtered items are skipped here and will be routed via prioritized push instead
     
-    // DIAGNOSTIC: Log queue status (disabled from chat - use extended debug instead)
-    // sendDiagnosticMessage(`[Queue Check] Prism ${prismKey}: hasQueue=${hasExistingQueue}`, "transfer");
-    
-    if (inputQueuesManager && typeof inputQueuesManager.hasQueueForPrism === "function" && 
-        !hasExistingQueue) {
-      // No queue exists yet - find all items and queue them
-      // Don't log every prism check - too spammy (only log when items found or errors)
-      // sendDiagnosticMessage(`[Scan] Checking prism ${prismKey} for items: ...`, "transfer");
+    if (inputQueuesManager && typeof inputQueuesManager.hasQueueForPrism === "function") {
+      // CRITICAL FIX: Check existing queue BEFORE doing expensive operations
+      // This prevents redundant pathfinding and inventory scanning for already-queued items
+      const existingQueue = inputQueuesManager.getQueuesForPrism(prismKey);
+      const queuedItemTypes = new Set(existingQueue ? existingQueue.map(e => e.itemTypeId) : []);
+      const hasActiveQueue = queuedItemTypes.size > 0;
       
-      // Scan for items (regardless of budget - we need to know if items exist)
+      // Queue items (non-filtered only - filtered items skip to prioritized push)
+      // Don't log every prism check - too spammy (only log when items found or errors)
+      
+      // Scan for items (but we'll filter out already-queued items before pathfinding)
       const allItems = [];
       for (const inv of inventories) {
         if (!inv.container) continue;
@@ -1794,8 +2163,9 @@ export function createNetworkTransferController(deps, opts) {
           if (!item || item.amount <= 0) continue;
           
           // Check filter (if attuned, only queue items NOT in filter)
+          // Filtered items will be routed via prioritized push, not queued
           if (filterSet && filterSet.size > 0 && filterSet.has(item.typeId)) {
-            continue; // Skip filtered items (they should be pulled, not pushed)
+            continue; // Skip filtered items (they'll be routed via prioritized push)
           }
           
           allItems.push({
@@ -1809,32 +2179,75 @@ export function createNetworkTransferController(deps, opts) {
         }
       }
       
-      // DIAGNOSTIC: Log item discovery (only when items found - this is useful info)
-      if (allItems.length > 0) {
-        const itemSummary = allItems.map(i => `${i.stack.typeId}x${i.stack.amount}`).join(", ");
-        sendDiagnosticMessage(`[Scan] ✓ Found ${allItems.length} item(s) in prism ${prismKey}: ${itemSummary}`, "transfer");
-      }
-      // Don't log when no items found - too spammy
+      // CRITICAL FIX: Filter out items that are already queued BEFORE doing expensive pathfinding
+      // This prevents redundant pathfinding operations that cause watchdog exceptions
+      const newItems = allItems.filter(item => !queuedItemTypes.has(item.stack.typeId));
       
-      if (allItems.length > 0 && searchBudget > 0) {
-        // Don't log route finding - too spammy (already logged item discovery above)
-        // sendDiagnosticMessage(`[Queue] Found ${allItems.length} items in prism ${prismKey}, finding routes...`, "transfer");
-        
-        // Find routes for all item types
+      // Log item discovery (only new items if queue exists, all items if no queue)
+      if (allItems.length > 0 && (nowTick <= 3 || nowTick % 200 === 0)) {
+        const itemCount = allItems.length;
+        const newItemCount = newItems.length;
+        if (hasActiveQueue && newItemCount === 0) {
+          // All items already queued - skip pathfinding entirely
+          // This is the key optimization that prevents watchdog exceptions
+          return { ...makeResult(false, "all_items_already_queued"), searchesUsed: 0 };
+        }
+        if (hasActiveQueue) {
+          sendDiagnosticMessage(`[Scan] Found ${itemCount} type(s) at ${prismKey}, ${newItemCount} new (${itemCount - newItemCount} already queued)`, "transfer");
+        } else {
+          sendDiagnosticMessage(`[Scan] Found ${itemCount} type(s) at ${prismKey}`, "transfer");
+        }
+      }
+      
+      // CRITICAL FIX: Only do pathfinding for NEW items (not already queued)
+      // This is the key fix that prevents watchdog exceptions while maintaining continuous processing
+      if (newItems.length > 0 && searchBudget > 0) {
+        // Find routes for NEW item types only (expensive operation, so only do it for new items)
         searchesUsed = 1;
-        const pathResult = findPathForInput(prismKey, nowTick);
+        const pathfindStart = Date.now();
+        let pathResult = null;
+        try {
+          pathResult = findPathForInput(prismKey, nowTick);
+          const pathfindTime = Date.now() - pathfindStart;
+          if (pathfindTime > 50) {
+            sendDiagnosticMessage(`[PERF] Pathfind (scan): ${pathfindTime}ms for ${prismKey} (${newItems.length} new items)`, "transfer");
+          }
+          // EMERGENCY: If pathfinding takes too long, abort
+          if (pathfindTime > 100) {
+            sendDiagnosticMessage(`[PERF] ⚠ Pathfind TIMEOUT (scan): ${pathfindTime}ms - aborting for ${prismKey}`, "transfer");
+            if (typeof invalidateInput === "function") invalidateInput(prismKey);
+            return { ...makeResult(false, "pathfind_timeout"), searchesUsed };
+          }
+        } catch (err) {
+          const pathfindTime = Date.now() - pathfindStart;
+          sendDiagnosticMessage(`[PERF] Pathfind ERROR (scan) after ${pathfindTime}ms: ${err?.message || String(err)}`, "transfer");
+          if (typeof invalidateInput === "function") invalidateInput(prismKey);
+          return { ...makeResult(false, "pathfind_error"), searchesUsed };
+        }
+        
         if (pathResult && Array.isArray(pathResult) && pathResult.length > 0) {
-          // Don't log route found - too spammy (queue creation will be logged)
-          // sendDiagnosticMessage(`[Queue] Found ${pathResult.length} route options for prism ${prismKey}`, "transfer");
-          // Create routes map by item type (use first route found for each type)
+          // Create routes map by item type (only for NEW items)
           const routesByType = new Map();
-          for (const item of allItems) {
+          for (const item of newItems) {
             if (!routesByType.has(item.stack.typeId) && pathResult.length > 0) {
-              // Pick a route for this item type
+              // Pick a route for this item type (prioritize filtered prisms that match this item)
               const pick = pickWeightedRandomWithBias(pathResult, (opt) => {
                 const type = opt?.outputType || "prism";
                 if (isFluxTypeId(item.stack.typeId) && type === "crystal") return CRYSTAL_FLUX_WEIGHT;
-                return 1.0;
+                
+                // Prioritize filtered prisms that match this item (20x weight)
+                if (type === "prism" && opt?.outputKey) {
+                  const targetInfo = resolveBlockInfo(opt.outputKey);
+                  if (targetInfo?.block && isPrismBlock(targetInfo.block)) {
+                    const targetFilter = getFilterForBlock(targetInfo.block);
+                    const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
+                    if (targetFilterSet && targetFilterSet.size > 0 && targetFilterSet.has(item.stack.typeId)) {
+                      return 20.0; // Heavily prioritize filtered prisms (20x weight)
+                    }
+                  }
+                }
+                
+                return 1.0; // Normal weight for unfiltered prisms
               });
               if (pick && Array.isArray(pick.path) && pick.path.length > 0) {
                 routesByType.set(item.stack.typeId, {
@@ -1845,22 +2258,24 @@ export function createNetworkTransferController(deps, opts) {
             }
           }
           
-          // Queue all items with their routes
+          // Queue only NEW items with their routes
           if (routesByType.size > 0) {
             // Convert routes to just paths for queue (store outputKey separately)
             const routesMap = new Map();
             for (const [typeId, routeInfo] of routesByType.entries()) {
               routesMap.set(typeId, routeInfo.path);
-              // Store outputKey in queue entry's lastDestination
             }
             
-            // DIAGNOSTIC: Log queue creation - this is useful info (items queued for transfer)
-            sendDiagnosticMessage(`[Queue] ✓ Queued ${allItems.length} item type(s) for prism ${prismKey}`, "transfer");
+            // Only log queue creation occasionally to reduce clutter
+            if (nowTick <= 3 || nowTick % 100 === 0) {
+              sendDiagnosticMessage(`[Queue] Queued ${newItems.filter(item => routesByType.has(item.stack.typeId)).length} new type(s) at ${prismKey}${hasActiveQueue ? ` (${queuedItemTypes.size} already queued)` : ""}`, "transfer");
+            }
             
-            inputQueuesManager.enqueueInputStacks(prismKey, allItems, routesMap);
+            // Queue only new items (enqueueInputStacks will handle this correctly)
+            inputQueuesManager.enqueueInputStacks(prismKey, newItems.filter(item => routesByType.has(item.stack.typeId)), routesMap);
             
             // Store outputKeys in queue entries
-            for (const item of allItems) {
+            for (const item of newItems) {
               const routeInfo = routesByType.get(item.stack.typeId);
               if (routeInfo) {
                 const queue = inputQueuesManager.getQueuesForPrism(prismKey);
@@ -1871,17 +2286,20 @@ export function createNetworkTransferController(deps, opts) {
               }
             }
             
-            // Don't log queue size after creation - already logged creation above
-            // const queueSize = inputQueuesManager.getTotalQueueSize();
-            // sendDiagnosticMessage(`[Queue] ✓ Queue created: ...`, "transfer");
-            
-            // Return success - items are queued
+            // Return success - new items are queued
             return { ...makeResult(true, "queued"), searchesUsed };
           } else {
-            // DIAGNOSTIC: Log when no routes found - this is important (items can't transfer)
-            sendDiagnosticMessage(`[Queue] ⚠ No routes found: prism=${prismKey}, items=${allItems.length}`, "transfer");
+            // DIAGNOSTIC: Log when no routes found for new items
+            sendDiagnosticMessage(`[Queue] ⚠ No routes found for new items: prism=${prismKey}, newItems=${newItems.length}`, "transfer");
           }
+        } else if (newItems.length > 0) {
+          // New items found but no routes available
+          sendDiagnosticMessage(`[Queue] ⚠ No routes available: prism=${prismKey}, newItems=${newItems.length}`, "transfer");
         }
+      } else if (newItems.length === 0 && hasActiveQueue) {
+        // All items already queued - this is normal, not an error
+        // Return early without doing expensive pathfinding
+        return { ...makeResult(false, "all_items_already_queued"), searchesUsed: 0 };
       }
     }
     
@@ -1894,12 +2312,9 @@ export function createNetworkTransferController(deps, opts) {
       searchBudget -= result.searchesUsed || 0;
     }
 
-    // TRY PULL: Request filtered items from network (only if attuned and no push happened)
-    if (hasFilter && searchBudget > 0) {
-      const result = attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget);
-      if (result.ok) return result;
-      searchesUsed += result.searchesUsed || 0;
-    }
+    // Note: Filtered items are now routed via prioritized push instead of pull
+    // When items matching the filter are found elsewhere, they'll route here with 20x priority
+    // No need for separate pull system - prioritized push handles it automatically
 
     return { ...makeResult(false, "no_transfer"), searchesUsed };
   }
@@ -1917,6 +2332,9 @@ export function createNetworkTransferController(deps, opts) {
     const sourceStack = itemSource.stack;
     const outBlock = destInfo.block;
     const outInfo = destInfo;
+    
+    // Check if SOURCE is a filtered prism (extracting non-filtered items - skip balance)
+    const isFilteredSource = filterSet && filterSet.size > 0;
 
     // Determine output type
     let outputType = "prism";
@@ -1977,10 +2395,39 @@ export function createNetworkTransferController(deps, opts) {
 
     let desiredAmount = 1;
     if (isFilteredDestination) {
-      desiredAmount = (levelsManager && typeof levelsManager.getTransferAmount === "function")
-        ? levelsManager.getTransferAmount(previewLevel, sourceStack)
-        : 1;
+      // FILTERED DESTINATION: Fill to capacity completely (skip balance calculation)
+      // Only insert filtered items, fill container as much as possible
+      if (targetFilterSet && targetFilterSet.has(sourceStack.typeId)) {
+        // This item matches the filter - fill to capacity
+        desiredAmount = Math.min(virtualCapacity, sourceStack.amount);
+        // Use level-based amount if available, but don't exceed capacity
+        if (levelsManager && typeof levelsManager.getTransferAmount === "function") {
+          const levelAmount = levelsManager.getTransferAmount(previewLevel, sourceStack);
+          desiredAmount = Math.min(levelAmount, virtualCapacity, sourceStack.amount);
+        }
+        // Ensure at least 1 item if capacity allows
+        if (desiredAmount < 1 && virtualCapacity > 0 && sourceStack.amount > 0) {
+          desiredAmount = 1;
+        }
+      } else {
+        // Item doesn't match filter - shouldn't reach here, but skip if it does
+        return { ...makeResult(false, "filter_mismatch"), amount: 0 };
+      }
+    } else if (isFilteredSource) {
+      // FILTERED SOURCE: Extracting non-filtered items - skip balance, extract everything
+      // Extract all non-filtered items from filtered prisms without balance restrictions
+      desiredAmount = Math.min(virtualCapacity, sourceStack.amount);
+      // Use level-based amount if available, but don't exceed capacity
+      if (levelsManager && typeof levelsManager.getTransferAmount === "function") {
+        const levelAmount = levelsManager.getTransferAmount(previewLevel, sourceStack);
+        desiredAmount = Math.min(levelAmount, virtualCapacity, sourceStack.amount);
+      }
+      // Ensure at least 1 item if capacity allows
+      if (desiredAmount < 1 && virtualCapacity > 0 && sourceStack.amount > 0) {
+        desiredAmount = 1;
+      }
     } else {
+      // UNFILTERED SOURCE: Normal balance calculation (50/50 distribution)
       if (cfg.useBalanceDistribution !== false) {
         const sourceCount = getTotalCountForType(sourceContainer, sourceStack.typeId);
         const destCount = getTotalCountForType(targetInv.container, sourceStack.typeId);
@@ -2015,13 +2462,9 @@ export function createNetworkTransferController(deps, opts) {
           );
 
           // Don't log routine balance checks - too spammy
-          // Only log if cancelled with capacity > 0 (unexpected) and it's the first few ticks
-          // This indicates a potential logic issue, not routine capacity checks
-          const shouldLogBalance = queueEntry && nowTick <= 3 && 
-            balanceResult.cancelled && virtualCapacity > 0 && balanceResult.reason === "destination_balanced";
-          if (shouldLogBalance) {
-            sendDiagnosticMessage(`[Queue] ⚠ Unexpected balance block: source=${adjustedSourceCount}, dest=${adjustedDestCount}, capacity=${virtualCapacity} (should transfer)`, "transfer");
-          }
+          // Balance blocking is normal behavior for unfiltered sources
+          // Only log if it seems like a logic issue (very rare cases)
+          // Note: This shouldn't happen for filtered sources (they skip balance)
 
           if (balanceResult.cancelled) {
             // For queue-based transfers, be more lenient - transfer if capacity allows
@@ -2183,7 +2626,28 @@ export function createNetworkTransferController(deps, opts) {
       return { ...makeResult(false, "no_pathfinder"), searchesUsed };
     }
 
-    const options = findPathForInput(prismKey, nowTick);
+    // Add timeout protection for pathfinding
+    const pathfindStart = Date.now();
+    let options = null;
+    try {
+      options = findPathForInput(prismKey, nowTick);
+      const pathfindTime = Date.now() - pathfindStart;
+      if (pathfindTime > 50) {
+        sendDiagnosticMessage(`[PERF] Pathfind (scan) SLOW: ${pathfindTime}ms for ${prismKey}`, "transfer");
+      }
+      // EMERGENCY: If pathfinding takes too long, abort
+      if (pathfindTime > 100) {
+        sendDiagnosticMessage(`[PERF] ⚠ Pathfind TIMEOUT (scan): ${pathfindTime}ms - aborting for ${prismKey}`, "transfer");
+        if (typeof invalidateInput === "function") invalidateInput(prismKey);
+        return { ...makeResult(false, "pathfind_timeout"), searchesUsed };
+      }
+    } catch (err) {
+      const pathfindTime = Date.now() - pathfindStart;
+      sendDiagnosticMessage(`[PERF] Pathfind ERROR (scan) after ${pathfindTime}ms: ${err?.message || String(err)}`, "transfer");
+      if (typeof invalidateInput === "function") invalidateInput(prismKey);
+      return { ...makeResult(false, "pathfind_error"), searchesUsed };
+    }
+    
     if (!options || !Array.isArray(options) || options.length === 0) {
       if (typeof invalidateInput === "function") invalidateInput(prismKey);
       return { ...makeResult(false, "no_options"), searchesUsed };
@@ -2255,7 +2719,20 @@ export function createNetworkTransferController(deps, opts) {
       const pick = pickWeightedRandomWithBias(candidates, (opt) => {
         const type = opt?.outputType || "prism";
         if (isFlux && type === "crystal") return CRYSTAL_FLUX_WEIGHT;
-        return 1.0;
+        
+        // Prioritize filtered prisms that match this item (20x weight)
+        if (type === "prism" && opt?.outputKey) {
+          const targetInfo = resolveBlockInfo(opt.outputKey);
+          if (targetInfo?.block && isPrismBlock(targetInfo.block)) {
+            const targetFilter = getFilterForBlock(targetInfo.block);
+            const targetFilterSet = targetFilter ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter)) : null;
+            if (targetFilterSet && targetFilterSet.size > 0 && targetFilterSet.has(sourceStack.typeId)) {
+              return 20.0; // Heavily prioritize filtered prisms (20x weight)
+            }
+          }
+        }
+        
+        return 1.0; // Normal weight for unfiltered prisms
       });
       if (!pick || !Array.isArray(pick.path) || pick.path.length === 0) break;
       if (pick.path.length > MAX_STEPS) {
@@ -2339,13 +2816,44 @@ export function createNetworkTransferController(deps, opts) {
         // Calculate desired transfer amount based on destination type
         let desiredAmount = 1;
         
+        // Check if SOURCE is a filtered prism (extracting non-filtered items - skip balance)
+        const isFilteredSource = filterSet && filterSet.size > 0;
+        
         if (isFilteredDestination) {
-          // FILTERED: Fill to capacity (prioritized, use level-based amounts)
-          desiredAmount = (levelsManager && typeof levelsManager.getTransferAmount === "function")
-            ? levelsManager.getTransferAmount(previewLevel, sourceStack)
-            : 1;
+          // FILTERED DESTINATION: Fill to capacity completely (skip balance calculation)
+          // Only insert filtered items, fill container as much as possible
+          if (targetFilterSet && targetFilterSet.has(sourceStack.typeId)) {
+            // This item matches the filter - fill to capacity
+            desiredAmount = Math.min(virtualCapacity, sourceStack.amount);
+            // Use level-based amount if available, but don't exceed capacity
+            if (levelsManager && typeof levelsManager.getTransferAmount === "function") {
+              const levelAmount = levelsManager.getTransferAmount(previewLevel, sourceStack);
+              desiredAmount = Math.min(levelAmount, virtualCapacity, sourceStack.amount);
+            }
+            // Ensure at least 1 item if capacity allows
+            if (desiredAmount < 1 && virtualCapacity > 0 && sourceStack.amount > 0) {
+              desiredAmount = 1;
+            }
+          } else {
+            // Item doesn't match filter - skip this destination
+            candidates.splice(candidates.indexOf(pick), 1);
+            continue;
+          }
+        } else if (isFilteredSource) {
+          // FILTERED SOURCE: Extracting non-filtered items - skip balance, extract everything
+          // Extract all non-filtered items from filtered prisms without balance restrictions
+          desiredAmount = Math.min(virtualCapacity, sourceStack.amount);
+          // Use level-based amount if available, but don't exceed capacity
+          if (levelsManager && typeof levelsManager.getTransferAmount === "function") {
+            const levelAmount = levelsManager.getTransferAmount(previewLevel, sourceStack);
+            desiredAmount = Math.min(levelAmount, virtualCapacity, sourceStack.amount);
+          }
+          // Ensure at least 1 item if capacity allows
+          if (desiredAmount < 1 && virtualCapacity > 0 && sourceStack.amount > 0) {
+            desiredAmount = 1;
+          }
         } else {
-          // UNFILTERED: 50/50 balance distribution (if enabled)
+          // UNFILTERED SOURCE: 50/50 balance distribution (if enabled)
           if (cfg.useBalanceDistribution !== false) {
             // Get source and destination counts for balance calculation
             const sourceContainer = itemSource.container;
@@ -2546,20 +3054,9 @@ export function createNetworkTransferController(deps, opts) {
     return { ...makeResult(true, "ok"), searchesUsed };
   }
 
-  // Pull transfer: request filtered items from network
-  // TODO: Implement pull-based transfer system for filtered item requests
-  // This will require scanning the network for items matching the filter whitelist
-  // and routing them to requesting prisms. Currently push-only transfers are used.
-  function attemptPullTransfer(prismKey, prismBlock, dim, inventories, filterSet, searchBudget) {
-    let searchesUsed = 0;
-    if (searchBudget <= 0) return { ...makeResult(false, "no_search_budget"), searchesUsed };
-    if (!filterSet || filterSet.size === 0) return { ...makeResult(false, "no_filter"), searchesUsed };
-
-    // For now, pull is complex - we'd need to scan the network for items
-    // This is a placeholder - can be enhanced later with request system
-    // For now, we'll just return false and let push handle transfers
-    return { ...makeResult(false, "pull_not_implemented"), searchesUsed };
-  }
+  // Note: Pull transfer system removed in favor of prioritized push
+  // Filtered items are now routed to filtered prisms with 20x weight during normal push routing
+  // This is simpler and more efficient than a separate pull system
 
   function postDebugStats(inputCount) {
     // Check if enough ticks have passed
@@ -2623,26 +3120,18 @@ export function createNetworkTransferController(deps, opts) {
     // Timing breakdown: show total and per-module times
     const timingBreakdown = `TIMING: Total=${debugState.msTotal}ms | Cache=${debugState.msCache || 0}ms | Queues=${debugState.msQueues}ms | InputQueues=${debugState.msInputQueues || 0}ms | Inflight=${debugState.msInflight}ms | FluxFX=${debugState.msFluxFx}ms | Scan=${debugState.msScan}ms | Persist=${debugState.msPersist}ms`;
 
-    // Balance distribution debug info
-    const balanceInfo = (debugState.balanceTransfers || debugState.balanceCancelled || debugState.balanceFallback)
-      ? ` balance=${debugState.balanceTransfers || 0}/${debugState.balanceCancelled || 0}/${debugState.balanceFallback || 0} balAmt=${debugState.balanceAmount || 0} balCancel=${debugState.balanceCancelReason || "none"}`
-      : "";
-
-    // Build the stats message
+    // Simplified stats: Only show essential info (active transfers, queues, timing)
+    // Calculate input queue size
+    let inputQueueSize = 0;
+    if (inputQueuesManager && typeof inputQueuesManager.getTotalQueueSize === "function") {
+      inputQueueSize = inputQueuesManager.getTotalQueueSize();
+    }
+    
+    // Build simplified stats message - only essential info
     const msg =
-      `Chaos Transfer | inputs=${safeInputCount} scanned=${debugState.inputsScanned || 0} ` +
-      `xfer=${debugState.transfersStarted} inflight=${inflight.length} ` +
-      `fluxFx=${fluxFxInflight.length}/${cfg.maxFluxFxInFlight | 0} ` +
-      `orbFx=${debugState.orbSpawns} orbFxSkip=${debugState.orbFxSkipped} fluxFxSp=${debugState.fluxFxSpawns} ` +
-      `mapReloads=${debugState.inputMapReloads} ` +
-      `fluxGen=${debugState.fluxGenHits}/${debugState.fluxGenChecks} refine=${debugState.fluxRefined}/${debugState.fluxMutated}/${debugState.fluxRefineCalls} ` +
-      `blk=${debugState.blockLookups} cont=${debugState.containerLookups} inv=${debugState.inventoryScans} dp=${debugState.dpSaves} ` +
-      `qC=${queuedContainers} qE=${queuedEntries} qI=${queuedItems} qMax=${queuedMax} ` +
-      `full=${queueState.fullContainers.size} opts=${debugState.outputOptionsTotal}/${debugState.outputOptionsMax}` +
-      balanceInfo +
-      ` ${timingLabel}` +
-      bfsLabel +
-      ` | ${timingBreakdown}`;
+      `Transfer | xfer=${debugState.transfersStarted} inflight=${inflight.length} ` +
+      `queues=${inputQueueSize} outputQ=${queuedContainers}/${queuedItems} ` +
+      `| ${timingBreakdown}`;
 
     // Send to players who have transfer/prism debug group enabled
     const players = world.getAllPlayers();
