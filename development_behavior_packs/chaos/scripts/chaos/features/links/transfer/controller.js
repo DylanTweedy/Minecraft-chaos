@@ -11,6 +11,8 @@ import {
   isPrismBlock,
   getPrismTier,
 } from "./config.js";
+import { createTransferPipeline } from "./core/pipeline.js";
+import { createAdjacentPrismDirtyMarker } from "./core/dirtyPrisms.js";
 import { mergeCfg } from "./utils.js";
 import {
   loadBeamsMap,
@@ -21,6 +23,7 @@ import {
   loadPrismLevels,
   savePrismLevels,
 } from "./persistence/storage.js";
+import { subscribeTransferDirtyEvents } from "./core/transferEvents.js";
 import { loadInflightStateFromWorld, persistInflightStateToWorld } from "./persistence/inflight.js";
 import { key, parseKey, getContainerKey, getContainerKeyFromInfo } from "./keys.js";
 import {
@@ -56,6 +59,16 @@ import {
   findDropLocation,
   pickWeightedRandomWithBias,
 } from "./pathfinding/path.js";
+import {
+  getTraceKey,
+  isTracing,
+  markDirty as traceMarkDirty,
+  clearDirty as traceClearDirty,
+  noteScan as traceNoteScan,
+  noteError as traceNoteError,
+  noteQueueSize as traceNoteQueueSize,
+  noteCooldown as traceNoteCooldown,
+} from "../../../core/trace.js";
 import { findOutputRouteFromNode, findCrystallizerRouteFromPrism } from "./pathfinding/routes.js";
 import { runTransferPipeline } from "./utils.js";
 import { getFilterSetForBlock } from "../filters.js";
@@ -154,6 +167,9 @@ export function createNetworkTransferController(deps, opts) {
   let tickId = null;
   let nowTick = 0;
 
+  const controllerState = { eventsSubscribed: false };
+  let unsubscribeEvents = null;
+
   const nextAllowed = new Map();
   const nextQueueTransferAllowed = new Map(); // Track when each prism can process queue transfers (tier-based intervals)
   const inflight = [];
@@ -201,6 +217,7 @@ export function createNetworkTransferController(deps, opts) {
     fluxMutated: 0,
     msCache: 0,
     msQueues: 0,
+    msInputQueues: 0,
     msInflight: 0,
     msFluxFx: 0,
     msScan: 0,
@@ -215,6 +232,12 @@ export function createNetworkTransferController(deps, opts) {
     stepTicksMax: 0,
     segmentStepsTotal: 0,
     segmentStepsCount: 0,
+    // Balance distribution debug stats (used in resetDebugState + balance code)
+    balanceTransfers: 0,
+    balanceCancelled: 0,
+    balanceFallback: 0,
+    balanceAmount: 0,
+    balanceCancelReason: null,
   };
   let cachedInputKeys = null;
   let cachedInputsStamp = null;
@@ -565,6 +588,81 @@ export function createNetworkTransferController(deps, opts) {
   // INIT DEBUG: All managers created
   sendInitMessage(`§a[Init] ✓ All managers created! Controller ready.`);
 
+    // Pipeline runner (controller becomes a thin orchestrator)
+  const pipeline = createTransferPipeline({
+    name: "Transfer",
+    phases: [
+      {
+        name: "Guards",
+        warnMs: 10,
+        run: (ctx) => {
+          // Example: emergency disable ticks, etc.
+          // Return { stop: true, reason: "..." } to early-out.
+        },
+      },
+      {
+        name: "Caches",
+        warnMs: 20,
+        run: (ctx) => {
+          // Your PHASE 1 cache update code goes here (later).
+        },
+      },
+      {
+        name: "InputQueues",
+        warnMs: 30,
+        run: (ctx) => {
+          // Your PHASE 3 input queue processing goes here (later).
+        },
+      },
+      {
+        name: "Scan",
+        warnMs: 50,
+        run: (ctx) => {
+          // Your PHASE 4 scan (discover + enqueue) goes here (later).
+        },
+      },
+      {
+        name: "Inflight",
+        warnMs: 30,
+        run: (ctx) => {
+          // Delegate to inflight processor manager (later).
+        },
+      },
+      {
+        name: "Persist",
+        warnMs: 40,
+        run: (ctx) => {
+          // persistence phase (later)
+        },
+      },
+      {
+        name: "PostDebug",
+        warnMs: 10,
+        run: (ctx) => {
+          // summary stats (later)
+        },
+      },
+    ],
+  });
+  
+    const markAdjacentPrismsDirty = createAdjacentPrismDirtyMarker({
+    virtualInventoryManager,
+    invalidateInput,
+    cacheManager,
+  });
+
+    unsubscribeEvents = subscribeTransferDirtyEvents({
+    world,
+    cacheManager,
+    markAdjacentPrismsDirty,
+    getInventoryContainer,
+    isFurnaceBlock,
+    logError,
+    debugLog: (m) => sendInitMessage(`§7${m}`),
+    state: controllerState,
+  });
+
+
   function getBackoffTicks(level) {
     const safeLevel = Math.max(0, level | 0);
     const base = Math.max(0, cfg.backoffBaseTicks | 0);
@@ -591,26 +689,40 @@ export function createNetworkTransferController(deps, opts) {
   // Helper function to send diagnostic messages (basic debug visibility)
   function sendDiagnosticMessage(message, group = null) {
     if (!debugEnabled) return;
+
+    // Fast bailouts: avoid any string work / iteration when there are no players.
+    let players;
     try {
-      for (const player of world.getAllPlayers()) {
-        try {
-          // Check basic lens/goggles visibility - use direct detection (bypass cache which may be stale)
-          const hasLensDirect = isHoldingLens(player) || isWearingGoggles(player);
-          if (!hasLensDirect) continue;
-          
-          // If group specified, check extended debugging
-          if (group && !hasExtendedDebug(player, group)) continue;
-          
-          // Add prefix for extended debug messages to make them clearly identifiable
-          const prefix = group ? "§7[EXT] " : "§7";
-          
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage(`${prefix}${message}`);
-          }
-        } catch {}
-      }
-    } catch {}
+      players = world.getAllPlayers();
+      if (!players || players.length === 0) return;
+    } catch {
+      return;
+    }
+
+    // Only build the string once.
+    const msg = String(message ?? "");
+    if (!msg) return;
+
+    // Send only to players who can actually see it.
+    for (const player of players) {
+      try {
+        const hasLensDirect = isHoldingLens(player) || isWearingGoggles(player);
+        if (!hasLensDirect) continue;
+
+        if (group && !hasExtendedDebug(player, group)) continue;
+
+        const prefix = group ? "§7[EXT] " : "§7";
+        player.sendMessage(prefix + msg);
+      } catch {}
+    }
   }
+
+    function shouldEmitForPrism(prismKey) {
+    const tk = getTraceKey();
+    if (!tk) return true;         // no trace active => normal behaviour
+    return prismKey === tk;       // trace active => only emit for that prism
+  }
+
 
   function resetDebugState() {
     debugState.inputsScanned = 0;
@@ -755,50 +867,7 @@ export function createNetworkTransferController(deps, opts) {
         sendInitMessage("§a[Init] ✓ Tick loop started! tickId=" + tickId + ", inflight=" + inflightLen + ", fluxFxInflight=" + fluxFxLen);
       } catch {}
       
-      // PHASE 3: Event-driven scanning - mark prisms dirty when adjacent containers change
-      // Helper: Find adjacent prisms and mark them dirty
-      function markAdjacentPrismsDirty(dim, loc, reason = "container_changed") {
-        try {
-          if (!dim || !loc) return;
-          
-          const dirs = [
-            { dx: 1, dy: 0, dz: 0 },
-            { dx: -1, dy: 0, dz: 0 },
-            { dx: 0, dy: 0, dz: 1 },
-            { dx: 0, dy: 0, dz: -1 },
-            { dx: 0, dy: 1, dz: 0 },
-            { dx: 0, dy: -1, dz: 0 },
-          ];
-          
-          for (const d of dirs) {
-            const x = loc.x + d.dx;
-            const y = loc.y + d.dy;
-            const z = loc.z + d.dz;
-            try {
-              const block = dim.getBlock({ x, y, z });
-              if (block && isPrismBlock(block)) {
-                const prismKey = key(dim.id, x, y, z);
-                if (virtualInventoryManager && typeof virtualInventoryManager.markPrismDirty === "function") {
-                  virtualInventoryManager.markPrismDirty(prismKey, reason);
-                }
-                // Also invalidate cache for this prism
-                if (typeof invalidateInput === "function") {
-                  invalidateInput(prismKey);
-                }
-                if (cacheManager && typeof cacheManager.invalidatePrismInventories === "function") {
-                  cacheManager.invalidatePrismInventories(prismKey);
-                }
-              }
-            } catch {
-              // Ignore errors for individual blocks
-            }
-          }
-        } catch {
-          // Ignore errors
-        }
-      }
-      
-      // PHASE 3: Event-driven scanning - mark prisms dirty when adjacent containers change
+      // PHASE 3: Event-driven scanning
       // Event handler: Player places block
       if (world.afterEvents && world.afterEvents.playerPlaceBlock && typeof world.afterEvents.playerPlaceBlock.subscribe === "function") {
         try {
@@ -893,7 +962,11 @@ export function createNetworkTransferController(deps, opts) {
     if (tickId === null) return;
     try { system.clearRun(tickId); } catch (_) {}
     tickId = null;
+
+    try { if (typeof unsubscribeEvents === "function") unsubscribeEvents(); } catch {}
+    unsubscribeEvents = null;
   }
+
 
   function loadInflightState() {
     try {
@@ -1116,23 +1189,17 @@ export function createNetworkTransferController(deps, opts) {
   function onTick() {
     nowTick++;
     
-    // EMERGENCY SAFEGUARD: Skip ticks if emergency disable is active
-    if (emergencyDisableTicks > 0) {
-      emergencyDisableTicks--;
-      if (emergencyDisableTicks % 20 === 0 && emergencyDisableTicks > 0) {
-        try {
-          const players = world.getAllPlayers();
-          for (const player of players) {
-            if (player && typeof player.sendMessage === "function") {
-              player.sendMessage(`§c[PERF] ⚠ EMERGENCY MODE: Transfer disabled for ${emergencyDisableTicks} more ticks`);
-              break;
-            }
-          }
-        } catch {}
-      }
-      lastTickEndTime = Date.now();
-      return; // Skip entire tick
-    }
+    // EMERGENCY SAFEGUARD: If last tick itself was long, back off.
+// (Measure tick *duration*, not the gap between ticks.)
+if (consecutiveLongTicks > 2) {
+  // If we’re already in a “long tick streak”, skip a tick occasionally to shed load.
+  // Skipping every tick would starve the system; skipping sometimes gives breathing room.
+  if ((nowTick % 2) === 0) {
+    lastTickEndTime = Date.now();
+    return;
+  }
+}
+
     
     // EMERGENCY SAFEGUARD: Check if previous tick was too long - skip this tick if so
     if (lastTickEndTime > 0) {
@@ -1157,19 +1224,11 @@ export function createNetworkTransferController(deps, opts) {
       }
     }
     
-    // SUPER SIMPLE UNCONDITIONAL TEST - Always send on first 5 ticks to confirm onTick is running
-    if (nowTick <= 5) {
-      try {
-        const players = world.getAllPlayers();
-        for (const player of players) {
-          try {
-            if (typeof player.sendMessage === "function") {
-              player.sendMessage(`§e[TICK ${nowTick}] onTick() is running!`);
-            }
-          } catch {}
-        }
-      } catch {}
-    }
+// Optional startup ping (only visible to players with lens/goggles + extended debug group "transfer")
+if (nowTick <= 5) {
+  sendDiagnosticMessage(`[Init] onTick() running (tick=${nowTick})`, "transfer");
+}
+
     
     const tickStart = Date.now();
     const cacheStart = Date.now();
@@ -1938,7 +1997,12 @@ export function createNetworkTransferController(deps, opts) {
         scanLoopMaxPrismTime = prismTime;
       }
       if (itemsProcessedFromPrism > 0) {
-        sendDiagnosticMessage(`[Scan] Prism ${prismKey}: processed ${itemsProcessedFromPrism} item(s)`, "transfer");
+        if (nowTick <= 3 || (nowTick % 100 === 0)) {
+          sendDiagnosticMessage(
+            `[Scan] Prism ${prismKey}: processed ${itemsProcessedFromPrism} item(s)`,
+            "transfer"
+          );
+        }
       }
 
       // If we're out of budgets, stop scanning
@@ -2155,29 +2219,28 @@ export function createNetworkTransferController(deps, opts) {
       
       // Scan for items (but we'll filter out already-queued items before pathfinding)
       const allItems = [];
-      for (const inv of inventories) {
-        if (!inv.container) continue;
+      for (let invIndex = 0; invIndex < inventories.length; invIndex++) {
+        const inv = inventories[invIndex];
+        if (!inv?.container) continue;
+
         const size = inv.container.size;
         for (let slot = 0; slot < size; slot++) {
           const item = inv.container.getItem(slot);
           if (!item || item.amount <= 0) continue;
-          
-          // Check filter (if attuned, only queue items NOT in filter)
-          // Filtered items will be routed via prioritized push, not queued
-          if (filterSet && filterSet.size > 0 && filterSet.has(item.typeId)) {
-            continue; // Skip filtered items (they'll be routed via prioritized push)
-          }
-          
+
+          if (filterSet && filterSet.size > 0 && filterSet.has(item.typeId)) continue;
+
           allItems.push({
             container: inv.container,
-            slot: slot,
+            slot,
             stack: item,
-            inventoryIndex: inventories.indexOf(inv),
+            inventoryIndex: invIndex,
             entity: inv.entity,
             block: inv.block,
           });
         }
       }
+
       
       // CRITICAL FIX: Filter out items that are already queued BEFORE doing expensive pathfinding
       // This prevents redundant pathfinding operations that cause watchdog exceptions
@@ -2523,7 +2586,22 @@ export function createNetworkTransferController(deps, opts) {
       return { ...makeResult(false, "invalid_path"), amount: 0 };
     }
 
-    // Decrement from source
+    // Resolve prism position BEFORE mutating inventories (prevents item loss)
+    const prismPos =
+      prismBlock?.location
+        ? { x: prismBlock.location.x, y: prismBlock.location.y, z: prismBlock.location.z, dimId: dim.id }
+        : (resolveBlockInfo(prismKey)?.pos || null);
+
+    if (!prismPos) {
+      return { ...makeResult(false, "no_prism_pos"), amount: 0 };
+    }
+
+    // Build node path BEFORE mutating inventories (extra safety)
+    const nodePath = buildNodePathSegments(dim, route, prismPos);
+    const travelPath = nodePath?.points || route;
+    const segmentLengths = nodePath?.lengths || null;
+
+    // NOW decrement from source (safe to proceed)
     const remaining = sourceStack.amount - transferAmount;
     if (remaining > 0) {
       try {
@@ -2541,16 +2619,6 @@ export function createNetworkTransferController(deps, opts) {
       }
     }
 
-    // Create inflight job (same as attemptPushTransfer)
-    const suppressOrb = (outputType === "crystal" && isFluxTypeId(sourceStack.typeId));
-    // Get prism position - construct from prismBlock.location since prismBlock is already available
-    const prismPos = prismBlock.location ? { x: prismBlock.location.x, y: prismBlock.location.y, z: prismBlock.location.z, dimId: dim.id } : resolveBlockInfo(prismKey)?.pos;
-    if (!prismPos) {
-      return { ...makeResult(false, "no_prism_pos"), amount: 0 };
-    }
-    const nodePath = buildNodePathSegments(dim, route, prismPos);
-    const travelPath = nodePath?.points || route;
-    const segmentLengths = nodePath?.lengths || null;
 
     const pathPrismKey = findFirstPrismKeyInPath(dim, prismPos.dimId, route);
     if (levelsManager && typeof levelsManager.notePrismPassage === "function") {
@@ -2939,9 +3007,9 @@ export function createNetworkTransferController(deps, opts) {
           continue; // Container doesn't have enough virtual capacity (accounting for pending items)
         }
 
-        // Try to insert
-        const inserted = tryInsertIntoInventories([targetInv], sourceStack.typeId, desiredAmount, null); // No filter check here - already filtered above
-        if (inserted) {
+        // DO NOT insert here — selection must be non-mutating.
+        // We already checked virtualCapacity above, so if desiredAmount fits, we can accept this target.
+        if (desiredAmount > 0 && virtualCapacity >= desiredAmount) {
           pathInfo = pick;
           outInfo = info;
           outBlock = info.block;

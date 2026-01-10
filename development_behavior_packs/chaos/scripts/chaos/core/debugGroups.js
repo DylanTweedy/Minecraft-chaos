@@ -2,11 +2,13 @@
 // Debug visibility and extended debugging groups for Insight system
 // - Lens/Goggles: Enable basic debug visibility (warnings and debug logs)
 // - Extended Debug Groups: Toggle additional detail for specific systems
+// - DEV MODE: Persistent world-level toggle for verbose startup and diagnostics
 
 import { world } from "@minecraft/server";
 
-// Dynamic property key for persistent debug settings
+// Dynamic property keys for persistent settings
 const DP_DEBUG_SETTINGS = "chaos:debug_settings_v1";
+const DP_DEV_MODE = "chaos:dev_mode_v1";
 
 // Helper functions for safe JSON parsing/stringifying
 function safeJsonParse(str, fallback = null) {
@@ -45,6 +47,39 @@ const _extendedDebugGroups = new Map(); // playerId -> Set<groupName>
 const _hasInsightCache = new Map(); // playerId -> boolean
 
 /**
+ * DEV MODE (world-level, persistent)
+ * Stored as world dynamic property "chaos:dev_mode_v1"
+ */
+export function isDevModeEnabled() {
+  try {
+    const raw = world.getDynamicProperty(DP_DEV_MODE);
+    // Accept boolean, number, or string just in case older versions wrote something weird
+    if (raw === true) return true;
+    if (raw === false) return false;
+    if (typeof raw === "number") return raw !== 0;
+    if (typeof raw === "string") return raw === "true" || raw === "1";
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function setDevModeEnabled(enabled) {
+  try {
+    world.setDynamicProperty(DP_DEV_MODE, !!enabled);
+    return !!enabled;
+  } catch {
+    return !!enabled;
+  }
+}
+
+export function toggleDevMode() {
+  const next = !isDevModeEnabled();
+  setDevModeEnabled(next);
+  return next;
+}
+
+/**
  * Check if player has Insight Lens or Goggles (basic debug visibility)
  */
 export function hasInsight(player) {
@@ -64,7 +99,6 @@ export function updateInsightCache(player, hasIt) {
   }
 }
 
-
 /**
  * Check if extended debugging is enabled for a specific group
  */
@@ -82,20 +116,20 @@ export function hasExtendedDebug(player, groupName) {
 export function toggleExtendedDebug(player, groupName) {
   if (!player?.id) return false;
   const pid = player.id;
-  
+
   let groups = _extendedDebugGroups.get(pid);
   if (!groups) {
     groups = new Set();
     _extendedDebugGroups.set(pid, groups);
   }
-  
+
   if (groups.has(groupName)) {
     groups.delete(groupName);
-    saveDebugSettings(); // Save after change
+    saveDebugSettings();
     return false;
   } else {
     groups.add(groupName);
-    saveDebugSettings(); // Save after change
+    saveDebugSettings();
     return true;
   }
 }
@@ -135,13 +169,13 @@ function saveDebugSettings() {
         settings[playerId] = Array.from(groups);
       }
     }
-    
+
     const raw = safeJsonStringify(settings);
     if (raw) {
       world.setDynamicProperty(DP_DEBUG_SETTINGS, raw);
     }
   } catch {
-    // Ignore save errors - settings will persist in memory until next save
+    // Ignore save errors
   }
 }
 
@@ -152,7 +186,7 @@ export function loadDebugSettings() {
   try {
     const raw = world.getDynamicProperty(DP_DEBUG_SETTINGS);
     const settings = safeJsonParse(raw, {});
-    
+
     let loadedCount = 0;
     if (settings && typeof settings === "object") {
       for (const [playerId, groups] of Object.entries(settings)) {
@@ -162,7 +196,7 @@ export function loadDebugSettings() {
         }
       }
     }
-    
+
     // Send confirmation to players when settings are loaded (if they have lens/goggles)
     if (loadedCount > 0) {
       try {
@@ -170,11 +204,13 @@ export function loadDebugSettings() {
         for (const player of players) {
           try {
             if (!hasInsight(player)) continue;
-            
+
             const enabledGroups = getAllExtendedDebugGroups(player);
             if (enabledGroups.size > 0) {
               const groupNames = Array.from(enabledGroups).join(", ");
-              player.sendMessage(`§b[Insight] Extended debug loaded: §f${groupNames}§b (${enabledGroups.size} group${enabledGroups.size !== 1 ? 's' : ''})`);
+              player.sendMessage(
+                `§b[Insight] Extended debug loaded: §f${groupNames}§b (${enabledGroups.size} group${enabledGroups.size !== 1 ? "s" : ""})`
+              );
             }
           } catch {}
         }
@@ -190,8 +226,6 @@ export function loadDebugSettings() {
  * Note: Extended debug groups are preserved (persisted) so settings survive logout
  */
 export function cleanupPlayer(playerId) {
-  // Only clear temporary cache (lens/goggles detection)
-  // Extended debug groups are persisted and should survive logout
   _hasInsightCache.delete(playerId);
 }
 
@@ -216,26 +250,26 @@ export function getAllEnabledGroups(player) {
 export function getGroupForBlock(block) {
   if (!block?.typeId) return null;
   const typeId = block.typeId;
-  
+
   // Prism blocks
   if (typeId && typeId.startsWith("chaos:prism_")) {
     return "prism";
   }
-  
+
   // Legacy node blocks (if still used)
   if (typeId === "chaos:extractor" || typeId === "chaos:inserter") {
     return "node";
   }
-  
+
   // Beam blocks
   if (typeId === "chaos:beam") {
     return "beam";
   }
-  
+
   // Crystallizer
   if (typeId === "chaos:crystallizer") {
-    return "transfer"; // Crystallizer is part of transfer system
+    return "transfer";
   }
-  
+
   return null;
 }

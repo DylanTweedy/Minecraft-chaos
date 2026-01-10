@@ -1,18 +1,15 @@
 // scripts/chaos/items/insightLens.js
 // Insight Lens interaction handler
-// Lens enables basic debug visibility (warnings and debug logs)
-// Crouch + right-click opens menu to toggle extended debugging groups
+// - Sneak + right-click: opens menu to toggle extended debugging groups
+// - Normal right-click: toggles DEV MODE (persistent) for verbose startup diagnostics
 
 import { EquipmentSlot, EntityComponentTypes } from "@minecraft/server";
 import { showDebugMenu } from "../core/debugMenu.js";
+import { toggleDevMode } from "../core/debugGroups.js";
 
 const LENS_ID = "chaos:insight_lens";
 const MAX_OBSERVATION_DISTANCE = 32;
 
-/**
- * Handle right-click with Insight Lens
- * Only crouch + right-click opens menu (no other interactions)
- */
 export function handleInsightLensUseOn(e, deps) {
   try {
     const player = e?.source;
@@ -21,23 +18,31 @@ export function handleInsightLensUseOn(e, deps) {
     const item = e?.itemStack;
     if (!item || item.typeId !== LENS_ID) return;
 
-    // Only crouch + right-click opens the debug menu
+    // Sneak + use: open debug menu
     if (player.isSneaking) {
       showDebugMenu(player).catch(() => {});
+      return;
     }
-    // Normal right-click does nothing (allows normal block interaction)
+
+    // Normal use: toggle DEV MODE and cancel interaction so it doesn't also click blocks
+    try {
+      const enabled = toggleDevMode();
+      player.sendMessage(`§b[Insight] Dev mode: ${enabled ? "§aON" : "§cOFF"}§b (persists on reload)`);
+    } catch {
+      player.sendMessage("§c[Insight] Failed to toggle dev mode");
+    }
+
+    // Cancel the use to prevent normal block interaction
+    try { e.cancel = true; } catch {}
   } catch {
     // ignore
   }
 }
 
-/**
- * Check if player is holding Insight Lens (main hand or offhand)
- */
 export function isHoldingLens(player) {
   try {
     if (!player || player.typeId !== "minecraft:player") return false;
-    
+
     // Method 1: Check main hand via inventory selected slot
     try {
       const inv = player.getComponent("minecraft:inventory");
@@ -46,20 +51,17 @@ export function isHoldingLens(player) {
         const slotIndex = player.selectedSlotIndex;
         if (slotIndex >= 0 && slotIndex < c.size) {
           const mainItem = c.getItem(slotIndex);
-          if (mainItem && mainItem.typeId === LENS_ID) {
-            return true;
-          }
+          if (mainItem && mainItem.typeId === LENS_ID) return true;
         }
       }
-    } catch (err) {
-      // Continue to other methods
-    }
-    
-    // Method 2: Check offhand via equippable component (primary method for offhand)
+    } catch {}
+
+    // Method 2: Check offhand
     try {
-      const equippable = player.getComponent(EntityComponentTypes.Equippable) || player.getComponent("minecraft:equippable");
+      const equippable =
+        player.getComponent(EntityComponentTypes.Equippable) ||
+        player.getComponent("minecraft:equippable");
       if (equippable) {
-        // Try PascalCase first (newer API), fallback to camelCase if needed
         let offhandItem = null;
         try {
           offhandItem = equippable.getEquipment(EquipmentSlot.Offhand);
@@ -68,23 +70,16 @@ export function isHoldingLens(player) {
             offhandItem = equippable.getEquipment(EquipmentSlot.offhand);
           } catch {}
         }
-        if (offhandItem && offhandItem.typeId === LENS_ID) {
-          return true;
-        }
+        if (offhandItem && offhandItem.typeId === LENS_ID) return true;
       }
-    } catch (err) {
-      // Continue
-    }
-    
+    } catch {}
+
     return false;
   } catch {
     return false;
   }
 }
 
-/**
- * Get block player is looking at (for observation mode)
- */
 export function getTargetBlockForObservation(player) {
   try {
     const hit = player.getBlockFromViewDirection({ maxDistance: MAX_OBSERVATION_DISTANCE });
