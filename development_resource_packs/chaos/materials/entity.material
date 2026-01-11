@@ -1,0 +1,15 @@
+{
+  "materials": {
+    "material.chaos_beam_uv": {
+      "shader": "entity_alphatest",
+      "+defines": [ "USE_UV_ANIM" ],
+      "samplerStates": [
+        {
+          "samplerIndex": 0,
+          "textureFilter": "Point",
+          "textureWrap": "Repeat"
+        }
+      ]
+    }
+  }
+}

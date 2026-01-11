@@ -1,6 +1,8 @@
 // scripts/chaos/bootstrap/index.js
 import { bootChaos } from "./bootChaos.js";
 import { startSystems } from "./startSystems.js";
+import "../wandBeam.js";
+import "../beamMover.js";
 
 import { registerScript, markScriptLoaded, notifyPlayers } from "../core/scriptLoader.js";
 import { isDevModeEnabled } from "../core/debugGroups.js";

@@ -1,0 +1,40 @@
+{
+  "format_version": "1.21.0",
+  "minecraft:entity": {
+    "description": {
+      "identifier": "chaos:beam",
+      "is_spawnable": false,
+      "is_summonable": true,
+      "properties": {
+        "chaos:beam_len": { "type": "float", "range": [ 1.0, 64.0 ], "default": 6.0, "client_sync": true },
+        "chaos:beam_alpha": {
+        "type": "float",
+        "range": [0.0, 1.0],
+        "default": 1.0,
+        "client_sync": true
+        }
+      }
+    },
+
+    "components": {
+      "minecraft:collision_box": { "width": 0.01, "height": 0.01 },
+      "minecraft:physics": { "has_gravity": false, "has_collision": false },
+      "minecraft:pushable": { "is_pushable": false, "is_pushable_by_piston": false },
+
+    "minecraft:timer": { "time": 10.0, "looping": false, "time_down_event": { "event": "chaos:despawn" } }
+
+    },
+
+    "component_groups": {
+      "chaos:despawn_now": {
+        "minecraft:instant_despawn": {}
+      }
+    },
+
+    "events": {
+      "chaos:despawn": {
+        "add": { "component_groups": [ "chaos:despawn_now" ] }
+      }
+    }
+  }
+}
