@@ -1,8 +1,8 @@
 // scripts/chaos/bootstrap/transferLoop.js
 import { createTransferPathfinder } from "../features/links/transfer/pathfinding/pathfinder.js";
-import { getNetworkStamp } from "../features/links/networkStamp.js";
+import { getNetworkStamp } from "../features/links/shared/networkStamp.js";
 // Controller import enabled for testing
-import { createNetworkTransferController } from "../features/links/transfer/controller.js";
+import { createNetworkTransferController } from "../features/links/transfer/runtime/controller.js";
 import { setCacheInvalidationFn } from "../features/links/beam/events.js";
 
 // Module-level storage for cache invalidation function (optional dependency)

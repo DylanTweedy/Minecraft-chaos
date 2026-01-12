@@ -1,11 +1,11 @@
 // scripts/chaos/features/links/transfer/index.js
 export { createTransferPathfinder } from "./pathfinding/pathfinder.js";
-export { createNetworkTransferController } from "./controller.js";
+export { createNetworkTransferController } from "./runtime/controller.js";
 
 // Shared module registry for startup checks.
 export const linksModuleList = [
   "config",
-  "controller",
+  "runtime/controller",
   "keys",
   "utils",
   "pathfinding/graph",

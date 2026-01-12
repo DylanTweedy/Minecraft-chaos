@@ -1,4 +1,4 @@
-// scripts/chaos/features/links/networkStamp.js
+// scripts/chaos/features/links/shared/networkStamp.js
 // Lightweight in-memory stamp for cache invalidation.
 
 let stamp = 0;
@@ -11,3 +11,4 @@ export function bumpNetworkStamp() {
 export function getNetworkStamp() {
   return stamp;
 }
+

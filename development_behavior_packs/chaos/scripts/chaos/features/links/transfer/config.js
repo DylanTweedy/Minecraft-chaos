@@ -3,9 +3,11 @@ import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
-// Legacy IDs for migration (will be removed eventually)
-const INPUT_ID = "chaos:extractor"; // Deprecated - use PRISM_IDS
-const OUTPUT_ID = "chaos:inserter"; // Deprecated - use PRISM_IDS
+
+// Legacy IDs (remove once all imports are gone)
+const INPUT_ID = "chaos:extractor"; // Deprecated - replaced by PRISM_IDS
+const OUTPUT_ID = "chaos:inserter"; // Deprecated - replaced by PRISM_IDS
+
 const FURNACE_BLOCK_IDS = new Set([
   "minecraft:furnace",
   "minecraft:lit_furnace",
@@ -14,6 +16,7 @@ const FURNACE_BLOCK_IDS = new Set([
   "minecraft:smoker",
   "minecraft:lit_smoker",
 ]);
+
 const FURNACE_FUEL_FALLBACK_IDS = new Set([
   "minecraft:coal",
   "minecraft:charcoal",
@@ -23,16 +26,20 @@ const FURNACE_FUEL_FALLBACK_IDS = new Set([
   "minecraft:stick",
   "minecraft:bamboo",
 ]);
+
 const FURNACE_SLOTS = {
   input: 0,
   fuel: 1,
   output: 2,
 };
+
 const DP_BEAMS = "chaos:beams_v0_json";
 const DP_TRANSFERS = "chaos:transfers_v0_json";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
 const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
+
+// Path / routing
 const MAX_STEPS = MAX_BEAM_LEN * 12;
 const PATH_WEIGHT_MAX_LEN = 6;
 const PATH_WEIGHT_LEN_EXP = 0.6;
@@ -40,9 +47,11 @@ const PATH_WEIGHT_RANDOM_MIN = 0.5;
 const PATH_WEIGHT_RANDOM_MAX = 2.0;
 const CRYSTAL_FLUX_WEIGHT = 6.0;
 const CRYSTAL_ROUTE_MAX_NODES = 256;
+
+// Speed / visuals
 const SPEED_SCALE_MAX = 1.8;
-const PRISM_SPEED_BOOST_BASE = 0.0; // Tier 1 has no boost
-const PRISM_SPEED_BOOST_PER_TIER = 0.05; // Each tier adds 5% boost (tier 2 = 5%, tier 5 = 20%)
+const PRISM_SPEED_BOOST_BASE = 0.0;
+const PRISM_SPEED_BOOST_PER_TIER = 0.05;
 
 // Prism tier IDs (5 separate blocks, one per tier)
 const PRISM_IDS = [
@@ -53,93 +62,144 @@ const PRISM_IDS = [
   "chaos:prism_5",
 ];
 
-// Helper function to check if a block is a prism (any tier)
+// O(1) tier lookup
+const PRISM_TIER_BY_ID = new Map(PRISM_IDS.map((id, i) => [id, i + 1]));
+
+function clampPrismTier(tier) {
+  const t = Number(tier);
+  if (!Number.isFinite(t)) return 1;
+  return Math.max(1, Math.min(5, Math.floor(t)));
+}
+
+/**
+ * Preferred: check by id.
+ * Use this in most places: isPrismId(block.typeId)
+ */
+function isPrismId(typeId) {
+  return PRISM_TIER_BY_ID.has(typeId);
+}
+
+/**
+ * Convenience wrapper when you truly have a block object.
+ * Avoid passing strings/objects here; use isPrismId for ids.
+ */
 function isPrismBlock(block) {
-  if (!block) return false;
-  const typeId = block.typeId || (typeof block === "string" ? block : null);
-  if (!typeId) return false;
-  return PRISM_IDS.includes(typeId);
+  return !!block && isPrismId(block.typeId);
 }
 
-// Helper to get prism tier from typeId (1-5, or 1 if not a prism)
-// Accepts either a block object or a typeId string
+/**
+ * Get prism tier from either a block or a typeId string.
+ * Returns 1-5 if prism, else 1.
+ */
 function getPrismTier(blockOrTypeId) {
-  let typeId;
-  if (typeof blockOrTypeId === "string") {
-    typeId = blockOrTypeId;
-  } else if (blockOrTypeId && blockOrTypeId.typeId) {
-    typeId = blockOrTypeId.typeId;
-  } else {
-    return 1;
-  }
-  
-  const index = PRISM_IDS.indexOf(typeId);
-  if (index >= 0) return index + 1; // Return 1-5 based on array index
-  return 1; // Default tier 1 if not a prism
+  const typeId =
+    typeof blockOrTypeId === "string"
+      ? blockOrTypeId
+      : blockOrTypeId?.typeId;
+
+  return PRISM_TIER_BY_ID.get(typeId) || 1;
 }
 
-// Helper to get prism typeId for a given tier (1-5)
+/**
+ * Get prism typeId for a given tier (1-5)
+ */
 function getPrismTypeIdForTier(tier) {
-  const t = Math.max(1, Math.min(5, Math.floor(tier || 1)));
-  return PRISM_IDS[t - 1] || PRISM_IDS[0];
+  return PRISM_IDS[clampPrismTier(tier) - 1] || PRISM_IDS[0];
 }
 
 const DEFAULTS = {
-  maxTransfersPerTick: 4, // Budget for item transfers started per tick (base - will scale with tier)
-  maxSearchesPerTick: 4, // Budget for pathfinding searches per tick (reduced from 8 for performance)
-  perPrismIntervalTicks: 5, // Base interval for tier 5 (0.25s) - scales up for lower tiers (tier 1 = 25 ticks = 1.25s)
+  maxTransfersPerTick: 4,
+  maxSearchesPerTick: 4,
+
+  // Base interval for tier 5 (0.25s) - scales up for lower tiers
+  perPrismIntervalTicks: 5,
+
   cacheTicks: 10,
   cacheTicksWithStamp: 60,
-  maxVisitedPerSearch: 120, // Reduced from 200 for performance (matches transferLoop.js)
-  orbStepTicks: 16, // Tier 1 speed (16 ticks per step) - now calculated directly from tier: T1=16, T2=8, T3=4, T4=2, T5=1
-  maxOutputOptions: 4, // Reduced from 6 for performance (matches transferLoop.js)
-  levelStep: 2000, // Massively increased for natural progression
-  prismLevelStep: 4000, // Massively increased for natural progression
+
+  maxVisitedPerSearch: 120,
+  orbStepTicks: 16,
+
+  maxOutputOptions: 4,
+
+  levelStep: 2000,
+  prismLevelStep: 4000,
   maxLevel: 5,
+
   itemsPerOrbBase: 1,
   itemsPerOrbGrowth: 2,
   maxItemsPerOrb: 64,
-  minOrbStepTicks: 1, // Minimum step ticks for tier 5 (1 tick = instant at max speed)
+
+  minOrbStepTicks: 1,
+
   orbVisualMinSpeedScale: 1.0,
   orbVisualMaxSpeedScale: 1.0,
+
   maxOrbFxPerTick: 160,
+
   maxQueuedInsertsPerTick: 4,
   maxFullChecksPerTick: 4,
+
   levelUpBurstCount: 8,
   levelUpBurstRadius: 0.35,
+
   orbLifetimeScale: 0.5,
-  maxPrismsScannedPerTick: 8, // Budget for prisms to scan per tick (reduced from 24 for performance)
-  debugTransferStats: true, // Enable debug timing messages
-  debugTransferStatsIntervalTicks: 20, // Reduced to 20 ticks (1 second) for easier testing
-  backoffBaseTicks: 10, // Base backoff when prism finds nothing
+
+  maxPrismsScannedPerTick: 8,
+
+  debugTransferStats: true,
+  debugTransferStatsIntervalTicks: 20,
+
+  backoffBaseTicks: 10,
   backoffMaxTicks: 200,
   backoffMaxLevel: 6,
+
   maxFluxFxInFlight: 24,
   inflightSaveIntervalTicks: 40,
+
   // 50/50 balance distribution settings
-  useBalanceDistribution: true,        // Enable 50/50 balance mode for unfiltered prisms (default: true)
-  balanceMinTransfer: 1,               // Minimum transfer amount (default: 1)
-  balanceCapByLevel: false,            // Cap balance amount by level (default: false, unlimited)
-  // Legacy - kept for compatibility
+  useBalanceDistribution: true,
+  balanceMinTransfer: 1,
+  balanceCapByLevel: false,
+
+  // Legacy - remove once callers are gone
   perInputIntervalTicks: 10,
-  maxInputsScannedPerTick: 8, // Reduced to match maxPrismsScannedPerTick
+  maxInputsScannedPerTick: 8,
 };
 
 export {
+  // Legacy (remove later)
   INPUT_ID,
   OUTPUT_ID,
+
+  // Prism ids + helpers
   PRISM_IDS,
+  isPrismId,
+  isPrismBlock,
+  getPrismTier,
+  getPrismTypeIdForTier,
+  clampPrismTier,
+
+  // IDs
   CRYSTALLIZER_ID,
   BEAM_ID,
+
+  // Furnace rules
   FURNACE_BLOCK_IDS,
   FURNACE_FUEL_FALLBACK_IDS,
   FURNACE_SLOTS,
+
+  // Persistence keys
   DP_BEAMS,
   DP_TRANSFERS,
   DP_INPUT_LEVELS,
   DP_OUTPUT_LEVELS,
   DP_PRISM_LEVELS,
+
+  // Shared beam config re-export (optional, but keep for now to avoid churn)
   MAX_BEAM_LEN,
+
+  // Path / routing constants
   MAX_STEPS,
   PATH_WEIGHT_MAX_LEN,
   PATH_WEIGHT_LEN_EXP,
@@ -147,11 +207,11 @@ export {
   PATH_WEIGHT_RANDOM_MAX,
   CRYSTAL_FLUX_WEIGHT,
   CRYSTAL_ROUTE_MAX_NODES,
+
+  // Speed
   SPEED_SCALE_MAX,
   PRISM_SPEED_BOOST_BASE,
   PRISM_SPEED_BOOST_PER_TIER,
-  isPrismBlock,
-  getPrismTier,
-  getPrismTypeIdForTier,
+
   DEFAULTS,
 };

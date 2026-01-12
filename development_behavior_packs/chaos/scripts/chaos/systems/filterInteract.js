@@ -2,15 +2,15 @@
 // Right-click prism filters using dynamic properties (no block inventory required).
 
 import { world } from "@minecraft/server";
-import { toggleFilterForBlock, clearFilterForBlock } from "../features/links/filters.js";
-import { isPrismBlock } from "../features/links/transfer/config.js";
+import { toggleFilterForBlock, clearFilterForBlock } from "../features/links/shared/filters.js";
+import { isPrismId } from "../features/links/transfer/config.js";
 
 const WAND_ID = "chaos:wand";
 
 function isNodeBlock(blockOrId) {
   if (!blockOrId) return false;
   const id = typeof blockOrId === "string" ? blockOrId : blockOrId.typeId;
-  return isPrismBlock({ typeId: id });
+  return !!id && isPrismId(id);
 }
 
 function showFeedback(player, message) {
@@ -39,21 +39,21 @@ export function startFilterInteract() {
 
       const item = ev?.itemStack;
       const itemId = item?.typeId;
+
+      // Wand should not trigger filters
       if (itemId === WAND_ID) return;
 
       // Prevent placement on nodes when using items to set filters.
       if (ev && "cancel" in ev) ev.cancel = true;
 
-      // Shift-right-click with block = place block without triggering filter
+      // Shift-right-click with a block item = allow placement without triggering filter
       if (player.isSneaking && itemId && itemId !== "minecraft:air") {
-        // Check if it's a placeable block (basic check)
+        // Basic heuristic; keep your current behavior
         const isPlaceableBlock = !itemId.includes(":") || itemId.startsWith("minecraft:");
-        if (isPlaceableBlock) {
-          // Allow block placement - don't trigger filter
-          return;
-        }
+        if (isPlaceableBlock) return;
       }
 
+      // Sneak + empty hand clears
       if (player.isSneaking && (!itemId || itemId === "minecraft:air")) {
         const cleared = clearFilterForBlock(world, block);
         if (cleared) showFeedback(player, "Chaos filter cleared.");
@@ -87,9 +87,11 @@ export function startFilterInteract() {
   world.afterEvents.playerBreakBlock.subscribe((ev) => {
     try {
       const brokenId = ev?.brokenBlockPermutation?.type?.id;
-      if (!isNodeBlock({ typeId: brokenId })) return;
+      if (!brokenId || !isPrismId(brokenId)) return;
+
       const block = ev?.block;
       if (!block) return;
+
       clearFilterForBlock(world, block);
     } catch {
       // ignore

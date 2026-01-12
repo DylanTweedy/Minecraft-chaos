@@ -1,7 +1,7 @@
 // scripts/chaos/vision/linkVisionExposed.js
 // Exposed Link Vision API for Insight Lens/Goggles
 
-import { getPairsMap } from "../features/links/pairs.js";
+import { getPairsMap } from "../features/links/shared/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";

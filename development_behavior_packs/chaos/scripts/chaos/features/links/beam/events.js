@@ -1,9 +1,16 @@
 // scripts/chaos/features/links/beam/events.js
-import { PRISM_IDS, CRYSTALLIZER_ID, BEAM_ID, isPassThrough, EMIT_RETRY_TICKS } from "./config.js";
-import { isPrismBlock } from "../transfer/config.js";
+import {
+  PRISM_IDS,
+  CRYSTALLIZER_ID,
+  BEAM_ID,
+  EMIT_RETRY_TICKS,
+  isPrismId,
+} from "./config.js";
+
 import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
 import { key, loadBeamsMap, saveBeamsMap } from "./storage.js";
-import { bumpNetworkStamp } from "../networkStamp.js";
+import { bumpNetworkStamp } from "../shared/networkStamp.js";
+
 import {
   enqueueAdjacentBeams,
   enqueueAdjacentPrisms,
@@ -11,26 +18,30 @@ import {
   enqueueRelayForRescan,
   enqueueInputForRescan,
 } from "./queue.js";
+
 import { clearBeamsFromBreak, removeRecordedBeams } from "./rebuild.js";
 
 const FACE_OFFSETS = {
-  Up: { x: 0, y: 1, z: 0 },
-  Down: { x: 0, y: -1, z: 0 },
+  Up:    { x: 0, y: 1, z: 0 },
+  Down:  { x: 0, y: -1, z: 0 },
   North: { x: 0, y: 0, z: -1 },
   South: { x: 0, y: 0, z: 1 },
-  West: { x: -1, y: 0, z: 0 },
-  East: { x: 1, y: 0, z: 0 },
+  West:  { x: -1, y: 0, z: 0 },
+  East:  { x: 1, y: 0, z: 0 },
 };
 
 const pendingEmit = new Set();
 let globalInvalidateCachesFn = null;
 
+function isNodeId(id) {
+  return isPrismId(id) || id === CRYSTALLIZER_ID;
+}
+
 function scheduleEmitAt(world, system, dim, loc, attempt) {
   try {
     if (!dim || !loc) return;
 
-    const dimId = dim.id;
-    const k = key(dimId, loc.x, loc.y, loc.z);
+    const k = key(dim.id, loc.x, loc.y, loc.z);
 
     if ((attempt | 0) === 0) {
       if (pendingEmit.has(k)) return;
@@ -39,16 +50,19 @@ function scheduleEmitAt(world, system, dim, loc, attempt) {
 
     const placed = dim.getBlock(loc);
 
-    // Handle prism placement
-    if (placed && isPrismBlock(placed)) {
+    // Prism placed → register immediately
+    if (placed && isPrismId(placed.typeId)) {
       pendingEmit.delete(k);
       handlePrismPlaced(world, placed, globalInvalidateCachesFn);
       return;
     }
 
-    const a = (attempt | 0) + 1;
-    if (a < EMIT_RETRY_TICKS) {
-      system.runTimeout(() => scheduleEmitAt(world, system, dim, loc, a), 1);
+    const nextAttempt = (attempt | 0) + 1;
+    if (nextAttempt < EMIT_RETRY_TICKS) {
+      system.runTimeout(
+        () => scheduleEmitAt(world, system, dim, loc, nextAttempt),
+        1
+      );
     } else {
       pendingEmit.delete(k);
     }
@@ -57,213 +71,122 @@ function scheduleEmitAt(world, system, dim, loc, attempt) {
   }
 }
 
-function handleBlockChanged(world, dim, loc, prevId, nextId, invalidateCachesFn = null) {
+function handleBlockChanged(world, dim, loc, prevId, nextId, invalidateCachesFn) {
   if (!dim || !loc) return;
 
-  // Invalidate caches for this block change if callback is provided
-  // Check both parameter and global variable (parameter takes precedence for explicit passing)
-  const fnToUse = invalidateCachesFn || globalInvalidateCachesFn;
-  if (fnToUse && typeof fnToUse === "function") {
+  const fn = invalidateCachesFn || globalInvalidateCachesFn;
+  if (typeof fn === "function") {
     try {
-      const blockKey = key(dim.id, loc.x, loc.y, loc.z);
-      fnToUse(blockKey);
-    } catch {
-      // Ignore errors in cache invalidation - don't break block change handling
-    }
+      fn(key(dim.id, loc.x, loc.y, loc.z));
+    } catch {}
   }
 
   bumpNetworkStamp();
+
   enqueueAdjacentBeams(dim, loc);
 
-  const self = dim.getBlock(loc);
-  const selfId = nextId || self?.typeId;
-  const beamChanged = (prevId === BEAM_ID || selfId === BEAM_ID);
-  if (beamChanged) enqueueAdjacentPrisms(dim, loc);
+  const beamTouched = prevId === BEAM_ID || nextId === BEAM_ID;
+  if (beamTouched) enqueueAdjacentPrisms(dim, loc);
 
-  const isRelay = (id) => isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID;
-  if (isRelay(selfId) || isRelay(prevId)) {
-    enqueueRelayForRescan(key(dim.id, loc.x, loc.y, loc.z));
-  }
-  if (isRelay(prevId)) {
-    const map = loadBeamsMap(world);
+  const prevIsNode = isNodeId(prevId);
+  const nextIsNode = isNodeId(nextId);
+
+  // Node removed or replaced
+  if (prevIsNode && !nextIsNode) {
     const prismKey = key(dim.id, loc.x, loc.y, loc.z);
+    const map = loadBeamsMap(world);
     const entry = map[prismKey];
+
     if (entry) {
       removeRecordedBeams(world, entry);
       delete map[prismKey];
       saveBeamsMap(world, map);
     }
+
     enqueueBeamsInLine(dim, loc);
     clearBeamsFromBreak(world, dim, loc);
   }
 
-  const nonPassThroughPrev = !!(prevId && !isPassThrough(prevId));
-  const nonPassThroughNext = !!(selfId && !isPassThrough(selfId));
-  if (nonPassThroughPrev || nonPassThroughNext) {
-    enqueueBeamsInLine(dim, loc);
-    const isRelay = (id) => isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID;
-    if (!isRelay(selfId)) {
-      clearBeamsFromBreak(world, dim, loc);
-    }
+  // Node added or changed
+  if (nextIsNode) {
+    enqueueRelayForRescan(key(dim.id, loc.x, loc.y, loc.z));
+    enqueueAdjacentPrisms(dim, loc);
   }
 
-  const dirs = [
-    { dx: 1, dy: 0, dz: 0 },
-    { dx: -1, dy: 0, dz: 0 },
-    { dx: 0, dy: 0, dz: 1 },
-    { dx: 0, dy: 0, dz: -1 },
-    { dx: 0, dy: 1, dz: 0 },
-    { dx: 0, dy: -1, dz: 0 },
-  ];
-
-  for (const d of dirs) {
-    for (let i = 1; i <= MAX_BEAM_LEN; i++) {
-      const x = loc.x + d.dx * i;
-      const y = loc.y + d.dy * i;
-      const z = loc.z + d.dz * i;
-      const b = dim.getBlock({ x, y, z });
-      if (!b) break;
-
-      const id = b.typeId;
-      const isRelay = (id) => isPrismBlock({ typeId: id }) || id === CRYSTALLIZER_ID;
-      // All prisms are treated as relays
-      if (isPrismBlock(b)) {
-        enqueueRelayForRescan(key(dim.id, x, y, z));
-        break;
-      }
-      if (isRelay(id)) {
-        enqueueRelayForRescan(key(dim.id, x, y, z));
-        break;
-      }
-      if (isPassThrough(id)) continue;
-      break;
+  // Any solid change potentially breaks beams
+  if (prevId !== nextId) {
+    enqueueBeamsInLine(dim, loc);
+    if (!nextIsNode) {
+      clearBeamsFromBreak(world, dim, loc);
     }
   }
 }
 
-function handlePrismPlaced(world, block, invalidateCachesFn = null) {
+function handlePrismPlaced(world, block, invalidateCachesFn) {
   try {
-    if (!block) return;
-
     const dim = block.dimension;
     const loc = block.location;
     if (!dim || !loc) return;
 
-    const placed = dim.getBlock(loc);
-    if (!placed || !isPrismBlock(placed)) return;
+    if (!isPrismId(block.typeId)) return;
 
-    const dimId = placed.dimension.id;
-    const { x, y, z } = placed.location;
-    const prismKey = key(dimId, x, y, z);
+    const prismKey = key(dim.id, loc.x, loc.y, loc.z);
 
     const map = loadBeamsMap(world);
-    const entry = { dimId, x, y, z, beams: [], kind: "prism" };
-    map[prismKey] = entry;
+    map[prismKey] = { dimId: dim.id, x: loc.x, y: loc.y, z: loc.z, beams: [], kind: "prism" };
     saveBeamsMap(world, map);
 
-    // Enqueue prism for initial beam building (uses pendingInputs queue)
     enqueueInputForRescan(prismKey);
-    // Also enqueue as relay so adjacent prisms rebuild beams to this new prism
     enqueueRelayForRescan(prismKey);
-    // Enqueue adjacent prisms to rebuild their beams
     enqueueAdjacentPrisms(dim, loc);
-    handleBlockChanged(world, dim, loc, null, null, invalidateCachesFn);
+
+    handleBlockChanged(world, dim, loc, null, block.typeId, invalidateCachesFn);
   } catch {
     // ignore
   }
 }
 
-// Legacy function name for compatibility
-function handleInputPlaced(world, block) {
-  return handlePrismPlaced(world, block);
-}
-
-/**
- * Update the cache invalidation function (can be called later after transfer loop initializes)
- */
-export function setCacheInvalidationFn(invalidateCachesFn) {
-  globalInvalidateCachesFn = invalidateCachesFn;
+export function setCacheInvalidationFn(fn) {
+  globalInvalidateCachesFn = fn;
 }
 
 export function registerBeamEvents(world, system, invalidateCachesFn = null) {
-  // Store globally so scheduleEmitAt can access it
   globalInvalidateCachesFn = invalidateCachesFn;
-  
-  world.afterEvents.playerPlaceBlock.subscribe((ev) => {
+
+  const onPlace = (b) => {
+    scheduleEmitAt(world, system, b.dimension, b.location, 0);
+    handleBlockChanged(world, b.dimension, b.location, null, b.typeId, invalidateCachesFn);
+  };
+
+  world.afterEvents.playerPlaceBlock.subscribe(ev => ev?.block && onPlace(ev.block));
+  world.afterEvents.entityPlaceBlock?.subscribe(ev => ev?.block && onPlace(ev.block));
+  world.afterEvents.blockPlace?.subscribe(ev => ev?.block && onPlace(ev.block));
+
+  world.afterEvents.itemUseOn.subscribe(ev => {
     try {
-      const b = ev?.block;
-      if (!b) return;
-      scheduleEmitAt(world, system, b.dimension, b.location, 0);
-      handleBlockChanged(world, b.dimension, b.location, null, b.typeId, invalidateCachesFn);
-    } catch {
-      // ignore
-    }
+      if (!PRISM_IDS.includes(ev?.itemStack?.typeId)) return;
+      const off = FACE_OFFSETS[ev.blockFace];
+      if (!off) return;
+
+      const b = ev.block;
+      scheduleEmitAt(
+        world,
+        system,
+        b.dimension,
+        { x: b.location.x + off.x, y: b.location.y + off.y, z: b.location.z + off.z },
+        0
+      );
+    } catch {}
   });
 
-  try {
-    world.afterEvents.entityPlaceBlock.subscribe((ev) => {
-      try {
-        const b = ev?.block;
-        if (!b) return;
-        scheduleEmitAt(world, system, b.dimension, b.location, 0);
-        handleBlockChanged(world, b.dimension, b.location, null, b.typeId, invalidateCachesFn);
-      } catch {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
-
-  try {
-    world.afterEvents.blockPlace.subscribe((ev) => {
-      try {
-        const b = ev?.block;
-        if (!b) return;
-        scheduleEmitAt(world, system, b.dimension, b.location, 0);
-        handleBlockChanged(world, b.dimension, b.location, null, b.typeId, invalidateCachesFn);
-      } catch {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
-
-  try {
-    world.afterEvents.itemUseOn.subscribe((ev) => {
-      try {
-        const itemId = ev?.itemStack?.typeId;
-        // Handle prism placement via item use (any tier)
-        if (!itemId || !PRISM_IDS.includes(itemId)) return;
-
-        const clicked = ev?.block;
-        const face = ev?.blockFace;
-        if (!clicked || !face) return;
-
-        const off = FACE_OFFSETS[face];
-        if (!off) return;
-
-        const loc = clicked.location;
-        const target = { x: loc.x + off.x, y: loc.y + off.y, z: loc.z + off.z };
-        scheduleEmitAt(world, system, clicked.dimension, target, 0);
-      } catch {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
-
-  world.afterEvents.playerBreakBlock.subscribe((ev) => {
+  world.afterEvents.playerBreakBlock.subscribe(ev => {
     try {
       const brokenId = ev.brokenBlockPermutation?.type?.id;
       const dim = ev.block?.dimension;
       const loc = ev.block?.location;
       if (!dim || !loc) return;
 
-      // Clean up prism entry on break (any tier)
-      if (brokenId && PRISM_IDS.includes(brokenId)) {
+      if (isPrismId(brokenId)) {
         const prismKey = key(dim.id, loc.x, loc.y, loc.z);
         const map = loadBeamsMap(world);
         if (map[prismKey]) {
@@ -273,8 +196,6 @@ export function registerBeamEvents(world, system, invalidateCachesFn = null) {
       }
 
       handleBlockChanged(world, dim, loc, brokenId, "minecraft:air", invalidateCachesFn);
-    } catch {
-      // ignore
-    }
+    } catch {}
   });
 }

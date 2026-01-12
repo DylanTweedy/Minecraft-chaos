@@ -1,7 +1,7 @@
 // scripts/chaos/bootstrap/startSystems.js
 
 import { startCleanupOnBreak } from "../systems/cleanupOnBreak.js";
-import { startBeamSimV0 } from "../features/links/beamSim.js";
+import { startBeamSimV0 } from "../features/links/beam/beamSim.js";
 import { startFxQueue } from "../systems/fxQueue.js";
 import { startFilterInteract } from "../systems/filterInteract.js";
 import { startCrystallizerSystem } from "../crystallizer.js";

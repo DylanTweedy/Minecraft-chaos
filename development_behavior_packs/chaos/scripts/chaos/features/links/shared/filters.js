@@ -1,4 +1,4 @@
-// scripts/chaos/features/links/filters.js
+// scripts/chaos/features/links/shared/filters.js
 // Node filter storage using world dynamic properties.
 
 const DP_NODE_FILTERS = "chaos:node_filters_v0_json";
@@ -133,3 +133,4 @@ export function clearFilterForBlock(world, block) {
     return false;
   }
 }
+

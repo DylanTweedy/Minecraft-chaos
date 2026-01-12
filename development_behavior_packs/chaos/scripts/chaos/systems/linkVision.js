@@ -1,13 +1,13 @@
 // scripts/chaos/linkVision.js
 import { world, system, MolangVariableMap } from "@minecraft/server";
 
-import { getPairsMap } from "../features/links/pairs.js";
+import { getPairsMap } from "../features/links/shared/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 import { getCrystalState } from "../crystallizer.js";
 import { hasInsight, hasExtendedDebug } from "../core/debugGroups.js";
-import { isPrismBlock } from "../features/links/transfer/config.js";
+import { isPrismId } from "../features/links/transfer/config.js";
 
 const WAND_ID = "chaos:wand";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
@@ -20,7 +20,7 @@ const MAX_LEVEL = 5;
 
 // ---------- Perf knobs ----------
 const TICK_INTERVAL = 10;              // interval ticks (we budget inside)
-const REBUILD_CACHE_EVERY_TICKS = 20; // refresh flattened link list sometimes
+const REBUILD_CACHE_EVERY_TICKS = 20;  // refresh flattened link list sometimes
 const COUNTS_CACHE_TICKS = 20;
 const MAX_LOOK_DISTANCE = 16;
 const ACTIONBAR_TICKS = 2;
@@ -31,6 +31,8 @@ let _cacheSig = "";
 let _flatLinks = []; // [{ dimId, inPos:{x,y,z}, outPos:{x,y,z} }]
 const _rrIndexByPlayer = new Map(); // playerId -> cursor
 const _lastActionBarByPlayer = new Map(); // playerId -> tick
+
+// counts cache (shared tick gate)
 let _countsTick = -9999;
 let _inputCounts = {};
 let _outputCounts = {};
@@ -64,56 +66,54 @@ function safeJsonParse(s) {
   }
 }
 
-function getInputCountsCached() {
-  if ((_tick - _countsTick) <= COUNTS_CACHE_TICKS) return _inputCounts;
+// ---- Counts cache helpers ----
+function countsCacheFresh() {
+  return (_tick - _countsTick) <= COUNTS_CACHE_TICKS;
+}
+
+function refreshCountsCacheIfNeeded() {
+  if (countsCacheFresh()) return;
+
   _countsTick = _tick;
+
+  // Input
   try {
-    const raw = world.getDynamicProperty(DP_INPUT_LEVELS);
-    const parsed = safeJsonParse(raw);
-    if (!parsed || typeof parsed !== "object") {
-      _inputCounts = {};
-      return _inputCounts;
-    }
-    _inputCounts = parsed;
-    return _inputCounts;
+    const parsed = safeJsonParse(world.getDynamicProperty(DP_INPUT_LEVELS));
+    _inputCounts = (parsed && typeof parsed === "object") ? parsed : {};
   } catch {
     _inputCounts = {};
-    return _inputCounts;
   }
+
+  // Output
+  try {
+    const parsed = safeJsonParse(world.getDynamicProperty(DP_OUTPUT_LEVELS));
+    _outputCounts = (parsed && typeof parsed === "object") ? parsed : {};
+  } catch {
+    _outputCounts = {};
+  }
+
+  // Prism
+  try {
+    const parsed = safeJsonParse(world.getDynamicProperty(DP_PRISM_LEVELS));
+    _prismCounts = (parsed && typeof parsed === "object") ? parsed : {};
+  } catch {
+    _prismCounts = {};
+  }
+}
+
+function getInputCountsCached() {
+  refreshCountsCacheIfNeeded();
+  return _inputCounts;
 }
 
 function getOutputCountsCached() {
-  if ((_tick - _countsTick) <= COUNTS_CACHE_TICKS) return _outputCounts;
-  try {
-    const raw = world.getDynamicProperty(DP_OUTPUT_LEVELS);
-    const parsed = safeJsonParse(raw);
-    if (!parsed || typeof parsed !== "object") {
-      _outputCounts = {};
-      return _outputCounts;
-    }
-    _outputCounts = parsed;
-    return _outputCounts;
-  } catch {
-    _outputCounts = {};
-    return _outputCounts;
-  }
+  refreshCountsCacheIfNeeded();
+  return _outputCounts;
 }
 
 function getPrismCountsCached() {
-  if ((_tick - _countsTick) <= COUNTS_CACHE_TICKS) return _prismCounts;
-  try {
-    const raw = world.getDynamicProperty(DP_PRISM_LEVELS);
-    const parsed = safeJsonParse(raw);
-    if (!parsed || typeof parsed !== "object") {
-      _prismCounts = {};
-      return _prismCounts;
-    }
-    _prismCounts = parsed;
-    return _prismCounts;
-  } catch {
-    _prismCounts = {};
-    return _prismCounts;
-  }
+  refreshCountsCacheIfNeeded();
+  return _prismCounts;
 }
 
 function getLevelForCount(count) {
@@ -153,13 +153,14 @@ function getTargetBlock(player) {
 function showWandStats(player) {
   // Gate with lens/goggles visibility - basic debug visibility
   if (!hasInsight(player)) return;
-  
-  // Optional: check for extended debugging for additional detail
-  const hasExtended = hasExtendedDebug(player, "vision") || 
-                      hasExtendedDebug(player, "prism") || 
-                      hasExtendedDebug(player, "transfer");
-  // Extended debugging is optional - basic stats shown with just lens/goggles
-  
+
+  // Optional: extended debug groups
+  const hasExtended =
+    hasExtendedDebug(player, "vision") ||
+    hasExtendedDebug(player, "prism") ||
+    hasExtendedDebug(player, "transfer");
+  void hasExtended; // (kept: you may want to branch messaging later)
+
   const last = _lastActionBarByPlayer.get(player.id) ?? -9999;
   if ((_tick - last) < ACTIONBAR_TICKS) return;
   _lastActionBarByPlayer.set(player.id, _tick);
@@ -168,36 +169,29 @@ function showWandStats(player) {
   if (!block) return;
 
   const id = block.typeId;
-  const isPrism = isPrismBlock(block);
+  const isPrism = !!id && isPrismId(id);
   if (!isPrism && id !== CRYSTALLIZER_ID) return;
 
   const loc = block.location;
-  const key = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
+  const k = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
+
   if (id === CRYSTALLIZER_ID) {
-    const state = getCrystalState(key);
+    const state = getCrystalState(k);
     const stored = Math.max(0, Number(state?.fluxStored) || 0);
     const prestige = Math.max(0, Number(state?.prestigeCount) || 0);
     try {
       player.onScreenDisplay.setActionBar(
         `Chaos Crystallizer | Stored: ${stored} | Prestige: ${prestige}`
       );
-    } catch {
-      // ignore
-    }
+    } catch {}
     return;
   }
-  // Unified system - all prisms use prism counts
-  let count = null;
-  if (isPrism) {
-    const counts = getPrismCountsCached();
-    count = (counts && counts[key] != null) ? Number(counts[key]) : null;
-  }
 
-  const level = Number.isFinite(count)
-    ? getLevelForCount(count)
-    : (block.permutation?.getState("chaos:level") || 1);
+  // Unified system - prisms use prism counts DP
+  const counts = getPrismCountsCached();
+  const count = (counts && counts[k] != null) ? Number(counts[k]) : null;
 
-  const typeLabel = "Prism";
+  const level = Number.isFinite(count) ? getLevelForCount(count) : 1;
   const countLabel = Number.isFinite(count) ? `${count}` : "n/a";
   const nextLabel = Number.isFinite(count)
     ? (getNextTierDelta(count) > 0 ? `${getNextTierDelta(count)}` : "max")
@@ -205,16 +199,13 @@ function showWandStats(player) {
 
   try {
     player.onScreenDisplay.setActionBar(
-      `Chaos ${typeLabel} | L${level} | Transfers: ${countLabel} | Next: ${nextLabel}`
+      `Chaos Prism | L${level} | Transfers: ${countLabel} | Next: ${nextLabel}`
     );
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 function parseKey(key) {
   // Expected: "dimId|x,y,z"
-  // Keep this tiny & robust; if parsing fails, return null.
   try {
     const bar = key.indexOf("|");
     if (bar === -1) return null;
@@ -292,11 +283,12 @@ export function startLinkVision() {
     _tick++;
 
     rebuildFlatLinks();
+
     if (FX.debugSpawnBeamParticles && (_tick % 20) === 0) {
       for (const player of world.getAllPlayers()) {
         if (!isHoldingWand(player)) continue;
-        // Gate debug particles with lens/goggles visibility
         if (!hasInsight(player)) continue;
+
         const loc = { x: player.location.x, y: player.location.y + 1.2, z: player.location.z };
         const molang = new MolangVariableMap();
         molang.setFloat("variable.chaos_color_r", 0.2);
@@ -304,7 +296,6 @@ export function startLinkVision() {
         molang.setFloat("variable.chaos_color_b", 1.0);
         molang.setFloat("variable.chaos_color_a", 1.0);
         molang.setSpeedAndDirection("variable.chaos_move", 2.0, { x: 1, y: 0, z: 0 });
-        // Also set explicit scalar/vector fields in case speed/direction aren't exposed via setSpeedAndDirection.
         molang.setFloat("variable.chaos_move.speed", 2.0);
         molang.setFloat("variable.chaos_move.direction_x", 1.0);
         molang.setFloat("variable.chaos_move.direction_y", 0.0);
@@ -315,6 +306,7 @@ export function startLinkVision() {
         molang.setFloat("variable.chaos_dir_x", 1.0);
         molang.setFloat("variable.chaos_dir_y", 0.0);
         molang.setFloat("variable.chaos_dir_z", 0.0);
+
         const samples = [
           { id: FX.particleBeamCore, off: { x: 0.0, y: 0.0, z: 0.0 } },
           { id: FX.particleBeamHaze, off: { x: 0.4, y: 0.0, z: 0.0 } },
@@ -322,26 +314,26 @@ export function startLinkVision() {
           { id: FX.particleBeamInputCharge, off: { x: 0.0, y: 0.0, z: 0.4 } },
           { id: FX.particleBeamOutputBurst, off: { x: 0.0, y: 0.0, z: -0.4 } },
         ];
+
         for (const s of samples) {
           if (!s.id) continue;
           try {
-            player.dimension.spawnParticle(s.id, {
-              x: loc.x + s.off.x,
-              y: loc.y + s.off.y,
-              z: loc.z + s.off.z,
-            }, molang);
+            player.dimension.spawnParticle(
+              s.id,
+              { x: loc.x + s.off.x, y: loc.y + s.off.y, z: loc.z + s.off.z },
+              molang
+            );
           } catch {}
         }
       }
     }
+
     const maxDist = Number(FX.linkVisionDistance) || 32;
     const maxDistSq = maxDist * maxDist;
     const perTick = Math.max(1, Number(FX.linksPerTickBudget) || 24);
 
     for (const player of world.getAllPlayers()) {
       if (!isHoldingWand(player)) continue;
-
-      // Gate link vision rendering with lens/goggles visibility
       if (!hasInsight(player)) continue;
 
       showWandStats(player);
@@ -377,7 +369,6 @@ export function startLinkVision() {
       }
 
       _rrIndexByPlayer.set(player.id, cursor);
-
     }
   }, TICK_INTERVAL);
 }

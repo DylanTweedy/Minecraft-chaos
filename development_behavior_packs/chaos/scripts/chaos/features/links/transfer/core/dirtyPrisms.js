@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/core/dirtyPrisms.js
 import { key } from "../keys.js";
-import { isPrismBlock } from "../config.js";
+import { isPrismId } from "../config.js";
 
 /**
  * Factory that returns a helper for marking prisms dirty when a nearby container changes.
@@ -42,12 +42,12 @@ export function createAdjacentPrismDirtyMarker(deps) {
           continue;
         }
 
-        if (!block || !isPrismBlock(block)) continue;
+        if (!block || !isPrismId(block.typeId)) continue;
 
         const prismKey = key(dim.id, x, y, z);
 
         try {
-          if (virtualInventoryManager && typeof virtualInventoryManager.markPrismDirty === "function") {
+          if (virtualInventoryManager?.markPrismDirty) {
             virtualInventoryManager.markPrismDirty(prismKey, reason);
           }
         } catch {}
@@ -59,7 +59,7 @@ export function createAdjacentPrismDirtyMarker(deps) {
         } catch {}
 
         try {
-          if (cacheManager && typeof cacheManager.invalidatePrismInventories === "function") {
+          if (cacheManager?.invalidatePrismInventories) {
             cacheManager.invalidatePrismInventories(prismKey);
           }
         } catch {}

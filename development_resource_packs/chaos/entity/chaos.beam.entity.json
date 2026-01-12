@@ -3,22 +3,18 @@
   "minecraft:client_entity": {
     "description": {
       "identifier": "chaos:beam",
-      "materials": { "default": "entity_beam_additive" },
-      "textures": { "default": "textures/blocks/chaos_beam" },
-      "geometry": { "default": "geometry.chaos.beam.entity" },
 
-      "animations": {
-        "beam_scale": "animation.chaos.beam.scale"
+      "geometry": {
+        "default": "geometry.chaos.beam.entity"
       },
 
-      "scripts": {
-        "pre_animation": [
-          "variable.beam_len = query.property('chaos:beam_len');"
-        ],
-        "animate": [ "beam_scale" ]
+      "materials": {
+        "default": "entity"
       },
 
-      "render_controllers": [ "controller.render.chaos_beam" ]
+      "textures": {
+        "default": "textures/blocks/chaos_beam"
+      }
     }
   }
 }

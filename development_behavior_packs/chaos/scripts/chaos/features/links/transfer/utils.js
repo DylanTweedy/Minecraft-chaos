@@ -10,10 +10,15 @@ export function mergeCfg(defaults, opts) {
   return cfg;
 }
 
-export function runTransferPipeline(steps, ctx) {
-  if (!Array.isArray(steps) || steps.length === 0) return;
-  for (const step of steps) {
-    if (typeof step === "function") step(ctx);
+export function runTransferPipeline(stepsOrPipeline, ctx) {
+  if (!stepsOrPipeline) return;
+  if (typeof stepsOrPipeline.runTick === "function") {
+    return stepsOrPipeline.runTick(ctx);
+  }
+  if (Array.isArray(stepsOrPipeline)) {
+    for (const step of stepsOrPipeline) {
+      if (typeof step === "function") step(ctx);
+    }
   }
 }
 
