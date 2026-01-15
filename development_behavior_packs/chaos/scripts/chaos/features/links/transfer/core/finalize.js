@@ -29,6 +29,7 @@ export function createFinalizeManager(cfg, deps) {
     debugEnabled,
     debugState,
     linkGraph,
+    hybridArrivalHandler,
   } = deps;
 
   /**
@@ -36,6 +37,15 @@ export function createFinalizeManager(cfg, deps) {
    * @param {Object} job - Transfer job object
    */
   function finalizeJob(job) {
+    if (
+      cfg?.useHybridDriftAttune &&
+      job?.mode === "hybrid_drift" &&
+      typeof hybridArrivalHandler === "function"
+    ) {
+      const handled = hybridArrivalHandler(job);
+      if (handled) return;
+    }
+
     if (job?.outputType === "crystal") {
       if (job.skipCrystalAdd) return;
       const outInfo = resolveBlockInfo(job.outputKey);

@@ -2,6 +2,8 @@
 // Controller import enabled for testing
 import { createNetworkTransferController } from "../features/links/transfer/runtime/controller.js";
 
+let TRANSFER_LOOP_STARTED = false;
+
 export function startTransferLoop(ctx) {
   const {
     world,
@@ -59,7 +61,15 @@ export function startTransferLoop(ctx) {
     }
   }
 
-  // EARLY DEBUG: Verify startTransferLoop was called
+  if (TRANSFER_LOOP_STARTED) {
+    try {
+      sendChat("§b[TransferLoop] startTransferLoop() ignored (already started)");
+    } catch {}
+    return;
+  }
+
+  TRANSFER_LOOP_STARTED = true;
+
   try {
     sendChat("§a[TransferLoop] startTransferLoop() function called");
   } catch {}

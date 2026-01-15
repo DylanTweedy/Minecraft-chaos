@@ -49,6 +49,7 @@ import {
   createProcessInputQueuesPhase,
   createPersistAndReportPhase,
   createScanTransfersPhase,
+  createHybridTransfersPhase,
 } from "./index.js";
 import { initManagers } from "./bootstrap/initManagers.js";
 import { createTransferStartup } from "./bootstrap/startup.js";
@@ -564,6 +565,7 @@ export function createNetworkTransferController(deps = {}, opts) {
   let processInputQueuesPhase = null;
   let persistAndReportPhase = null;
   let scanTransfersPhase = null;
+  let hybridTransfersPhase = null;
   let tickGuardsPhase = null;
   let markAdjacentPrismsDirty = null;
 
@@ -696,6 +698,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       createProcessInputQueuesPhase,
       createPersistAndReportPhase,
       createScanTransfersPhase,
+      createHybridTransfersPhase,
       createTickGuardsPhase,
     },
     adapters: {
@@ -871,6 +874,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       processInputQueuesPhase,
       persistAndReportPhase,
       scanTransfersPhase,
+      hybridTransfersPhase,
       tickGuardsPhase,
       markAdjacentPrismsDirty,
     } = managers);
@@ -913,23 +917,33 @@ export function createNetworkTransferController(deps = {}, opts) {
     };
   }
 
-  const pipeline = createTransferPipeline({
-    name: "TransferPipeline",
-    phases: [
-      wrapPhase(beginTickPhase, debugState),
-      wrapPhase(refreshPrismPhase, debugState),
-      wrapPhase(handleBeamBreaksPhase, debugState),
-      wrapPhase(validateLinksPhase, debugState),
-      wrapPhase(updateBeamsPhase, debugState),
-      wrapPhase(scanDiscoveryPhase, debugState),
+  const transferPhases = [
+    wrapPhase(beginTickPhase, debugState),
+    wrapPhase(refreshPrismPhase, debugState),
+    wrapPhase(handleBeamBreaksPhase, debugState),
+    wrapPhase(validateLinksPhase, debugState),
+    wrapPhase(updateBeamsPhase, debugState),
+    wrapPhase(scanDiscoveryPhase, debugState),
+  ];
+
+  if (cfg?.useHybridDriftAttune) {
+    transferPhases.push(wrapPhase(hybridTransfersPhase, debugState));
+  } else {
+    transferPhases.push(
       wrapPhase(pushTransfersPhase, debugState),
       wrapPhase(attemptTransferForPrismPhase, debugState),
       wrapPhase(processQueuesPhase, debugState),
       wrapPhase(updateVirtualStatePhase, debugState),
       wrapPhase(processInputQueuesPhase, debugState),
-      wrapPhase(scanTransfersPhase, debugState),
-      wrapPhase(persistAndReportPhase, debugState),
-    ],
+      wrapPhase(scanTransfersPhase, debugState)
+    );
+  }
+
+  transferPhases.push(wrapPhase(persistAndReportPhase, debugState));
+
+  const pipeline = createTransferPipeline({
+    name: "TransferPipeline",
+    phases: transferPhases,
   });
 
   const startup = createTransferStartup({
@@ -970,6 +984,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       emitTrace(null, "transfer", { text, category: "transfer", dedupeKey: text });
     },
     state: controllerState,
+    linkGraph,
   });
 
   function start() {

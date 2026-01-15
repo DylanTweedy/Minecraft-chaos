@@ -25,7 +25,7 @@ import { world, system } from "@minecraft/server";
 // -------------------------
 
 const INTERVAL_TICKS = 20;      // re-apply every second
-const DURATION_TICKS = 200;      // keep > interval to prevent gaps
+const DURATION_TICKS = 400;      // keep > interval to prevent gaps
 const MAX_AMP = 7;           // "max level" in practice (0 = level I)
 const SHOW_PARTICLES = true;
 

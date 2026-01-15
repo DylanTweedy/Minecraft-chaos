@@ -358,6 +358,11 @@ export function createLinkGraph(deps) {
     return invalidated;
   }
 
+  function hasNode(nodeKey) {
+    if (!nodeKey) return false;
+    return adjacency.has(nodeKey);
+  }
+
   function getNeighbors(nodeKey, opts = null) {
     const includePending = !!opts?.includePending;
     const list = [];
@@ -388,6 +393,13 @@ export function createLinkGraph(deps) {
     if (!aKey || !bKey) return null;
     const id = edgeIdFor(aKey, bKey);
     return edges.get(id) || null;
+  }
+
+  function getGraphStats() {
+    return {
+      prisms: adjacency.size,
+      edges: edges.size,
+    };
   }
 
   function buildPathFromParents(startKey, endKey, parentMap) {
@@ -485,5 +497,11 @@ export function createLinkGraph(deps) {
     validateEdgesBudgeted,
     handleBeamBreakAt,
     persistIfDirty,
+    getGraphStats,
+    getGraphSampleKeys(count = 3) {
+      const keys = Array.from(adjacency.keys());
+      return keys.slice(0, Math.max(0, Math.min(count, keys.length)));
+    },
+    hasNode,
   };
 }

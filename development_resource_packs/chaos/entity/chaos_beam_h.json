@@ -1,0 +1,20 @@
+{
+  "format_version": "1.21.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "chaos:beam_h",
+      "materials": { "default": "entity_beam_additive" },
+      "textures": { "default": "textures/blocks/chaos_beam" },
+      "geometry": { "default": "geometry.chaos.beam" },
+      "animations": {
+        "orient_h": "animation.chaos.beam.orient_horizontal",
+        "scale": "animation.chaos.beam.scale",
+        "spin": "animation.chaos.beam.spin"
+      },
+      "scripts": {
+        "animate": ["orient_h", "scale", "spin"]
+      },
+      "render_controllers": ["controller.render.chaos_beam"]
+    }
+  }
+}

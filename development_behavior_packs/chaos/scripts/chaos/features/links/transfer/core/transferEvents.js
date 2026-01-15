@@ -1,5 +1,14 @@
 // scripts/chaos/features/links/transfer/core/transferEvents.js
 
+import {
+  canonicalizePrismKey,
+  key,
+  prismKeyFromBlock,
+} from "../keys.js";
+import { isPrismBlock } from "../config.js";
+import { isHoldingLens } from "../../../../items/insightLens.js";
+import { isWearingGoggles } from "../../../../items/insightGoggles.js";
+
 /**
  * Subscribes to world events once, and marks adjacent prisms dirty when containers change.
  * Returns an unsubscribe function (best-effort; Bedrock events don't always support unsub cleanly).
@@ -9,12 +18,16 @@
 export function subscribeTransferDirtyEvents(deps) {
   const world = deps?.world;
   const cacheManager = deps?.cacheManager;
+  const linkGraph = deps?.linkGraph;
 
   const markAdjacentPrismsDirty = deps?.markAdjacentPrismsDirty;
   const getInventoryContainer = deps?.getInventoryContainer;
   const isFurnaceBlock = deps?.isFurnaceBlock;
   const logError = deps?.logError || (() => {});
   const debugLog = deps?.debugLog || (() => {});
+  const placementDiagnosticsEnabled = deps?.placementDiagnosticsEnabled !== false;
+
+  const lastPlacementKeyByPlayer = new Map();
 
   if (!world?.afterEvents) return () => {};
 
@@ -25,6 +38,76 @@ export function subscribeTransferDirtyEvents(deps) {
   }
 
   const subs = [];
+
+  function sendPlacementChat(msg, player) {
+    try {
+      if (!world || typeof world.getAllPlayers !== "function") return;
+      const text = typeof msg === "string" ? msg : null;
+      if (!text) return;
+      const players = player ? [player] : world.getAllPlayers();
+      if (!players) return;
+      for (const player of players) {
+        try {
+          if (player && typeof player.sendMessage === "function") {
+            player.sendMessage("§f" + text);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  function hasInsightGear(player) {
+    return player && (isHoldingLens(player) || isWearingGoggles(player));
+  }
+
+  function emitPlacementDiagnostic(block, player) {
+    try {
+      if (!placementDiagnosticsEnabled || !block || !linkGraph) return;
+      if (!isPrismBlock(block)) return;
+      if (!player || !hasInsightGear(player)) return;
+      const dimId = block.dimension?.id;
+      const loc = block.location;
+      if (!dimId || !loc) return;
+      const rawKey = prismKeyFromBlock(block) || key(dimId, loc.x, loc.y, loc.z);
+      const prismKey = canonicalizePrismKey(rawKey);
+      if (!prismKey) return;
+      const playerId = player?.id;
+      if (playerId) {
+        const lastKey = lastPlacementKeyByPlayer.get(playerId);
+        if (lastKey === prismKey) return;
+        lastPlacementKeyByPlayer.set(playerId, prismKey);
+      }
+      const neighbors = linkGraph.getNeighbors?.(prismKey) || [];
+      const stats =
+        typeof linkGraph.getGraphStats === "function" ? linkGraph.getGraphStats() : null;
+      const registered =
+        typeof linkGraph.hasNode === "function"
+          ? linkGraph.hasNode(prismKey)
+          : neighbors.length > 0;
+      const dimShort =
+        typeof dimId === "string" ? dimId.split(":").pop() || dimId : dimId || "unknown";
+      const roundedPos = `${Math.floor(loc.x)},${Math.floor(loc.y)},${Math.floor(loc.z)}`;
+      const messageParts = [
+        `[Prism] dim=${dimShort} pos=${roundedPos}`,
+        `key=${prismKey}`,
+        `neighbors=${neighbors.length}`,
+        `registered=${registered ? "Y" : "N"}`,
+      ];
+      if (stats) {
+        messageParts.push(`graph prisms=${stats.prisms} edges=${stats.edges}`);
+      }
+      if (!registered) {
+        const sampleKeys =
+          typeof linkGraph.getGraphSampleKeys === "function"
+            ? linkGraph.getGraphSampleKeys(3)
+            : [];
+        if (Array.isArray(sampleKeys) && sampleKeys.length > 0) {
+          messageParts.push(`sampleKeys=${sampleKeys.join(",")}`);
+        }
+      }
+      sendPlacementChat(messageParts.join(" | "), player);
+    } catch {}
+  }
 
   function invalidateBlockSafe(dim, loc) {
     try {
@@ -58,6 +141,10 @@ export function subscribeTransferDirtyEvents(deps) {
         try {
           const block = ev?.block;
           if (!block) return;
+
+          if (isPrismBlock(block)) {
+            emitPlacementDiagnostic(block, ev?.player);
+          }
 
           if (!isContainerish(block)) return;
 
@@ -102,6 +189,10 @@ export function subscribeTransferDirtyEvents(deps) {
         try {
           const block = ev?.block;
           if (!block) return;
+
+          if (isPrismBlock(block)) {
+            emitPlacementDiagnostic(block, ev?.player);
+          }
 
           if (!isContainerish(block)) return;
 

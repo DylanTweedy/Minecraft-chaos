@@ -4,6 +4,10 @@ import { createGetFilterForBlock } from "../helpers/filters.js";
 import { createDropItemAt } from "../helpers/items.js";
 import { createResolvePrismKeysFromWorld } from "../helpers/prismKeys.js";
 import { noteGlobalPathfind, noteGlobalPerf, noteWatchdog } from "../../../../../core/insight/transferStats.js";
+import { emitTrace } from "../../../../../core/insight/trace.js";
+import { findDropLocation } from "../../pathfinding/path.js";
+import { createHybridScheduler } from "../hybrid/scheduler.js";
+import { createHybridArrivalHandler } from "../hybrid/arrival.js";
 export function initManagers(runtime) {
   const {
     core,
@@ -134,6 +138,7 @@ export function initManagers(runtime) {
     createProcessInputQueuesPhase,
     createPersistAndReportPhase,
     createScanTransfersPhase,
+    createHybridTransfersPhase,
     createTickGuardsPhase,
   } = phases || {};
 
@@ -147,6 +152,7 @@ export function initManagers(runtime) {
     isFurnaceBlock,
     tryInsertAmountForContainer,
     tryInsertIntoInventories,
+    tryInsertAmount,
     getTotalCountForType,
     getRandomItemFromInventories,
     findInputSlotForContainer,
@@ -351,6 +357,24 @@ export function initManagers(runtime) {
     return cacheManager.resolveBlockInfoCached(inputKey);
   }
 
+  const dropItemAt = createDropItemAt({
+    findDropLocation,
+  });
+
+  const hybridPendingCooldowns = new Map();
+  const hybridScheduler = createHybridScheduler(cfg);
+  const hybridArrivalHandler = createHybridArrivalHandler({
+    cfg,
+    cacheManager,
+    resolveBlockInfo,
+    dropItemAt,
+    getFilterForBlock,
+    getFilterSet,
+    pendingCooldowns: hybridPendingCooldowns,
+    noteOutputTransfer,
+    emitTrace,
+  });
+
   const markAdjacentPrismsDirty =
     (typeof makeMarkAdjacentPrismsDirty === "function")
       ? makeMarkAdjacentPrismsDirty({
@@ -359,10 +383,6 @@ export function initManagers(runtime) {
           cacheManager,
         })
       : () => {};
-
-  const dropItemAt = createDropItemAt({
-    findDropLocation,
-  });
 
   const resolvePrismKeysFromWorld = createResolvePrismKeysFromWorld({
     prismRegistry,
@@ -623,6 +643,7 @@ export function initManagers(runtime) {
         debugState,
         linkGraph,
         noteOutputTransfer,
+        hybridArrivalHandler,
         resolveContainerInfo: resolveContainerInfoBound,
       });
     }
@@ -922,6 +943,32 @@ export function initManagers(runtime) {
     noteGlobalPerf,
   });
 
+  const hybridTransfersPhase = createHybridTransfersPhase({
+    inflightProcessorManager,
+    inflight,
+    fluxFxInflight,
+    cfg,
+    cacheManager,
+    linkGraph,
+    getPrismKeys,
+    resolveBlockInfo,
+    getFilterForBlock,
+    getFilterSet,
+    getAllAdjacentInventories,
+    getRandomItemFromInventories,
+    decrementInputSlotSafe,
+    tryInsertAmount,
+    dropItemAt,
+    pendingCooldowns: hybridPendingCooldowns,
+    scheduler: hybridScheduler,
+    emitTrace,
+    debugEnabled,
+    debugState,
+    getNowTick,
+    setInflightDirty,
+    setInflightStepDirty,
+  });
+
   const tickGuardsPhase = createTickGuardsPhase({
     getNowTick,
     getLastTickEndTime: () => lastTickEndTime,
@@ -1057,6 +1104,7 @@ export function initManagers(runtime) {
     processQueuesPhase,
     updateVirtualStatePhase,
     processInputQueuesPhase,
+    hybridTransfersPhase,
     persistAndReportPhase,
     scanTransfersPhase,
     tickGuardsPhase,
