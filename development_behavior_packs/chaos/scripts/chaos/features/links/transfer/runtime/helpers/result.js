@@ -9,14 +9,17 @@ export function fail(reason = "fail") {
 }
 
 export function phaseStep(ctx, message, opts = {}) {
-  const send = ctx?.sendDiagnosticMessage;
-  if (typeof send !== "function") return;
+  const emit = ctx?.emitTrace;
+  if (typeof emit !== "function") return;
 
   const maxTick = opts.maxTick ?? 3;
   const nowTick = ctx?.nowTick | 0;
   if (maxTick >= 0 && nowTick > maxTick) return;
 
   const prefix = opts.prefix || "[Phase]";
-  send(`${prefix} ${String(message ?? "")}`, "transfer");
+  emit(null, "transfer", {
+    text: `${prefix} ${String(message ?? "")}`,
+    category: "transfer",
+  });
 }
 

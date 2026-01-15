@@ -32,9 +32,10 @@ export function createInputQueuesManager(cfg, deps) {
    * @property {number} totalAmount - Original stack size
    * @property {number} remainingAmount - Amount left to transfer
    * @property {string|null} lastDestination - Last destination used (for route reuse)
-   * @property {Array|null} cachedRoute - Cached path (if available)
-   * @property {number} lastValidatedTick - Last tick this entry was validated
-   * @property {number} validationInterval - How often to validate (default: 20 ticks)
+ * @property {Array|null} cachedRoute - Cached path (if available)
+ * @property {number} lastValidatedTick - Last tick this entry was validated
+ * @property {number} validationInterval - How often to validate (default: 20 ticks)
+  * @property {any|null} metadata - Optional metadata provided during enqueue
    */
 
   /**
@@ -42,8 +43,14 @@ export function createInputQueuesManager(cfg, deps) {
    * @param {string} prismKey - Prism key
    * @param {Array} itemSources - Array of { container, slot, stack, inventoryIndex }
    * @param {Map} routesByType - Optional: Map<typeId, route> for cached routes
+   * @param {Map} entryMetaByType - Optional metadata added to each queue entry per item type
    */
-  function enqueueInputStacks(prismKey, itemSources, routesByType = null) {
+  function enqueueInputStacks(
+    prismKey,
+    itemSources,
+    routesByType = null,
+    entryMetaByType = null
+  ) {
     if (!prismKey || !Array.isArray(itemSources) || itemSources.length === 0) return;
 
     const queue = inputQueues.get(prismKey) || [];
@@ -69,15 +76,18 @@ export function createInputQueuesManager(cfg, deps) {
       const existingEntry = existingEntriesByType.get(stack.typeId);
       if (existingEntry) {
         // Entry exists for this type - update if same container/slot, otherwise skip (avoid duplicates)
-        if (existingEntry.containerKey === containerKey && existingEntry.slot === slot) {
-          // Same container and slot - update remaining amount to reflect current stack size
-          existingEntry.remainingAmount = stack.amount;
-          existingEntry.totalAmount = stack.amount;
-          // Update route if provided
-          if (routesByType && routesByType.has(stack.typeId)) {
-            existingEntry.cachedRoute = routesByType.get(stack.typeId);
-          }
+      if (existingEntry.containerKey === containerKey && existingEntry.slot === slot) {
+        // Same container and slot - update remaining amount to reflect current stack size
+        existingEntry.remainingAmount = stack.amount;
+        existingEntry.totalAmount = stack.amount;
+        // Update route if provided
+        if (routesByType && routesByType.has(stack.typeId)) {
+          existingEntry.cachedRoute = routesByType.get(stack.typeId);
         }
+        if (entryMetaByType && entryMetaByType.has(stack.typeId)) {
+          existingEntry.metadata = entryMetaByType.get(stack.typeId);
+        }
+      }
         // Skip creating duplicate entry (but existing entry was updated above)
         continue;
       }
@@ -93,10 +103,10 @@ export function createInputQueuesManager(cfg, deps) {
         cachedRoute: routesByType?.get(stack.typeId) || null,
         lastValidatedTick: 0,
         validationInterval: DEFAULT_VALIDATION_INTERVAL,
+        metadata: entryMetaByType?.get(stack.typeId) || null,
       };
 
       queue.push(entry);
-      existingTypes.add(stack.typeId);
     }
 
     if (queue.length > 0) {

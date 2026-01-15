@@ -1,8 +1,8 @@
 // scripts/chaos/core/scriptLoader.js
 // Tracks script loading status and sends messages to players
 
-import { hasInsight } from "./debugGroups.js";
-import { isWearingGoggles } from "../items/insightGoggles.js";
+import { isInsightActive } from "./insight/state.js";
+import { emitTrace } from "./insight/trace.js";
 
 // Script loading status tracking
 const scriptStatus = {
@@ -54,20 +54,23 @@ export function getLoadingStatus() {
 }
 
 /**
- * Send loading status message to a player (only if wearing goggles or has debug groups)
+ * Send loading status message to a player (only if Insight is active)
  * Returns true if message was sent, false otherwise
  */
 function sendStatusToPlayer(player) {
   try {
     if (!player || !player.isValid()) return false;
     
-    // Check if player has lens or goggles (basic debug visibility)
-    if (!hasInsight(player)) return false;
+    if (!isInsightActive(player)) return false;
     
     const status = getLoadingStatus();
     const message = `§7[Chaos] Scripts loaded: §f${status.loaded}§7 / §f${status.total}§7 (${status.percentage}%)`;
     
-    player.sendMessage(message);
+    emitTrace(player, "system", {
+      text: message,
+      dedupeKey: "script-loader-status",
+      category: "system",
+    });
     return true;
   } catch {
     // Ignore errors
@@ -128,7 +131,7 @@ export function startPlayerJoinNotifier() {
           
           // Check if player has lens or goggles (basic debug visibility)
           // Give it a few ticks for the observation system to update cache
-          if (!hasInsight(player)) continue;
+          if (!isInsightActive(player)) continue;
           
           // Mark as notified
           notifiedPlayers.add(playerId);

@@ -6,8 +6,13 @@ import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 import { getCrystalState } from "../crystallizer.js";
-import { hasInsight, hasExtendedDebug } from "../core/debugGroups.js";
+import { isInsightActive, isInsightEnhanced } from "../core/insight/state.js";
 import { isPrismId } from "../features/links/transfer/config.js";
+import {
+  canonicalizePrismKey,
+  key as makePrismKey,
+  parseKey as parsePrismKey,
+} from "../features/links/transfer/keys.js";
 
 const WAND_ID = "chaos:wand";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
@@ -66,6 +71,17 @@ function safeJsonParse(s) {
   }
 }
 
+function normalizeCounts(obj) {
+  if (!obj || typeof obj !== "object") return {};
+  const normalized = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const canonical = canonicalizePrismKey(key);
+    if (!canonical) continue;
+    normalized[canonical] = value;
+  }
+  return normalized;
+}
+
 // ---- Counts cache helpers ----
 function countsCacheFresh() {
   return (_tick - _countsTick) <= COUNTS_CACHE_TICKS;
@@ -95,7 +111,7 @@ function refreshCountsCacheIfNeeded() {
   // Prism
   try {
     const parsed = safeJsonParse(world.getDynamicProperty(DP_PRISM_LEVELS));
-    _prismCounts = (parsed && typeof parsed === "object") ? parsed : {};
+    _prismCounts = normalizeCounts(parsed);
   } catch {
     _prismCounts = {};
   }
@@ -152,14 +168,9 @@ function getTargetBlock(player) {
 
 function showWandStats(player) {
   // Gate with lens/goggles visibility - basic debug visibility
-  if (!hasInsight(player)) return;
-
-  // Optional: extended debug groups
-  const hasExtended =
-    hasExtendedDebug(player, "vision") ||
-    hasExtendedDebug(player, "prism") ||
-    hasExtendedDebug(player, "transfer");
-  void hasExtended; // (kept: you may want to branch messaging later)
+  if (!isInsightActive(player)) return;
+  const enhanced = isInsightEnhanced(player);
+  void enhanced;
 
   const last = _lastActionBarByPlayer.get(player.id) ?? -9999;
   if ((_tick - last) < ACTIONBAR_TICKS) return;
@@ -173,7 +184,8 @@ function showWandStats(player) {
   if (!isPrism && id !== CRYSTALLIZER_ID) return;
 
   const loc = block.location;
-  const k = `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`;
+  const k = makePrismKey(block.dimension?.id, loc.x, loc.y, loc.z);
+  if (!k) return;
 
   if (id === CRYSTALLIZER_ID) {
     const state = getCrystalState(k);
@@ -204,30 +216,6 @@ function showWandStats(player) {
   } catch {}
 }
 
-function parseKey(key) {
-  // Expected: "dimId|x,y,z"
-  try {
-    const bar = key.indexOf("|");
-    if (bar === -1) return null;
-
-    const dimId = key.slice(0, bar);
-    const rest = key.slice(bar + 1);
-
-    const parts = rest.split(",");
-    if (parts.length !== 3) return null;
-
-    const x = Number(parts[0]);
-    const y = Number(parts[1]);
-    const z = Number(parts[2]);
-
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
-
-    return { dimId, pos: { x, y, z } };
-  } catch {
-    return null;
-  }
-}
-
 function computeSignature(pairsMap) {
   // cheap change detector
   let inputs = 0;
@@ -247,25 +235,27 @@ function rebuildFlatLinks() {
 
   const next = [];
 
-  for (const [inKey, outSet] of pairsMap) {
-    if (!outSet || outSet.size === 0) continue;
+    for (const [inKey, outSet] of pairsMap) {
+      if (!outSet || outSet.size === 0) continue;
 
-    const inParsed = parseKey(inKey);
-    if (!inParsed) continue;
+      const inParsed = parsePrismKey(inKey);
+      if (!inParsed) continue;
 
-    for (const outKey of outSet) {
-      const outParsed = parseKey(outKey);
-      if (!outParsed) continue;
+      const inPos = { x: inParsed.x, y: inParsed.y, z: inParsed.z };
 
-      if (outParsed.dimId !== inParsed.dimId) continue;
+      for (const outKey of outSet) {
+        const outParsed = parsePrismKey(outKey);
+        if (!outParsed) continue;
 
-      next.push({
-        dimId: inParsed.dimId,
-        inPos: inParsed.pos,
-        outPos: outParsed.pos,
-      });
+        if (outParsed.dimId !== inParsed.dimId) continue;
+
+        next.push({
+          dimId: inParsed.dimId,
+          inPos,
+          outPos: { x: outParsed.x, y: outParsed.y, z: outParsed.z },
+        });
+      }
     }
-  }
 
   _flatLinks = next;
   _cacheSig = sig;
@@ -287,7 +277,7 @@ export function startLinkVision() {
     if (FX.debugSpawnBeamParticles && (_tick % 20) === 0) {
       for (const player of world.getAllPlayers()) {
         if (!isHoldingWand(player)) continue;
-        if (!hasInsight(player)) continue;
+        if (!isInsightActive(player)) continue;
 
         const loc = { x: player.location.x, y: player.location.y + 1.2, z: player.location.z };
         const molang = new MolangVariableMap();
@@ -334,7 +324,7 @@ export function startLinkVision() {
 
     for (const player of world.getAllPlayers()) {
       if (!isHoldingWand(player)) continue;
-      if (!hasInsight(player)) continue;
+      if (!isInsightActive(player)) continue;
 
       showWandStats(player);
 

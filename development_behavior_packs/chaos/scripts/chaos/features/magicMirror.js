@@ -36,80 +36,203 @@ function isSolidBlock(block) {
 function findSafeSpawnHeight(dimension, x, z, startY = 64) {
   try {
     if (!dimension) return startY + 0.5;
-    
+
     const floorX = Math.floor(x);
     const floorZ = Math.floor(z);
     const floorStartY = Math.floor(startY);
-    
-    // Always search all the way down from startY to find actual ground
-    // Don't limit the search distance - scan from startY down to -64 (bedrock level)
+
     const minY = -64;
-    
+
     for (let y = floorStartY; y >= minY; y--) {
       try {
         const blockLoc = { x: floorX, y: y, z: floorZ };
         const blockAboveLoc = { x: floorX, y: y + 1, z: floorZ };
-        
+
         const block = dimension.getBlock(blockLoc);
         const blockAbove = dimension.getBlock(blockAboveLoc);
-        
+
         if (!block || !blockAbove) continue;
-        
-        // Found solid ground with air above - spawn on top
+
         if (!isAirBlock(block) && !isLiquidBlock(block) && isAirBlock(blockAbove)) {
-          return y + 1.5; // Stand on top of the block
+          return y + 1.5;
         }
       } catch {
         continue;
       }
     }
-    
-    // If no safe ground found all the way down, return startY with small offset (fallback)
+
     return startY + 0.5;
   } catch {
     return startY + 0.5;
   }
 }
 
-function playTeleportSound(entity, location) {
+function tryPlaySoundAt(dimension, entity, soundId, location) {
   try {
-    if (!entity || !location) return;
-    
-    // Try multiple sound IDs - ender pearl teleport sounds
-    // Based on research: entity.player.teleport (ender pearl teleport), mob.endermen.portal (enderman teleport)
-    const dimension = entity.dimension;
-    
-    // Try dimension.playSound first
     if (dimension && typeof dimension.playSound === "function") {
       try {
-        dimension.playSound("mob.endermen.portal", location);
+        dimension.playSound(soundId, location);
+        return true;
       } catch {
-        try {
-          dimension.playSound("entity.player.teleport", location);
-        } catch {
-          try {
-            dimension.playSound("random.orb", location);
-          } catch {
-            // ignore
-          }
-        }
+        // ignore
       }
     }
-    
-    // Also try player.playSound as backup (for players)
-    if (entity.typeId === "minecraft:player" && entity.playSound && typeof entity.playSound === "function") {
+
+    // Older/alternate signature: entity.playSound(sound, { location })
+    if (entity?.typeId === "minecraft:player" && entity.playSound && typeof entity.playSound === "function") {
       try {
-        entity.playSound("mob.endermen.portal", { location });
+        entity.playSound(soundId, { location });
+        return true;
       } catch {
-        try {
-          entity.playSound("entity.player.teleport", { location });
-        } catch {
-          // ignore
-        }
+        // ignore
       }
     }
   } catch {
     // ignore
+  }
+  return false;
+}
+
+// Player-local sound: ALWAYS heard by that player, regardless of distance.
+// Use this for "arrival" so you always hear the teleport even if world spawn is far away.
+function tryPlaySoundToPlayer(player, soundId, volume = 1, pitch = 1) {
+  try {
+    if (!player || player.typeId !== "minecraft:player") return false;
+    if (typeof player.playSound !== "function") return false;
+    player.playSound(soundId, { volume, pitch });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function playTeleportStartSound(entity, location) {
+  try {
+    if (!entity || !location) return;
+    const dimension = entity.dimension;
+
+    // "cast/launch" vibe first, then fall back to teleport-ish sounds
+    const candidates = [
+      "entity.ender_pearl.throw",
+      "random.orb",
+      "entity.player.teleport",
+      "mob.endermen.portal",
+    ];
+
+    for (const id of candidates) {
+      if (tryPlaySoundAt(dimension, entity, id, location)) return;
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function playTeleportEndSound(entity, location) {
+  try {
+    if (!entity || !location) return;
+    const dimension = entity.dimension;
+
+    const candidates = ["mob.endermen.portal", "entity.player.teleport", "random.orb"];
+
+    // Prefer player-local sound so the teleporter ALWAYS hears it
+    if (entity.typeId === "minecraft:player") {
+      for (const id of candidates) {
+        if (tryPlaySoundToPlayer(entity, id, 1, 1)) return;
+      }
+    }
+
+    // Also play positional sound at the destination for nearby players (nice multiplayer vibe)
+    for (const id of candidates) {
+      if (tryPlaySoundAt(dimension, entity, id, location)) return;
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function playTeleportParticlesAtDim(dim, location) {
+  try {
+    if (!dim || typeof dim.spawnParticle !== "function") return;
+
+    // Some vanilla particles are flaky; these tend to be reliable.
+    const candidates = [
+      "minecraft:basic_smoke_particle",
+      "minecraft:enchanting_table_particle",
+      "minecraft:totem_particle",
+      // Bonus: looks great when it works, harmless when it doesn't
+      "minecraft:portal",
+    ];
+
+    for (const id of candidates) {
+      try {
+        dim.spawnParticle(id, location);
+      } catch {
+        // ignore missing/broken particle IDs
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function playTeleportParticles(entity, location) {
+  try {
+    if (!entity || !location) return;
+    const dim = entity.dimension;
+    playTeleportParticlesAtDim(dim, location);
+  } catch {
+    // ignore
+  }
+}
+
+function playTeleportFXStart(entity, location) {
+  playTeleportStartSound(entity, location);
+  playTeleportParticles(entity, location);
+}
+
+function playTeleportFXEnd(entity, location) {
+  playTeleportEndSound(entity, location);
+  playTeleportParticles(entity, location);
+}
+
+// Important: after teleport(), run "arrival" FX on next tick using the entity's real location + dimension.
+// This avoids the one-tick desync where FX can fire in the wrong dim or before the client is ready.
+function scheduleArrivalFX(entity, deps, fallbackLoc) {
+  try {
+    const system = deps?.system;
+    if (system && typeof system.runTimeout === "function") {
+      system.runTimeout(() => {
+        try {
+          const dim = entity?.dimension;
+          const loc = entity?.location || fallbackLoc;
+          if (!dim || !loc) return;
+
+          // sound + particles at the *actual* post-teleport position
+          playTeleportEndSound(entity, loc);
+          playTeleportParticlesAtDim(dim, loc);
+
+          // optional: second shimmer pulse (feels more "mirror")
+          system.runTimeout(() => {
+            try {
+              const dim2 = entity?.dimension;
+              const loc2 = entity?.location || loc;
+              if (!dim2 || !loc2) return;
+              playTeleportParticlesAtDim(dim2, loc2);
+            } catch {}
+          }, 2);
+        } catch {
+          // ignore
+        }
+      }, 1);
+      return true;
+    }
+
+    // Fallback: immediate (less reliable, but better than nothing)
+    if (fallbackLoc) playTeleportFXEnd(entity, fallbackLoc);
+    return false;
+  } catch {
+    if (fallbackLoc) playTeleportFXEnd(entity, fallbackLoc);
+    return false;
   }
 }
 
@@ -119,23 +242,18 @@ export function teleportToSpawn(entity, deps) {
 
     let spawnLocation = null;
     let spawnDimension = null;
-    
+
     // Try to get player spawn point (bed/respawn anchor/lodestone)
     if (typeof entity.getSpawnPoint === "function") {
       try {
         spawnLocation = entity.getSpawnPoint();
         if (spawnLocation) {
           spawnDimension = entity.dimension;
-          
-          // Bed/respawn anchor/lodestone spawn location - always find safe ground level
-          // getSpawnPoint() returns spawn location - scan down from there to find actual ground
+
           if (spawnLocation.y >= 32767 || spawnLocation.y < 0) {
-            // Invalid Y - find safe height from default
             const safeY = findSafeSpawnHeight(spawnDimension, spawnLocation.x, spawnLocation.z, 64);
             spawnLocation.y = safeY;
           } else {
-            // Valid Y from getSpawnPoint - scan all the way down from this Y to find ground
-            // This handles cases where bed is high in sky - we'll find the actual ground below
             const spawnY = Math.floor(spawnLocation.y);
             const safeY = findSafeSpawnHeight(spawnDimension, spawnLocation.x, spawnLocation.z, spawnY);
             spawnLocation.y = safeY;
@@ -145,17 +263,22 @@ export function teleportToSpawn(entity, deps) {
         // ignore
       }
     }
-    
+
     // For non-players, use player's spawn if provided
     if (!spawnLocation && deps?.playerSpawnLocation) {
-      spawnLocation = { 
-        x: deps.playerSpawnLocation.x, 
-        y: deps.playerSpawnLocation.y, 
-        z: deps.playerSpawnLocation.z 
+      spawnLocation = {
+        x: deps.playerSpawnLocation.x,
+        y: deps.playerSpawnLocation.y,
+        z: deps.playerSpawnLocation.z,
       };
       spawnDimension = deps.world?.getDimension("minecraft:overworld");
       if (spawnLocation && spawnDimension) {
-        const safeY = findSafeSpawnHeight(spawnDimension, spawnLocation.x, spawnLocation.z, Math.floor(spawnLocation.y || 64));
+        const safeY = findSafeSpawnHeight(
+          spawnDimension,
+          spawnLocation.x,
+          spawnLocation.z,
+          Math.floor(spawnLocation.y || 64)
+        );
         spawnLocation.y = safeY;
       }
     }
@@ -165,23 +288,18 @@ export function teleportToSpawn(entity, deps) {
       try {
         const world = deps?.world || (entity.dimension?.world);
         if (world && typeof world.getDefaultSpawnLocation === "function") {
-          // Get world's default spawn location
           const defaultSpawn = world.getDefaultSpawnLocation();
           spawnDimension = world.getDimension("minecraft:overworld");
-          
-          // Fix Y coordinate if it's the invalid 32767 value or negative
+
           if (defaultSpawn && spawnDimension) {
             let startY = defaultSpawn.y;
-            if (startY >= 32767 || startY < 0) {
-              startY = 64; // Default height
-            }
-            
-            // Find safe ground level
+            if (startY >= 32767 || startY < 0) startY = 64;
+
             const safeY = findSafeSpawnHeight(spawnDimension, defaultSpawn.x, defaultSpawn.z, Math.floor(startY));
             spawnLocation = {
               x: defaultSpawn.x,
               y: safeY,
-              z: defaultSpawn.z
+              z: defaultSpawn.z,
             };
           }
         }
@@ -191,26 +309,22 @@ export function teleportToSpawn(entity, deps) {
     }
 
     if (!spawnLocation) {
-      if (entity.sendMessage) {
-        entity.sendMessage("§c[Chaos] No spawn point available.");
-      }
+      if (entity.sendMessage) entity.sendMessage("§c[Chaos] No spawn point available.");
       return false;
     }
 
-    // Play teleport sound at origin location
+    // FX at origin (positional is fine here — you're definitely nearby)
     const originLoc = entity.location;
-    if (originLoc) {
-      playTeleportSound(entity, originLoc);
-    }
+    if (originLoc) playTeleportFXStart(entity, originLoc);
 
-    // Teleport to spawn location (in correct dimension if different)
+    // Teleport
     entity.teleport(spawnLocation, {
       dimension: spawnDimension || entity.dimension,
       keepVelocity: false,
     });
 
-    // Play teleport sound at destination location
-    playTeleportSound(entity, spawnLocation);
+    // Arrival FX on next tick at actual location/dimension
+    scheduleArrivalFX(entity, deps, spawnLocation);
 
     return true;
   } catch {
@@ -242,26 +356,18 @@ export function teleportUpward(player, deps) {
         const blockAbove = dimension.getBlock(blockAboveLoc);
 
         if (blockBelow && blockAbove) {
-          if (
-            isSolidBlock(blockBelow) &&
-            !isLiquidBlock(blockBelow) &&
-            isAirBlock(blockAbove)
-          ) {
+          if (isSolidBlock(blockBelow) && !isLiquidBlock(blockBelow) && isAirBlock(blockAbove)) {
             const teleportLoc = {
               x: x + 0.5,
               y: y + 1,
               z: z + 0.5,
             };
 
-            // Play teleport sound at origin location
-            playTeleportSound(player, startLoc);
+            playTeleportFXStart(player, startLoc);
 
-            player.teleport(teleportLoc, {
-              keepVelocity: false,
-            });
+            player.teleport(teleportLoc, { keepVelocity: false });
 
-            // Play teleport sound at destination location
-            playTeleportSound(player, teleportLoc);
+            scheduleArrivalFX(player, deps, teleportLoc);
 
             return true;
           }
@@ -271,9 +377,7 @@ export function teleportUpward(player, deps) {
       }
     }
 
-    if (player.sendMessage) {
-      player.sendMessage("§c[Chaos] No safe location above.");
-    }
+    if (player.sendMessage) player.sendMessage("§c[Chaos] No safe location above.");
     return false;
   } catch {
     return false;
@@ -282,7 +386,7 @@ export function teleportUpward(player, deps) {
 
 export function handleMirrorUse(e, deps) {
   try {
-    const { MIRROR_ID, world } = deps;
+    const { MIRROR_ID } = deps;
 
     const player = e.source || e.player;
     if (!player || player.typeId !== "minecraft:player") return;
@@ -293,7 +397,6 @@ export function handleMirrorUse(e, deps) {
     const itemId = item.typeId;
     if (itemId !== MIRROR_ID) return;
 
-    // Check if crouching
     if (player.isSneaking) {
       teleportUpward(player, deps);
     } else {

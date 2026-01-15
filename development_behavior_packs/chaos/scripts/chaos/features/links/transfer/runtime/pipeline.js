@@ -1,4 +1,4 @@
-// scripts/chaos/features/links/transfer/runtime/pipeline.js
+﻿// scripts/chaos/features/links/transfer/runtime/pipeline.js
 
 export function createTransferPipeline(opts = {}) {
   const phases = Array.isArray(opts.phases) ? opts.phases : [];
@@ -38,17 +38,13 @@ export function createTransferPipeline(opts = {}) {
     if (fields?.errors) entry.errors += fields.errors;
   }
 
-  function shouldTrace(ctx, key) {
-    const traceKey = ctx?.traceKey;
-    if (!traceKey) return false;
-    return String(traceKey) === String(key);
-  }
 
   function trace(ctx, msg, key) {
-    if (!ctx || typeof ctx.sendDiagnosticMessage !== "function") return;
-    if (key != null && !shouldTrace(ctx, key)) return;
-    if (ctx.canTrace === false) return;
-    ctx.sendDiagnosticMessage(`¶õ7[Trace] ${String(msg || "")}`, "transfer");
+    if (!ctx || typeof ctx.emitTrace !== "function") return;
+    ctx.emitTrace(null, "transfer", {
+      text: `[Trace] ${String(msg || "")}`,
+      category: "transfer",
+    });
   }
 
   function runTick(ctx) {
@@ -80,8 +76,8 @@ export function createTransferPipeline(opts = {}) {
       phaseMetric(ctx, name, { ms: dt });
 
       const warnMs = phase.warnMs | 0;
-      if (warnMs > 0 && dt > warnMs && typeof ctx.sendDiagnosticMessage === "function") {
-        ctx.sendDiagnosticMessage(`¶õe[PERF] ${pipelineName}.${name}: ${dt}ms`, "transfer");
+      if (warnMs > 0 && dt > warnMs && typeof ctx.noteWatchdog === "function") {
+        ctx.noteWatchdog("PERF", `${pipelineName}.${name} ${dt}ms`, ctx?.nowTick | 0);
       }
 
       const hardStopMs = phase.hardStopMs | 0;

@@ -1,4 +1,4 @@
-﻿// scripts/chaos/features/links/transfer/runtime/bootstrap/startup.js
+// scripts/chaos/features/links/transfer/runtime/bootstrap/startup.js
 
 export function createTransferStartup(deps) {
   const {
@@ -20,6 +20,8 @@ export function createTransferStartup(deps) {
     loadPrismLevelsState,
     sendInitMessage,
     logError,
+    prismRegistry,
+    linkGraph,
   } = deps || {};
 
   function start() {
@@ -27,13 +29,13 @@ export function createTransferStartup(deps) {
     try {
       const hasLevels = !!levelsManager;
       const currentTickId = typeof getTickId === "function" ? getTickId() : null;
-      sendInitMessage("õb[Init] start() called - tickId=" + currentTickId + ", levelsManager=" + hasLevels);
+      sendInitMessage("§b[Init] start() called - tickId=" + currentTickId + ", levelsManager=" + hasLevels);
     } catch {}
 
     const currentTickId = typeof getTickId === "function" ? getTickId() : null;
     if (currentTickId !== null) {
       try {
-        sendInitMessage("õe[Init] Already started (tickId=" + currentTickId + ") - skipping");
+        sendInitMessage("§e[Init] Already started (tickId=" + currentTickId + ") - skipping");
       } catch {}
       return;
     }
@@ -44,7 +46,7 @@ export function createTransferStartup(deps) {
     }
 
     // INIT DEBUG: Loading persistence
-    sendInitMessage("õb[Init] Loading persistence (inflight, levels)...");
+    sendInitMessage("§b[Init] Loading persistence (inflight, levels)...");
 
     // Retry loading persistence with exponential backoff (for world load scenarios)
     const maxRetries = 3;
@@ -56,7 +58,7 @@ export function createTransferStartup(deps) {
         const attemptNum = retryIndex + 1;
         const maxAttempts = maxRetries + 1;
         const nameStr = String(name || "unknown");
-        sendInitMessage("õb[Init] Loading " + nameStr + " (attempt " + attemptNum + "/" + maxAttempts + ")...");
+        sendInitMessage("§b[Init] Loading " + nameStr + " (attempt " + attemptNum + "/" + maxAttempts + ")...");
       } catch {}
 
       try {
@@ -65,7 +67,7 @@ export function createTransferStartup(deps) {
         // INIT DEBUG: Success
         try {
           const nameStr = String(name || "unknown");
-          sendInitMessage("õa[Init] V " + nameStr + " loaded successfully");
+          sendInitMessage("§a[Init] V " + nameStr + " loaded successfully");
         } catch {}
       } catch (err) {
         if (retryIndex < maxRetries) {
@@ -75,7 +77,7 @@ export function createTransferStartup(deps) {
           try {
             const nameStr = String(name || "unknown");
             const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
-            sendInitMessage("õe[Init] " + nameStr + " failed (" + errMsg + "), retrying in " + delay + " ticks...");
+            sendInitMessage("§e[Init] " + nameStr + " failed (" + errMsg + "), retrying in " + delay + " ticks...");
           } catch {}
 
           // Retry after delay
@@ -102,7 +104,17 @@ export function createTransferStartup(deps) {
     attemptLoadWithRetry(() => loadPrismLevelsState(), "prism levels state");
 
     // INIT DEBUG: Persistence loaded, starting tick loop
-    sendInitMessage("õb[Init] Persistence loaded. Starting tick loop (runInterval)...");
+    sendInitMessage("§b[Init] Persistence loaded. Starting tick loop (runInterval)...");
+    try {
+      if (prismRegistry && typeof prismRegistry.markAllForValidation === "function") {
+        prismRegistry.markAllForValidation();
+      }
+      if (linkGraph && prismRegistry && typeof linkGraph.markNodeDirty === "function") {
+        const keys = prismRegistry.resolvePrismKeys?.() || [];
+        for (const k of keys) linkGraph.markNodeDirty(k);
+      }
+    } catch {}
+
     try {
       const newTickId = system.runInterval(onTick, 1);
       if (typeof setTickId === "function") {
@@ -114,7 +126,7 @@ export function createTransferStartup(deps) {
         const inflightLen = (inflight && inflight.length) ? inflight.length : 0;
         const fluxFxLen = (fluxFxInflight && fluxFxInflight.length) ? fluxFxInflight.length : 0;
         sendInitMessage(
-          "õa[Init] V Tick loop started! tickId=" +
+          "§a[Init] V Tick loop started! tickId=" +
             newTickId +
             ", inflight=" +
             inflightLen +
@@ -131,3 +143,4 @@ export function createTransferStartup(deps) {
 
   return { start };
 }
+

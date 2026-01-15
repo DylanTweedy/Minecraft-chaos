@@ -33,11 +33,12 @@ const FURNACE_SLOTS = {
   output: 2,
 };
 
-const DP_BEAMS = "chaos:beams_v0_json";
 const DP_TRANSFERS = "chaos:transfers_v0_json";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
 const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
+const DP_PRISMS_V0_JSON = "chaos:prisms_v0_json";
+const DP_LINKS_V0_JSON = "chaos:links_v0_json";
 
 // Path / routing
 const MAX_STEPS = MAX_BEAM_LEN * 12;
@@ -77,6 +78,14 @@ function clampPrismTier(tier) {
  */
 function isPrismId(typeId) {
   return PRISM_TIER_BY_ID.has(typeId);
+}
+
+const ENDPOINT_IDS = [
+  CRYSTALLIZER_ID,
+];
+
+function isEndpointId(typeId) {
+  return ENDPOINT_IDS.includes(typeId);
 }
 
 /**
@@ -146,6 +155,12 @@ const DEFAULTS = {
   orbLifetimeScale: 0.5,
 
   maxPrismsScannedPerTick: 8,
+  transferStrategy: "hybrid",
+  scanCandidateSlotsPerInventory: 18,
+  scanMaxItemTypesPerPrism: 6,
+  scanLockTtlTicks: 80,
+  scanDriftStickyDestTtlTicks: 40,
+  driftMaxTransferAmount: 4,
 
   debugTransferStats: true,
   debugTransferStatsIntervalTicks: 20,
@@ -165,6 +180,19 @@ const DEFAULTS = {
   // Legacy - remove once callers are gone
   perInputIntervalTicks: 10,
   maxInputsScannedPerTick: 8,
+
+  // Prism registry + link graph
+  prismSeedScanRadius: 32,
+  prismSeedScanBlocksPerTick: 200,
+  prismValidationBudgetPerTick: 32,
+  linkBuildTicks: 8,
+  linkRebuildBudgetPerTick: 8,
+  linkValidateBudgetPerTick: 16,
+
+  // Beam visuals + invalidation
+  beamBuildBlocksPerTick: 8,
+  beamCollapseBlocksPerTick: 8,
+  beamBreaksPerTick: 32,
 };
 
 export {
@@ -183,6 +211,8 @@ export {
   // IDs
   CRYSTALLIZER_ID,
   BEAM_ID,
+  ENDPOINT_IDS,
+  isEndpointId,
 
   // Furnace rules
   FURNACE_BLOCK_IDS,
@@ -190,11 +220,12 @@ export {
   FURNACE_SLOTS,
 
   // Persistence keys
-  DP_BEAMS,
   DP_TRANSFERS,
   DP_INPUT_LEVELS,
   DP_OUTPUT_LEVELS,
   DP_PRISM_LEVELS,
+  DP_PRISMS_V0_JSON,
+  DP_LINKS_V0_JSON,
 
   // Shared beam config re-export (optional, but keep for now to avoid churn)
   MAX_BEAM_LEN,

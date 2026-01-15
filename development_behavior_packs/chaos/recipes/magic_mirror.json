@@ -1,0 +1,29 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:recipe_shaped": {
+    "description": {
+      "identifier": "chaos:magic_mirror"
+    },
+    "tags": ["crafting_table"],
+    "pattern": [
+      "GEG",
+      "GDG",
+      " G "
+    ],
+    "key": {
+      "G": {
+        "item": "minecraft:glass_pane"
+      },
+      "E": {
+        "item": "minecraft:echo_shard"
+      },
+      "D": {
+        "item": "minecraft:diamond"
+      }
+    },
+    "result": {
+      "item": "chaos:magic_mirror",
+      "count": 1
+    }
+  }
+}

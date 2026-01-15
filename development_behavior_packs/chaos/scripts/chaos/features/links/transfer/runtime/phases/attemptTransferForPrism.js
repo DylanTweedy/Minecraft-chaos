@@ -55,13 +55,16 @@ function createAttemptTransferForPrismHandler(deps) {
     pickWeightedRandomWithBias,
     findOutputRouteFromNode,
     findCrystallizerRouteFromPrism,
-    getTraceKey,
-    isTracing,
     traceMarkDirty,
     traceClearDirty,
     traceNoteScan,
     traceNoteError,
     traceNoteQueueSize,
+    traceNotePathfind,
+    traceNoteNeighborInventories,
+    traceNoteVirtualCapacity,
+    traceNoteVirtualCapacityReason,
+    traceNoteTransferResult,
     traceNoteCooldown,
     tryGenerateFluxOnTransfer,
     tryRefineFluxInTransfer,
@@ -71,13 +74,8 @@ function createAttemptTransferForPrismHandler(deps) {
     getFluxValueForItem,
     fxFluxGenerate,
     queueFxParticle,
-    hasInsight,
-    hasExtendedDebug,
-    isHoldingLens,
-    isWearingGoggles,
     key,
     parseKey,
-    loadBeamsMap,
     getFilterSetForBlock,
     isPrismBlock,
     getPrismTier,
@@ -100,9 +98,6 @@ function createAttemptTransferForPrismHandler(deps) {
     saveOutputLevels,
     loadPrismLevels,
     savePrismLevels,
-    sendDiagnosticMessage,
-    sendInitMessage,
-    logError,
     debugEnabled,
     debugState,
     inputBackoff,
@@ -131,23 +126,267 @@ function createAttemptTransferForPrismHandler(deps) {
     markAdjacentPrismsDirty,
     fxManager,
     refinementManager,
+    noteGlobalPathfind,
   } = deps || {};
+
+  function summarizeNeighborInventoryVc(inventories) {
+    const fallbackTypeId =
+      Array.isArray(inventories) && inventories.length > 0
+        ? inventories[0]?.block?.typeId || null
+        : null;
+    const defaultEvidence = {
+      neighborTypeId: fallbackTypeId,
+    };
+    if (!Array.isArray(inventories) || inventories.length === 0) {
+      return { vc: 0, reason: "vc_container_missing", evidence: defaultEvidence };
+    }
+    for (const inv of inventories) {
+      const container = inv?.container;
+      const block = inv?.block;
+      const neighborTypeId = block?.typeId || fallbackTypeId || null;
+      if (!container) continue;
+      const size = Number(container.size) || 0;
+      let emptySlots = 0;
+      let nonEmptySlots = 0;
+      for (let slot = 0; slot < size; slot++) {
+        const item = container.getItem(slot);
+        if (!item || item.amount <= 0) {
+          emptySlots++;
+        } else {
+          nonEmptySlots++;
+        }
+      }
+      const evidence = {
+        neighborTypeId,
+        size,
+        emptySlots,
+        nonEmptySlots,
+      };
+      if (size <= 0) {
+        return { vc: 0, reason: "vc_no_slots", evidence };
+      }
+      if (emptySlots === 0 && nonEmptySlots === 0) {
+        return { vc: 0, reason: "vc_no_items", evidence };
+      }
+      return { vc: 1, reason: null, evidence };
+    }
+    return { vc: 0, reason: "vc_container_missing", evidence: defaultEvidence };
+  }
+
+  const driftMemory = new Map();
+  const scanCandidateSlots = Math.max(1, Number(cfg?.scanCandidateSlotsPerInventory) || 18);
+  const scanMaxItemTypes = Math.max(1, Number(cfg?.scanMaxItemTypesPerPrism) || 6);
+  const lockTtlTicks = Math.max(1, Number(cfg?.scanLockTtlTicks) || 80);
+  const driftStickyTtlTicks = Math.max(1, Number(cfg?.scanDriftStickyDestTtlTicks) || 40);
+
+  function getInventoryContainerKey(inv) {
+    if (!inv) return null;
+    const reference = inv.block || inv.entity;
+    if (!reference) return null;
+    if (typeof getContainerKey === "function") {
+      return getContainerKey(reference);
+    }
+    return null;
+  }
+
+  function collectSourceCandidates(inventories, filterSet, queuedTypes) {
+    const candidates = new Map();
+    let sawAny = false;
+    let sawFiltered = false;
+    const slotLimit = Math.max(1, scanCandidateSlots);
+    const typeLimit = Math.max(1, scanMaxItemTypes);
+    for (let invIndex = 0; invIndex < (inventories?.length || 0); invIndex++) {
+      const inv = inventories[invIndex];
+      if (!inv || !inv.container) continue;
+      const size = Math.max(0, Number(inv.container.size) || 0);
+      const limit = Math.min(size, slotLimit);
+      for (let slot = 0; slot < limit; slot++) {
+        const stack = inv.container.getItem(slot);
+        if (!stack || stack.amount <= 0) continue;
+        sawAny = true;
+        const typeId = stack.typeId;
+        if (!typeId) continue;
+        if (filterSet && filterSet.has(typeId)) {
+          sawFiltered = true;
+          continue;
+        }
+        if (queuedTypes?.has(typeId)) continue;
+        if (candidates.has(typeId)) continue;
+        candidates.set(typeId, {
+          container: inv.container,
+          slot,
+          stack,
+          inventoryIndex: invIndex,
+          entity: inv.entity,
+          block: inv.block,
+        });
+        if (candidates.size >= typeLimit) {
+          return { candidates, sawAny, sawFiltered };
+        }
+      }
+    }
+    return { candidates, sawAny, sawFiltered };
+  }
+
+  function cleanupDriftMemory(nowTickLocal) {
+    if (!Number.isFinite(nowTickLocal)) return;
+    for (const [prism, map] of driftMemory.entries()) {
+      for (const [typeId, info] of map.entries()) {
+        if (!info || info.expiresAt <= nowTickLocal) {
+          map.delete(typeId);
+        }
+      }
+      if (map.size === 0) {
+        driftMemory.delete(prism);
+      }
+    }
+  }
+
+  function getDriftDestination(prismKeyLocal, typeId, nowTickLocal) {
+    if (!prismKeyLocal || !typeId) return null;
+    const map = driftMemory.get(prismKeyLocal);
+    if (!map) return null;
+    const info = map.get(typeId);
+    if (!info) return null;
+    if (info.expiresAt <= nowTickLocal) {
+      map.delete(typeId);
+      if (map.size === 0) driftMemory.delete(prismKeyLocal);
+      return null;
+    }
+    return info.destKey || null;
+  }
+
+  function setDriftDestination(prismKeyLocal, typeId, destKey, nowTickLocal) {
+    if (!prismKeyLocal || !typeId || !destKey) return;
+    const map = driftMemory.get(prismKeyLocal) || new Map();
+    map.set(typeId, {
+      destKey,
+      expiresAt: nowTickLocal + driftStickyTtlTicks,
+    });
+    driftMemory.set(prismKeyLocal, map);
+  }
+
+  function computeDestinationCapacity(targetInventories, typeId, fullContainers) {
+    if (!Array.isArray(targetInventories) || targetInventories.length === 0) {
+      return 0;
+    }
+    let total = 0;
+    for (const inv of targetInventories) {
+      if (!inv || !inv.container) continue;
+      const containerKey = getInventoryContainerKey(inv);
+      if (fullContainers && containerKey && fullContainers.has(containerKey)) continue;
+      const previewStack = { typeId, amount: 1 };
+      try {
+        const capacity = cacheManager.getInsertCapacityCached(
+          containerKey,
+          inv.container,
+          typeId,
+          previewStack
+        );
+        total += Math.max(0, Number(capacity) || 0);
+      } catch {
+        continue;
+      }
+    }
+    return total;
+  }
+
+  function findDestinationCandidate(
+    prismInfoLocal,
+    typeId,
+    pathOptions,
+    { requireSink = false, allowDrift = false, fullContainers = null, nowTickLocal = 0 }
+  ) {
+    let best = null;
+    for (const option of pathOptions || []) {
+      if (!option || !option.path || option.path.length === 0) continue;
+      if (option.outputKey === prismKey) continue;
+      if (option.path.length > MAX_STEPS) continue;
+      if (!validatePathStart(prismInfoLocal.dim, option.path)) continue;
+      const destInfo = resolveBlockInfo(option.outputKey);
+      if (!destInfo || !destInfo.block) continue;
+      if (!isPrismBlock(destInfo.block)) continue;
+      const targetFilter = getFilterForBlock(destInfo.block);
+      const targetFilterSet = targetFilter
+        ? (targetFilter instanceof Set ? targetFilter : getFilterSet(targetFilter))
+        : null;
+      const isSink = !!(targetFilterSet && targetFilterSet.has(typeId));
+      if (requireSink && !isSink) continue;
+      if (!allowDrift && !isSink) continue;
+      const targetInventories =
+        cacheManager.getPrismInventoriesCached(option.outputKey, destInfo.block, destInfo.dim);
+      const capacity = computeDestinationCapacity(targetInventories, typeId, fullContainers);
+      if (capacity <= 0) continue;
+      if (allowDrift && !isSink) {
+        const lastDrift = getDriftDestination(prismKey, typeId, nowTickLocal);
+        if (lastDrift && lastDrift === option.outputKey) {
+          continue;
+        }
+      }
+      const pathLength = option.path.length;
+      const score = capacity * 1000 - pathLength * 5 + Math.random();
+      if (!best || score > best.score) {
+        best = {
+          outputKey: option.outputKey,
+          path: option.path,
+          capacity,
+          isSink,
+          targetFilterSet,
+          score,
+        };
+      }
+    }
+    return best;
+  }
   function attemptTransferForPrism(prismKey, searchBudget) {
     const nowTick = typeof deps?.getNowTick === "function" ? deps.getNowTick() : 0;
     let searchesUsed = 0;
+    const noteScan = (result, note) => {
+      if (typeof traceNoteScan === "function") traceNoteScan(prismKey, result, nowTick, note);
+    };
+    const noteResult = (result) => {
+      if (typeof traceNoteTransferResult === "function") traceNoteTransferResult(prismKey, result, nowTick);
+    };
+    const notePathfind = (ms, status = "ok") => {
+      if (typeof traceNotePathfind === "function") traceNotePathfind(prismKey, ms, nowTick, "scan");
+      if (typeof noteGlobalPathfind === "function") noteGlobalPathfind(ms, status);
+    };
 
     const prismInfo = resolveBlockInfo(prismKey);
-    if (!prismInfo) return { ok: false, reason: "no_prism", searchesUsed: searchesUsed };
+    if (!prismInfo) {
+      noteScan("no_prism");
+      noteResult("no_prism");
+      return { ok: false, reason: "no_prism", searchesUsed: searchesUsed };
+    }
 
     const dim = prismInfo.dim;
     const prismBlock = prismInfo.block;
     if (!prismBlock || !isPrismBlock(prismBlock)) {
+      noteScan("no_prism");
+      noteResult("no_prism");
       return { ok: false, reason: "no_prism", searchesUsed: searchesUsed };
     }
 
     // Get all adjacent inventories (multi-inventory support)
-    const inventories = cacheManager.getPrismInventoriesCached(prismKey, prismBlock, dim);
-    if (!inventories || inventories.length === 0) {
+  const inventories = cacheManager.getPrismInventoriesCached(prismKey, prismBlock, dim);
+  if (typeof traceNoteNeighborInventories === "function") {
+    traceNoteNeighborInventories(prismKey, Array.isArray(inventories) && inventories.length > 0);
+  }
+  if (
+    typeof traceNoteVirtualCapacity === "function" ||
+    typeof traceNoteVirtualCapacityReason === "function"
+  ) {
+    const vcSummary = summarizeNeighborInventoryVc(inventories);
+    if (typeof traceNoteVirtualCapacity === "function") {
+      traceNoteVirtualCapacity(prismKey, vcSummary.vc, vcSummary.vc <= 0);
+    }
+    if (typeof traceNoteVirtualCapacityReason === "function") {
+      traceNoteVirtualCapacityReason(prismKey, vcSummary.reason, vcSummary.evidence);
+    }
+  }
+  if (!inventories || inventories.length === 0) {
+      noteScan("no_container");
+      noteResult("no_container");
       return { ok: false, reason: "no_container", searchesUsed: searchesUsed };
     }
 
@@ -206,35 +445,13 @@ function createAttemptTransferForPrismHandler(deps) {
       // CRITICAL FIX: Filter out items that are already queued BEFORE doing expensive pathfinding.
       const newItems = allItems.filter((it) => !queuedItemTypes.has(it.stack.typeId));
 
-      // Log item discovery occasionally
-      if (allItems.length > 0 && (nowTick <= 3 || (nowTick % 200) === 0)) {
-        const itemCount = allItems.length;
-        const newItemCount = newItems.length;
-
-        if (hasActiveQueue && newItemCount === 0) {
-          // All items already queued - skip pathfinding entirely
-          return { ok: false, reason: "all_items_already_queued", searchesUsed: 0 };
-        }
-
-        if (hasActiveQueue) {
-          sendDiagnosticMessage(
-            "[Scan] Found " +
-              itemCount +
-              " type(s) at " +
-              prismKey +
-              ", " +
-              newItemCount +
-              " new (" +
-              (itemCount - newItemCount) +
-              " already queued)",
-            "transfer"
-          );
-        } else {
-          sendDiagnosticMessage(
-            "[Scan] Found " + itemCount + " type(s) at " + prismKey,
-            "transfer"
-          );
-        }
+      if (hasActiveQueue && newItems.length === 0) {
+        // All items already queued - skip pathfinding entirely
+        noteScan("queued", "all_items_queued");
+        noteResult("queued");
+        noteScan("queued", "all_items_queued");
+        noteResult("queued");
+        return { ok: false, reason: "all_items_already_queued", searchesUsed: 0 };
       }
             // CRITICAL FIX: Only do pathfinding for NEW items (not already queued)
       // This prevents watchdog exceptions while maintaining continuous processing.
@@ -249,35 +466,21 @@ function createAttemptTransferForPrismHandler(deps) {
           pathResult = findPathForInput(prismKey, nowTick);
 
           const pathfindTime = Date.now() - pathfindStart;
-          if (pathfindTime > 50) {
-            sendDiagnosticMessage(
-              "[PERF] Pathfind (scan): " +
-                pathfindTime +
-                "ms for " +
-                prismKey +
-                " (" +
-                newItems.length +
-                " new items)",
-              "transfer"
-            );
-          }
+          notePathfind(pathfindTime, "ok");
 
           // EMERGENCY: If pathfinding takes too long, abort.
           if (pathfindTime > 100) {
-            sendDiagnosticMessage(
-              "[PERF] ⚠ Pathfind TIMEOUT (scan): " + pathfindTime + "ms - aborting for " + prismKey,
-              "transfer"
-            );
+            notePathfind(pathfindTime, "timeout");
+            noteResult("pathfind_timeout");
             try { if (typeof invalidateInput === "function") invalidateInput(prismKey); } catch {}
             return { ok: false, reason: "pathfind_timeout", searchesUsed: searchesUsed };
           }
         } catch (err) {
           const pathfindTime = Date.now() - pathfindStart;
           const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
-          sendDiagnosticMessage(
-            "[PERF] Pathfind ERROR (scan) after " + pathfindTime + "ms: " + errMsg,
-            "transfer"
-          );
+          notePathfind(pathfindTime, "error");
+          if (typeof traceNoteError === "function") traceNoteError(prismKey, errMsg, nowTick);
+          noteResult("pathfind_error");
           try { if (typeof invalidateInput === "function") invalidateInput(prismKey); } catch {}
           return { ok: false, reason: "pathfind_error", searchesUsed: searchesUsed };
         }
@@ -345,16 +548,8 @@ function createAttemptTransferForPrismHandler(deps) {
               routesMap.set(typeId, routeInfo.path);
             }
 
-            // Only log queue creation occasionally to reduce clutter
-            if (nowTick <= 3 || (nowTick % 100) === 0) {
-              const msg =
-                "[Queue] Queued " +
-                routedNewItems.length +
-                " new type(s) at " +
-                prismKey +
-                (hasActiveQueue ? " (" + queuedItemTypes.size + " already queued)" : "");
-              sendDiagnosticMessage(msg, "transfer");
-            }
+            noteScan("queued", "new_types=" + routedNewItems.length);
+            noteResult("queued");
 
             // Enqueue only the routable new items
             inputQueuesManager.enqueueInputStacks(prismKey, routedNewItems, routesMap);
@@ -379,19 +574,17 @@ function createAttemptTransferForPrismHandler(deps) {
           }
 
           // DIAGNOSTIC: No routes for new types
-          sendDiagnosticMessage(
-            "[Queue] ⚠ No routes found for new items: prism=" + prismKey + ", newItems=" + newItems.length,
-            "transfer"
-          );
+          noteScan("no_route", "newItems=" + newItems.length);
+          noteResult("no_route");
         } else {
           // New items exist but no routing candidates
-          sendDiagnosticMessage(
-            "[Queue] ⚠ No routes available: prism=" + prismKey + ", newItems=" + newItems.length,
-            "transfer"
-          );
+          noteScan("no_route", "newItems=" + newItems.length);
+          noteResult("no_route");
         }
       } else if (newItems.length === 0 && hasActiveQueue) {
         // All items already queued - normal, return early without expensive work
+        noteScan("queued", "all_items_queued");
+        noteResult("queued");
         return { ok: false, reason: "all_items_already_queued", searchesUsed: 0 };
       }
     }
@@ -400,12 +593,17 @@ function createAttemptTransferForPrismHandler(deps) {
     const randomItem = getRandomItemFromInventories(inventories, filterSet);
     if (randomItem && searchBudget > 0) {
       const result = attemptPushTransfer(prismKey, prismBlock, dim, inventories, randomItem, filterSet, searchBudget);
-      if (result.ok) return result;
+      if (result.ok) {
+        noteResult("pushed");
+        return result;
+      }
       searchesUsed += result.searchesUsed || 0;
       searchBudget -= result.searchesUsed || 0;
+      noteResult(result.reason || "no_transfer");
     }
 
     // Filtered items are routed via prioritized push (no pull system)
+    noteResult("no_transfer");
     return { ok: false, reason: "no_transfer", searchesUsed: searchesUsed };
   }
   return attemptTransferForPrism;

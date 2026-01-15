@@ -1,42 +1,15 @@
 // scripts/chaos/items/insightLens.js
 // Insight Lens interaction handler
-// - Sneak + right-click: opens menu to toggle extended debugging groups
-// - Normal right-click: toggles DEV MODE (persistent) for verbose startup diagnostics
+// Insight is now automatic (no menus or toggles).
 
 import { EquipmentSlot, EntityComponentTypes } from "@minecraft/server";
-import { showDebugMenu } from "../core/debugMenu.js";
-import { toggleDevMode } from "../core/debugGroups.js";
-
 const LENS_ID = "chaos:insight_lens";
 const MAX_OBSERVATION_DISTANCE = 32;
 
 export function handleInsightLensUseOn(e, deps) {
-  try {
-    const player = e?.source;
-    if (!player || player.typeId !== "minecraft:player") return;
-
-    const item = e?.itemStack;
-    if (!item || item.typeId !== LENS_ID) return;
-
-    // Sneak + use: open debug menu
-    if (player.isSneaking) {
-      showDebugMenu(player).catch(() => {});
-      return;
-    }
-
-    // Normal use: toggle DEV MODE and cancel interaction so it doesn't also click blocks
-    try {
-      const enabled = toggleDevMode();
-      player.sendMessage(`§b[Insight] Dev mode: ${enabled ? "§aON" : "§cOFF"}§b (persists on reload)`);
-    } catch {
-      player.sendMessage("§c[Insight] Failed to toggle dev mode");
-    }
-
-    // Cancel the use to prevent normal block interaction
-    try { e.cancel = true; } catch {}
-  } catch {
-    // ignore
-  }
+  // No-op: Insight v2 is automatic and context-aware.
+  void e;
+  void deps;
 }
 
 export function isHoldingLens(player) {

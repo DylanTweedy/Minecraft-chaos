@@ -1,10 +1,11 @@
 // scripts/chaos/features/links/transfer/persistence/storage.js
 import {
-  DP_BEAMS,
   DP_TRANSFERS,
   DP_INPUT_LEVELS,
   DP_OUTPUT_LEVELS,
   DP_PRISM_LEVELS,
+  DP_PRISMS_V0_JSON,
+  DP_LINKS_V0_JSON,
 } from "../config.js";
 
 function safeJsonParse(s) {
@@ -24,34 +25,45 @@ function safeJsonStringify(v) {
   }
 }
 
-export function loadBeamsMap(world) {
+export function loadPrismRegistry(world) {
   try {
-    const raw = world.getDynamicProperty(DP_BEAMS);
-    if (typeof raw !== "string") return {};
-    
-    // Check if raw data looks truncated (common sign: ends mid-JSON)
-    const isTruncated = raw.length > 0 && !raw.trim().endsWith("}") && !raw.trim().endsWith("]");
-    
+    const raw = world.getDynamicProperty(DP_PRISMS_V0_JSON);
     const parsed = safeJsonParse(raw);
-    if (!parsed || typeof parsed !== "object") {
-      // If we have raw data but parsing failed, it might be truncated
-      if (raw.length > 1000 && isTruncated) {
-        // Log warning - but we can't use console in Bedrock, so return empty
-        // The controller will detect this via size checks
-      }
-      return {};
-    }
-    return parsed;
+    if (!parsed || typeof parsed !== "object") return [];
+    const list = Array.isArray(parsed) ? parsed : parsed.list;
+    return Array.isArray(list) ? list : [];
   } catch {
-    return {};
+    return [];
   }
 }
 
-export function saveBeamsMap(world, map) {
+export function savePrismRegistry(world, list) {
   try {
-    const raw = safeJsonStringify(map);
+    const raw = safeJsonStringify(Array.isArray(list) ? list : []);
     if (typeof raw !== "string") return;
-    world.setDynamicProperty(DP_BEAMS, raw);
+    world.setDynamicProperty(DP_PRISMS_V0_JSON, raw);
+  } catch {
+    // ignore
+  }
+}
+
+export function loadLinkGraph(world) {
+  try {
+    const raw = world.getDynamicProperty(DP_LINKS_V0_JSON);
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== "object") return [];
+    const list = Array.isArray(parsed) ? parsed : parsed.list;
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLinkGraph(world, list) {
+  try {
+    const raw = safeJsonStringify(Array.isArray(list) ? list : []);
+    if (typeof raw !== "string") return;
+    world.setDynamicProperty(DP_LINKS_V0_JSON, raw);
   } catch {
     // ignore
   }

@@ -75,6 +75,7 @@ export function buildNodePathSegments(dim, path, startPos) {
       Math.abs(pathStartPos.z - startPos.z) < 0.1;
     
     const points = [{ x: startPos.x, y: startPos.y, z: startPos.z }];
+    const keys = [key(dim.id, startPos.x, startPos.y, startPos.z)];
     const lengths = [];
     let prev = -1;
     // Skip first node if it matches startPos (avoid duplicate)
@@ -84,10 +85,11 @@ export function buildNodePathSegments(dim, path, startPos) {
       if (idx <= prev) continue;
       const p = path[idx];
       points.push({ x: p.x, y: p.y, z: p.z });
+      keys.push(key(dim.id, p.x, p.y, p.z));
       lengths.push(Math.max(1, idx - prev));
       prev = idx;
     }
-    return points.length > 1 ? { points, lengths } : null;
+    return points.length > 1 ? { points, lengths, keys } : null;
   } catch {
     return null;
   }

@@ -1,21 +1,9 @@
 // scripts/chaos/items/insightGoggles.js
 // Insight Goggles worn detection and observation
-// Goggles enable basic debug visibility (warnings and debug logs)
-// Crouch + right-click opens menu to toggle extended debugging groups
+// Insight is automatic (no menus or toggles).
 
 import { EquipmentSlot, EntityComponentTypes } from "@minecraft/server";
-import { showDebugMenu } from "../core/debugMenu.js";
-
 const GOGGLES_ID = "chaos:insight_goggles";
-const WAND_ID = "chaos:wand";
-const PRISM_ITEM_IDS = [
-  "chaos:prism_1",
-  "chaos:prism_2",
-  "chaos:prism_3",
-  "chaos:prism_4",
-  "chaos:prism_5",
-];
-
 /**
  * Check if player is wearing Insight Goggles
  * Checks helmet slot first (primary), then fallback checks
@@ -97,24 +85,7 @@ export function getTargetBlockForObservation(player) {
  * Only crouch + right-click opens menu (no other interactions)
  */
 export function handleGogglesUseOn(e, deps) {
-  try {
-    const player = e?.source || e?.player;
-    if (!player || player.typeId !== "minecraft:player") return;
-
-    // Check if using goggles item or wearing goggles
-    const item = e?.itemStack;
-    const isUsingGogglesItem = item && item.typeId === "chaos:insight_goggles";
-    const isWearing = isWearingGoggles(player);
-    
-    // Must be using goggles item OR wearing goggles
-    if (!isUsingGogglesItem && !isWearing) return;
-
-    // Only crouch + right-click opens the debug menu
-    if (player.isSneaking) {
-      showDebugMenu(player).catch(() => {});
-    }
-    // Normal right-click does nothing (allows normal block interaction)
-  } catch {
-    // ignore
-  }
+  // No-op: Insight v2 is automatic and context-aware.
+  void e;
+  void deps;
 }

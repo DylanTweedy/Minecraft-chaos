@@ -32,13 +32,16 @@ import { createRefinementManager } from "../systems/refinement.js";
 
 // Utilities
 import { mergeCfg, runTransferPipeline } from "../utils.js";
-import { key, parseKey, getContainerKey, getContainerKeyFromInfo } from "../keys.js";
+import { canonicalizePrismKey, key, parseKey, getContainerKey, getContainerKeyFromInfo } from "../keys.js";
 import {
   createTickContext,
   createBeginTickPhase,
   createTickGuardsPhase,
   createRefreshPrismRegistryPhase,
   createScanDiscoveryPhase,
+  createValidateLinksPhase,
+  createUpdateBeamsPhase,
+  createHandleBeamBreaksPhase,
   createPushTransfersPhase,
   createAttemptTransferForPrismPhase,
   createProcessQueuesPhase,
@@ -50,16 +53,22 @@ import {
 import { initManagers } from "./bootstrap/initManagers.js";
 import { createTransferStartup } from "./bootstrap/startup.js";
 import { createGetSpeed } from "./helpers/speed.js";
+import { createPrismRegistry } from "./registry/prismRegistry.js";
+import { createLinkGraph } from "./registry/linkGraph.js";
+import { subscribeLinkEvents } from "./events/linkEvents.js";
 
 // Persistence
 import {
-  loadBeamsMap,
   loadInputLevels,
   saveInputLevels,
   loadOutputLevels,
   saveOutputLevels,
   loadPrismLevels,
   savePrismLevels,
+  loadPrismRegistry,
+  savePrismRegistry,
+  loadLinkGraph,
+  saveLinkGraph,
 } from "../persistence/storage.js";
 import { loadInflightStateFromWorld, persistInflightStateToWorld } from "../persistence/inflight.js";
 
@@ -87,6 +96,7 @@ import {
   clearReservations,
 } from "../inventory/reservations.js";
 import { calculateBalancedTransferAmount } from "../inventory/balance.js";
+import { createTransferPathfinder } from "../pathfinding/pathfinder.js";
 
 // Pathfinding & routing
 import {
@@ -103,15 +113,22 @@ import { findOutputRouteFromNode, findCrystallizerRouteFromPrism } from "../path
 
 // Tracing
 import {
-  getTraceKey,
-  isTracing,
+  emitTrace,
+  emitInsightError,
   markDirty as traceMarkDirty,
   clearDirty as traceClearDirty,
   noteScan as traceNoteScan,
   noteError as traceNoteError,
   noteQueueSize as traceNoteQueueSize,
+  notePathfind as traceNotePathfind,
+  noteTransferResult as traceNoteTransferResult,
+  noteNeighborInventories as traceNoteNeighborInventories,
+  noteVirtualCapacity as traceNoteVirtualCapacity,
+  noteVirtualCapacityReason as traceNoteVirtualCapacityReason,
   noteCooldown as traceNoteCooldown,
-} from "../../../../core/trace.js";
+} from "../../../../core/insight/trace.js";
+import { noteDuration, noteCount } from "../../../../core/insight/perf.js";
+import { noteWatchdog } from "../../../../core/insight/transferStats.js";
 
 // Cross-feature filters
 import { getFilterSetForBlock } from "../../shared/filters.js";
@@ -121,26 +138,91 @@ import { tryGenerateFluxOnTransfer, tryRefineFluxInTransfer, getFluxTier, isFlux
 import { addFluxForItem, getFluxValueForItem } from "../../../../crystallizer.js";
 import { fxFluxGenerate, queueFxParticle } from "../../../../fx/fx.js";
 
-// Debug UX
-import { hasInsight, hasExtendedDebug } from "../../../../core/debugGroups.js";
-import { isHoldingLens } from "../../../../items/insightLens.js";
-import { isWearingGoggles } from "../../../../items/insightGoggles.js";
 
-export function createNetworkTransferController(deps, opts) {
+function createDirtyTracker(keys) {
+  const known = new Set(Array.isArray(keys) ? keys : []);
+  const dirty = new Set();
+
+  function hasKey(key) {
+    return known.size === 0 || known.has(key);
+  }
+
+  return {
+    mark(key) {
+      if (!hasKey(key)) return;
+      dirty.add(key);
+    },
+    clear(key) {
+      dirty.delete(key);
+    },
+    set(key, value) {
+      if (!hasKey(key)) return;
+      if (value) dirty.add(key);
+      else dirty.delete(key);
+    },
+    isDirty(key) {
+      return dirty.has(key);
+    },
+    any() {
+      return dirty.size > 0;
+    },
+    shouldSave(key, nowTick, lastSaveTick, interval) {
+      if (!dirty.has(key)) return false;
+      if (!Number.isFinite(interval)) return true;
+      return (nowTick - lastSaveTick) >= interval;
+    },
+  };
+}
+
+const DIRTY = {
+  INF: "inflight",
+  INF_STEP: "inflightStep",
+  LEVELS: "levels",
+  OUT: "outputLevels",
+  PRISM: "prismLevels",
+};
+
+export function createNetworkTransferController(deps = {}, opts) {
   // Deps (keep names identical)
   const {
     world,
     system,
     FX,
     getSpeedForInput,
-    findPathForInput,
-    invalidateInput,
-    getPathStats,
-    getNetworkStamp,
-  } = deps;
+    getLastDebugTick = () => 0,
+    setLastDebugTick = () => {},
+    debugInterval: injectedDebugInterval,
+    debugEnabled: injectedDebugEnabled,
+    debugState: injectedDebugState = null,
+    getCursor = () => null,
+    setCursor = () => {},
+    logError: injectedLogError,
+    handleManagerCreationError: injectedHandleManagerCreationError,
+  } = deps || {};
 
   const cfg = mergeCfg(DEFAULTS, opts);
   let activeTickContext = null;
+
+  const prismRegistry = createPrismRegistry({ world, cfg, emitInsightError });
+  const linkGraph = createLinkGraph({ world, cfg });
+  const pathfinder = createTransferPathfinder(
+    { world, linkGraph, getNetworkStamp: () => linkGraph.getGraphStamp() },
+    cfg
+  );
+  const findPathForInput = pathfinder.findPathForInput;
+  const invalidateInput = pathfinder.invalidateInput;
+  const getPathStats = pathfinder.getAndResetStats;
+  const getNetworkStamp = () => linkGraph.getGraphStamp();
+
+  const linkEvents = subscribeLinkEvents({
+    world,
+    system,
+    prismRegistry,
+    linkGraph,
+    debugLog: () => {},
+  });
+  const getBeamBreaks = () =>
+    linkEvents?.drainBeamBreaks?.(Math.max(1, Number(cfg.beamBreaksPerTick || 32) | 0)) || [];
 
   // Helper function for safe message sending (handles all errors gracefully)
   // Must be defined early so it can be used throughout initialization
@@ -234,21 +316,16 @@ export function createNetworkTransferController(deps, opts) {
   // Inflight state (orbs + FX orbs)
   const inflight = [];
   const fluxFxInflight = [];
-  let inflightDirty = false;
-  let inflightStepDirty = false;
   let lastSaveTick = 0;
 
   // Levels / stats persistence state
   const transferCounts = new Map();
-  let levelsDirty = false;
   let lastLevelsSaveTick = 0;
 
   const outputCounts = new Map();
-  let outputLevelsDirty = false;
   let lastOutputLevelsSaveTick = 0;
 
   const prismCounts = new Map();
-  let prismLevelsDirty = false;
   let lastPrismLevelsSaveTick = 0;
 
   // Queues
@@ -256,19 +333,70 @@ export function createNetworkTransferController(deps, opts) {
   const fullContainers = new Set();
   let fullCursor = 0;
   let queueCursor = 0;
+  function getQueueState() {
+    return {
+      queueByContainer,
+      fullContainers,
+    };
+  }
+  function clearBackoff(prismKey) {
+    if (!prismKey) return;
+    try {
+      inputBackoff.delete(prismKey);
+    } catch {}
+    try {
+      nextAllowed.delete(prismKey);
+    } catch {}
+    try {
+      nextQueueTransferAllowed.delete(prismKey);
+    } catch {}
+  }
+  function bumpBackoff(prismKey) {
+    if (!prismKey) return 0;
+    const prev = inputBackoff.has(prismKey) ? (inputBackoff.get(prismKey) | 0) : 0;
+    const maxLevel = Math.max(0, cfg.backoffMaxLevel | 0);
+    const level = Math.max(0, Math.min(maxLevel, prev + 1));
+    inputBackoff.set(prismKey, level);
+    return level;
+  }
+  function getBackoffTicks(level) {
+    const lvl = Math.max(0, level | 0);
+    if (lvl <= 0) return 0;
+    const base = Math.max(1, cfg.backoffBaseTicks | 0);
+    const maxTicks = Math.max(base, cfg.backoffMaxTicks | 0);
+    const ticks = base * (2 ** lvl);
+    return Math.min(maxTicks, Math.max(base, ticks | 0));
+  }
+  function getCachedInputKeys() {
+    return cachedInputKeys;
+  }
+  function setCachedInputKeys(value) {
+    cachedInputKeys = value;
+  }
+  function getCachedInputsStamp() {
+    return cachedInputsStamp;
+  }
+  function setCachedInputsStamp(value) {
+    cachedInputsStamp = value;
+  }
 
   // Debug config & state
   // Force debug enabled if config says so (don't let FX override it)
-  const debugEnabled = !!(cfg.debugTransferStats === true || FX?.debugTransferStats === true);
-  const debugInterval = Math.max(
+  const defaultDebugEnabled = !!(cfg.debugTransferStats === true || FX?.debugTransferStats === true);
+  const debugEnabled =
+    typeof injectedDebugEnabled === "boolean" ? injectedDebugEnabled : defaultDebugEnabled;
+  const defaultDebugInterval = Math.max(
     20,
     Number(cfg.debugTransferStatsIntervalTicks || FX?.debugTransferStatsIntervalTicks) || 100
   );
+  const debugInterval =
+    Number.isFinite(injectedDebugInterval) ? injectedDebugInterval : defaultDebugInterval;
 
-  // Debug status is now only shown when debug groups are enabled (via Insight menu)
-  let lastDebugTick = 0;
-  const debugState = {
-    inputsScanned: 0,
+  // Debug stats are surfaced via Insight v2 when enhanced mode is active.
+  const debugState =
+    injectedDebugState ||
+    {
+      inputsScanned: 0,
     transfersStarted: 0,
     outputOptionsTotal: 0,
     outputOptionsMax: 0,
@@ -293,6 +421,9 @@ export function createNetworkTransferController(deps, opts) {
     msScan: 0,
     msPersist: 0,
     msTotal: 0,
+    phaseMs: Object.create(null),
+    phaseRuns: Object.create(null),
+    phaseLastMs: Object.create(null),
     // Timing stats
     transferStartTicks: [],
     transferCompleteTicks: [],
@@ -327,126 +458,77 @@ export function createNetworkTransferController(deps, opts) {
       // ignore logging errors
     }
   }
-
-  // Helper function to send diagnostic messages (basic debug visibility)
-  function sendDiagnosticMessage(message, group) {
-    try {
-      const msgStr = message != null ? String(message) : "";
-      if (!msgStr) return;
-
-      let players;
-      try {
-        if (!world || typeof world.getAllPlayers !== "function") return;
-        players = world.getAllPlayers();
-      } catch {
-        return;
-      }
-
-      const groupName = group != null ? String(group) : "";
-      for (const player of players) {
-        try {
-          if (!player) continue;
-
-          const hasBasic =
-            hasInsight(player) ||
-            (typeof isHoldingLens === "function" && isHoldingLens(player)) ||
-            (typeof isWearingGoggles === "function" && isWearingGoggles(player));
-
-          if (!hasBasic) continue;
-          if (groupName && !hasExtendedDebug(player, groupName)) continue;
-
-          if (typeof player.sendMessage === "function") {
-            player.sendMessage(msgStr);
-          }
-        } catch {
-          // ignore per-player failures
-        }
-      }
-    } catch {
-      // ignore all diagnostic send failures
-    }
-  }
-
-
-  function logError(message, err) {
+  function defaultLogError(message, err) {
     safeInitLog("§c[Chaos Transfer]", message, err);
   }
-
-  function handleManagerCreationError(managerName, err) {
-    logError("Failed to create " + managerName, err);
+  function defaultHandleManagerCreationError(managerName, err) {
+    defaultLogError("Failed to create " + managerName, err);
     throw err;
   }
-
-  function getLastDebugTick() {
-    return lastDebugTick;
+  const logError =
+    typeof injectedLogError === "function" ? injectedLogError : defaultLogError;
+  const handleManagerCreationError =
+    typeof injectedHandleManagerCreationError === "function"
+      ? injectedHandleManagerCreationError
+      : defaultHandleManagerCreationError;
+  function guardDebugDependencies() {
+    if (!debugEnabled) return;
+    const missing = [];
+    if (!world || typeof world.getAllPlayers !== "function") {
+      missing.push("world.getAllPlayers");
+    }
+    if (!system || typeof system.runInterval !== "function") {
+      missing.push("system.runInterval");
+    }
+    if (missing.length === 0) return;
+    const msg = "Debug dependencies missing: " + missing.join(", ");
+    safeInitLog("§e[Chaos Transfer]", msg);
+    logError(msg);
   }
-
-  function setLastDebugTick(v) {
-    lastDebugTick = v;
-  }
-
-  function getBackoffTicks(level) {
-    const base = Math.max(1, cfg.backoffBaseTicks | 0);
-    const max = Math.max(base, cfg.backoffMaxTicks | 0);
-    const lvl = Math.max(0, level | 0);
-    const ticks = base * (2 ** lvl);
-    return Math.min(max, ticks | 0);
-  }
-
-  function bumpBackoff(prismKey) {
-    const max = Math.max(0, cfg.backoffMaxLevel | 0);
-    const prev = inputBackoff.has(prismKey) ? (inputBackoff.get(prismKey) | 0) : 0;
-    const next = Math.min(max, prev + 1);
-    inputBackoff.set(prismKey, next);
-    return next;
-  }
-
-  function clearBackoff(prismKey) {
-    inputBackoff.delete(prismKey);
-  }
-
-  function getQueueState() {
-    return {
-      queueByContainer,
-      fullContainers,
-      queueCursor,
-      fullCursor,
-      setQueueCursor: (v) => {
-        queueCursor = v | 0;
-      },
-      setFullCursor: (v) => {
-        fullCursor = v | 0;
-      },
-    };
-  }
-
-  function getCachedInputKeys() {
-    return cachedInputKeys;
-  }
-
-  function getCachedInputsStamp() {
-    return cachedInputsStamp;
-  }
-
-  function setCachedInputKeys(v) {
-    cachedInputKeys = v;
-  }
-
-  function setCachedInputsStamp(v) {
-    cachedInputsStamp = v;
-  }
+  guardDebugDependencies();
+    const dirty = createDirtyTracker(Object.values(DIRTY));
 
   function setLevelsDirty(v) {
-    levelsDirty = v;
+    dirty.set(DIRTY.LEVELS, !!v);
   }
 
   function setOutputLevelsDirty(v) {
-    outputLevelsDirty = v;
+    dirty.set(DIRTY.OUT, !!v);
   }
 
   function setPrismLevelsDirty(v) {
-    prismLevelsDirty = v;
+    dirty.set(DIRTY.PRISM, !!v);
   }
+
+  function getLevelsDirty() {
+    return dirty.isDirty(DIRTY.LEVELS);
+  }
+
+  function getOutputLevelsDirty() {
+    return dirty.isDirty(DIRTY.OUT);
+  }
+
+  function getPrismLevelsDirty() {
+    return dirty.isDirty(DIRTY.PRISM);
+  }
+
+  function getInflightDirty() {
+    return dirty.isDirty(DIRTY.INF);
+  }
+
+  function setInflightDirty(v) {
+    dirty.set(DIRTY.INF, !!v);
+  }
+
+  function getInflightStepDirty() {
+    return dirty.isDirty(DIRTY.INF_STEP);
+  }
+
+  function setInflightStepDirty(v) {
+    dirty.set(DIRTY.INF_STEP, !!v);
+  }
+
+  let runtimeReady = false;
 
   const getSpeed = createGetSpeed({
     cfg,
@@ -469,6 +551,9 @@ export function createNetworkTransferController(deps, opts) {
   let services = null;
   let beginTickPhase = null;
   let refreshPrismPhase = null;
+  let validateLinksPhase = null;
+  let handleBeamBreaksPhase = null;
+  let updateBeamsPhase = null;
   let scanDiscoveryPhase = null;
   let pushTransfersPhase = null;
   let pushTransferHandlers = {};
@@ -482,174 +567,280 @@ export function createNetworkTransferController(deps, opts) {
   let tickGuardsPhase = null;
   let markAdjacentPrismsDirty = null;
 
-  const managers = initManagers({
-    cfg,
-    world,
-    system,
-    FX,
-    debugEnabled,
-    debugState,
-    debugInterval,
-    getLastDebugTick,
-    setLastDebugTick,
-    sendInitMessage,
-    sendDiagnosticMessage,
-    logError,
-    handleManagerCreationError,
-    createVirtualInventoryManager,
-    createCacheManager,
-    createLevelsManager,
-    createFxManager,
-    createQueuesManager,
-    createInputQueuesManager,
-    createRefinementManager,
-    createFinalizeManager,
-    createInflightProcessorManager,
-    createBeginTickPhase,
-    createRefreshPrismRegistryPhase,
-    createScanDiscoveryPhase,
-    createPushTransfersPhase,
-    createAttemptTransferForPrismPhase,
-    createProcessQueuesPhase,
-    createUpdateVirtualStatePhase,
-    createProcessInputQueuesPhase,
-    createPersistAndReportPhase,
-    createScanTransfersPhase,
-    createTickGuardsPhase,
-    runTransferPipeline,
-    getContainerKey,
-    getContainerKeyFromInfo,
-    getAttachedInventoryInfo,
-    getAllAdjacentInventories,
-    getInventoryContainer,
-    getFurnaceSlots,
-    isFurnaceBlock,
-    getFilterContainer,
-    getFilterSet,
-    getFilterSetForBlock,
-    getReservedForContainer,
-    getInsertCapacityWithReservations,
-    reserveContainerSlot,
-    releaseContainerSlot,
-    clearReservations,
-    getTotalCountForType,
-    getRandomItemFromInventories,
-    findInputSlotForContainer,
-    decrementInputSlotSafe,
-    decrementInputSlotsForType,
-    calculateBalancedTransferAmount,
-    validatePathStart,
-    isPathBlock,
-    isNodeBlock,
-    findFirstPrismKeyInPath,
-    buildNodePathSegments,
-    buildFluxFxSegments,
-    findDropLocation,
-    pickWeightedRandomWithBias,
-    findOutputRouteFromNode,
-    findCrystallizerRouteFromPrism,
-    getTraceKey,
-    isTracing,
-    traceMarkDirty,
-    traceClearDirty,
-    traceNoteScan,
-    traceNoteError,
-    traceNoteQueueSize,
-    traceNoteCooldown,
-    tryGenerateFluxOnTransfer,
-    tryRefineFluxInTransfer,
-    getFluxTier,
-    isFluxTypeId,
-    addFluxForItem,
-    getFluxValueForItem,
-    fxFluxGenerate,
-    queueFxParticle,
-    hasInsight,
-    isHoldingLens,
-    isWearingGoggles,
-    key,
-    parseKey,
-    loadBeamsMap,
-    loadInflightStateFromWorld,
-    persistInflightStateToWorld,
-    loadInputLevels,
-    saveInputLevels,
-    loadOutputLevels,
-    saveOutputLevels,
-    loadPrismLevels,
-    savePrismLevels,
-    getSpeedForInput,
-    findPathForInput,
-    invalidateInput,
-    getPathStats,
-    getNetworkStamp,
-    getSpeed,
-    attemptTransferForPrism,
-    attemptPushTransferWithDestination,
-    attemptPushTransfer,
-    makeMarkAdjacentPrismsDirty: (deps) => createAdjacentPrismDirtyMarker(deps),
-    _perfLogIfNeeded,
-    getNowTick: () => nowTick,
-    clearBackoff,
-    bumpBackoff,
-    getBackoffTicks,
-    inputBackoff,
-    nextAllowed,
-    nextQueueTransferAllowed,
-    inflight,
-    fluxFxInflight,
-    orbFxBudgetUsed,
-    outputCounts,
-    prismCounts,
-    transferCounts,
-    queueByContainer,
-    fullContainers,
-    getQueueState,
-    isPrismBlock,
-    getPrismTier,
-    CRYSTALLIZER_ID,
-    CRYSTAL_FLUX_WEIGHT,
-    MAX_STEPS,
-    SPEED_SCALE_MAX,
-    PRISM_SPEED_BOOST_BASE,
-    PRISM_SPEED_BOOST_PER_TIER,
-    setPrismLevelsDirty,
-    setOutputLevelsDirty,
-    getCachedInputKeys,
-    getCachedInputsStamp,
-    setCachedInputKeys,
-    setCachedInputsStamp,
-    getInflightDirty: () => inflightDirty,
-    getInflightStepDirty: () => inflightStepDirty,
-    setInflightDirty: (v) => {
-      inflightDirty = !!v;
+  const runtime = {
+    core: {
+      cfg,
+      world,
+      system,
+      FX,
+      debug: {
+      enabled: debugEnabled,
+      interval: debugInterval,
+      state: debugState,
+      getLastTick: getLastDebugTick,
+      setLastTick: setLastDebugTick,
+      sendInitMessage,
+      logError,
+      handleManagerCreationError,
+      },
+      state: {
+      tick: {
+        getNowTick: () => nowTick,
+      },
+      cursor: {
+        get: getCursor,
+        set: setCursor,
+      },
+      queues: {
+        queueByContainer,
+        fullContainers,
+        getQueueState,
+      },
+      backoff: {
+        inputBackoff,
+        nextAllowed,
+        nextQueueTransferAllowed,
+        clearBackoff,
+        bumpBackoff,
+        getBackoffTicks,
+      },
+      inflight: {
+        list: inflight,
+        fluxFxInflight,
+        orbFxBudgetUsed,
+        getDirty: getInflightDirty,
+        setDirty: setInflightDirty,
+        getStepDirty: getInflightStepDirty,
+        setStepDirty: setInflightStepDirty,
+        getLastSaveTick: () => lastSaveTick,
+        setLastSaveTick: (v) => {
+          lastSaveTick = v;
+        },
+      },
+      levels: {
+        transferCounts,
+        outputCounts,
+        prismCounts,
+        getDirty: getLevelsDirty,
+        setDirty: setLevelsDirty,
+        getLastSaveTick: () => lastLevelsSaveTick,
+        setLastSaveTick: (v) => {
+          lastLevelsSaveTick = v;
+        },
+        getOutputDirty: getOutputLevelsDirty,
+        setOutputDirty: setOutputLevelsDirty,
+        getOutputLastSaveTick: () => lastOutputLevelsSaveTick,
+        setOutputLastSaveTick: (v) => {
+          lastOutputLevelsSaveTick = v;
+        },
+        getPrismDirty: getPrismLevelsDirty,
+        setPrismDirty: setPrismLevelsDirty,
+        getPrismLastSaveTick: () => lastPrismLevelsSaveTick,
+        setPrismLastSaveTick: (v) => {
+          lastPrismLevelsSaveTick = v;
+        },
+      },
+      dirty: {
+        shouldSave: (key, nowTick, lastSaveTick, interval) =>
+          dirty.shouldSave(key, nowTick, lastSaveTick, interval),
+        keys: DIRTY,
+      },
+      cachedInputs: {
+        getCachedInputKeys,
+        getCachedInputsStamp,
+        setCachedInputKeys,
+        setCachedInputsStamp,
+      },
+      ready: false,
+      },
+      constants: {
+        CRYSTALLIZER_ID,
+        CRYSTAL_FLUX_WEIGHT,
+        MAX_STEPS,
+        SPEED_SCALE_MAX,
+        PRISM_SPEED_BOOST_BASE,
+        PRISM_SPEED_BOOST_PER_TIER,
+      },
+      helpers: {
+        getContainerKey,
+        getContainerKeyFromInfo,
+        key,
+        parseKey,
+      },
+      events: {
+        getBeamBreaks,
+      },
     },
-    setInflightStepDirty: (v) => {
-      inflightStepDirty = !!v;
+    factories: {
+      createVirtualInventoryManager,
+      createCacheManager,
+      createLevelsManager,
+      createFxManager,
+      createQueuesManager,
+      createInputQueuesManager,
+      createRefinementManager,
+      createFinalizeManager,
+      createInflightProcessorManager,
     },
-    getInflightLastSaveTick: () => lastSaveTick,
-    setInflightLastSaveTick: (v) => {
-      lastSaveTick = v;
+    phases: {
+      createBeginTickPhase,
+      createRefreshPrismRegistryPhase,
+      createScanDiscoveryPhase,
+      createValidateLinksPhase,
+      createUpdateBeamsPhase,
+      createHandleBeamBreaksPhase,
+      createPushTransfersPhase,
+      createAttemptTransferForPrismPhase,
+      createProcessQueuesPhase,
+      createUpdateVirtualStatePhase,
+      createProcessInputQueuesPhase,
+      createPersistAndReportPhase,
+      createScanTransfersPhase,
+      createTickGuardsPhase,
     },
-    getLevelsDirty: () => levelsDirty,
-    setLevelsDirty,
-    getLevelsLastSaveTick: () => lastLevelsSaveTick,
-    setLevelsLastSaveTick: (v) => {
-      lastLevelsSaveTick = v;
+    adapters: {
+      registry: {
+        prismRegistry,
+        linkGraph,
+      },
+      inventory: {
+      getAttachedInventoryInfo,
+      getAllAdjacentInventories,
+      getInventoryContainer,
+      isFurnaceBlock,
+      getFurnaceSlots,
+      tryInsertAmountForContainer,
+      tryInsertIntoInventories,
+      getTotalCountForType,
+      getRandomItemFromInventories,
+      findInputSlotForContainer,
+      decrementInputSlotSafe,
+      decrementInputSlotsForType,
+      },
+      filters: {
+      getFilterContainer,
+      getFilterSet,
+      getFilterSetForBlock,
+      },
+      reservations: {
+      getInsertCapacityWithReservations,
+      getReservedForContainer,
+      reserveContainerSlot,
+      releaseContainerSlot,
+      clearReservations,
+      },
+      persistence: {
+        loadInflightStateFromWorld,
+        persistInflightStateToWorld,
+        loadInputLevels,
+        saveInputLevels,
+        loadOutputLevels,
+        saveOutputLevels,
+        loadPrismLevels,
+        savePrismLevels,
+        loadPrismRegistry,
+        savePrismRegistry,
+        loadLinkGraph,
+        saveLinkGraph,
+      },
+      flux: {
+      tryGenerateFluxOnTransfer,
+      tryRefineFluxInTransfer,
+      getFluxTier,
+      isFluxTypeId,
+      addFluxForItem,
+      getFluxValueForItem,
+      fxFluxGenerate,
+      queueFxParticle,
+      },
+      transfer: {
+      getSpeedForInput,
+      findPathForInput,
+      invalidateInput,
+      getPathStats,
+      getNetworkStamp,
+      getSpeed,
+      },
+      prism: {
+      isPrismBlock,
+      getPrismTier,
     },
-    getOutputLevelsDirty: () => outputLevelsDirty,
-    setOutputLevelsDirty,
-    getOutputLevelsLastSaveTick: () => lastOutputLevelsSaveTick,
-    setOutputLevelsLastSaveTick: (v) => {
-      lastOutputLevelsSaveTick = v;
     },
-    getPrismLevelsDirty: () => prismLevelsDirty,
-    setPrismLevelsDirty,
-    getPrismLevelsLastSaveTick: () => lastPrismLevelsSaveTick,
-    setPrismLevelsLastSaveTick: (v) => {
-      lastPrismLevelsSaveTick = v;
+    algorithms: {
+      balance: {
+        calculateBalancedTransferAmount,
+      },
+      routing: {
+        validatePathStart,
+        isPathBlock,
+        isNodeBlock,
+        findFirstPrismKeyInPath,
+        buildNodePathSegments,
+        buildFluxFxSegments,
+        findDropLocation,
+        pickWeightedRandomWithBias,
+        findOutputRouteFromNode,
+        findCrystallizerRouteFromPrism,
+      },
+      tracing: {
+        traceMarkDirty,
+        traceClearDirty,
+        traceNoteScan,
+        traceNoteError,
+        traceNoteQueueSize,
+        traceNotePathfind,
+        traceNoteNeighborInventories,
+        traceNoteVirtualCapacity,
+        traceNoteVirtualCapacityReason,
+        traceNoteTransferResult,
+        traceNoteCooldown,
+      },
     },
-  });
+    functions: {
+      getPrismKeys: () => {
+        if (activeTickContext?.prismKeys) return activeTickContext.prismKeys;
+        if (resolvePrismKeysFromWorld) return resolvePrismKeysFromWorld();
+        return [];
+      },
+      attemptTransferForPrism: (prismKey, searchBudget) =>
+        (runtimeReady && typeof attemptTransferForPrismHandler === "function")
+          ? attemptTransferForPrism(prismKey, searchBudget)
+          : ({ ok: false, reason: "not_ready", searchesUsed: 0 }),
+      attemptPushTransferWithDestination: (
+        prismKey,
+        prismBlock,
+        dim,
+        inventories,
+        itemSource,
+        destInfo,
+        route,
+        filterSet,
+        queueEntry
+      ) =>
+        (runtimeReady && typeof pushTransferHandlers.attemptPushTransferWithDestination === "function")
+          ? attemptPushTransferWithDestination(
+              prismKey,
+              prismBlock,
+              dim,
+              inventories,
+              itemSource,
+              destInfo,
+              route,
+              filterSet,
+              queueEntry
+            )
+          : ({ ok: false, reason: "not_ready", amount: 0 }),
+      attemptPushTransfer: (prismKey, prismBlock, dim, inventories, itemSource, filterSet, searchBudget) =>
+        (runtimeReady && typeof pushTransferHandlers.attemptPushTransfer === "function")
+          ? attemptPushTransfer(prismKey, prismBlock, dim, inventories, itemSource, filterSet, searchBudget)
+          : ({ ok: false, reason: "not_ready", searchesUsed: 0 }),
+      makeMarkAdjacentPrismsDirty: (deps) => createAdjacentPrismDirtyMarker(deps),
+      _perfLogIfNeeded,
+      runTransferPipeline,
+    },
+  };
+
+  const managers = initManagers(runtime);
 
   if (managers) {
     ({
@@ -667,6 +858,9 @@ export function createNetworkTransferController(deps, opts) {
       services,
       beginTickPhase,
       refreshPrismPhase,
+      validateLinksPhase,
+      handleBeamBreaksPhase,
+      updateBeamsPhase,
       scanDiscoveryPhase,
       pushTransfersPhase,
       pushTransferHandlers,
@@ -680,11 +874,13 @@ export function createNetworkTransferController(deps, opts) {
       tickGuardsPhase,
       markAdjacentPrismsDirty,
     } = managers);
+    runtimeReady = true;
+    runtime.core.state.ready = true;
   } else {
     safeInitLog("§c[Chaos Transfer]", "initManagers returned null");
   }
 
-  function wrapPhase(phase) {
+  function wrapPhase(phase, debugStateRef) {
     if (!phase || typeof phase.run !== "function") {
       return { name: "missingPhase", run: () => ({ ok: false, stop: true, reason: "missing_phase" }) };
     }
@@ -694,7 +890,18 @@ export function createNetworkTransferController(deps, opts) {
       warnMs: phase.warnMs,
       hardStopMs: phase.hardStopMs,
       run(ctx) {
+        const start = Date.now();
         const result = phase.run(ctx);
+        const elapsed = Date.now() - start;
+        const name = phase.name || "phase";
+        if (Number.isFinite(elapsed)) {
+          noteDuration("transfer", name, elapsed);
+        }
+        if (debugEnabled && debugStateRef && Number.isFinite(elapsed)) {
+          debugStateRef.phaseMs[name] = (debugStateRef.phaseMs[name] || 0) + elapsed;
+          debugStateRef.phaseRuns[name] = (debugStateRef.phaseRuns[name] || 0) + 1;
+          debugStateRef.phaseLastMs[name] = elapsed;
+        }
         if (result && typeof result === "object") {
           for (const [k, v] of Object.entries(result)) {
             if (k === "ok" || k === "stop" || k === "reason") continue;
@@ -709,16 +916,19 @@ export function createNetworkTransferController(deps, opts) {
   const pipeline = createTransferPipeline({
     name: "TransferPipeline",
     phases: [
-      wrapPhase(beginTickPhase),
-      wrapPhase(refreshPrismPhase),
-      wrapPhase(scanDiscoveryPhase),
-      wrapPhase(pushTransfersPhase),
-      wrapPhase(attemptTransferForPrismPhase),
-      wrapPhase(processQueuesPhase),
-      wrapPhase(updateVirtualStatePhase),
-      wrapPhase(processInputQueuesPhase),
-      wrapPhase(scanTransfersPhase),
-      wrapPhase(persistAndReportPhase),
+      wrapPhase(beginTickPhase, debugState),
+      wrapPhase(refreshPrismPhase, debugState),
+      wrapPhase(handleBeamBreaksPhase, debugState),
+      wrapPhase(validateLinksPhase, debugState),
+      wrapPhase(updateBeamsPhase, debugState),
+      wrapPhase(scanDiscoveryPhase, debugState),
+      wrapPhase(pushTransfersPhase, debugState),
+      wrapPhase(attemptTransferForPrismPhase, debugState),
+      wrapPhase(processQueuesPhase, debugState),
+      wrapPhase(updateVirtualStatePhase, debugState),
+      wrapPhase(processInputQueuesPhase, debugState),
+      wrapPhase(scanTransfersPhase, debugState),
+      wrapPhase(persistAndReportPhase, debugState),
     ],
   });
 
@@ -743,6 +953,8 @@ export function createNetworkTransferController(deps, opts) {
     loadPrismLevelsState,
     sendInitMessage,
     logError,
+    prismRegistry,
+    linkGraph,
   });
 
   unsubscribeEvents = subscribeTransferDirtyEvents({
@@ -752,7 +964,11 @@ export function createNetworkTransferController(deps, opts) {
     getInventoryContainer,
     isFurnaceBlock,
     logError,
-    debugLog: (msg) => sendDiagnosticMessage(String(msg || ""), "transfer"),
+    debugLog: (msg) => {
+      const text = msg != null ? String(msg) : "";
+      if (!text) return;
+      emitTrace(null, "transfer", { text, category: "transfer", dedupeKey: text });
+    },
     state: controllerState,
   });
 
@@ -853,8 +1069,8 @@ export function createNetworkTransferController(deps, opts) {
       } catch {}
 
       rebuildReservationsFromInflight();
-      inflightDirty = false;
-      inflightStepDirty = false;
+      dirty.clear(DIRTY.INF);
+      dirty.clear(DIRTY.INF_STEP);
       lastSaveTick = nowTick;
 
       // INIT DEBUG
@@ -871,8 +1087,8 @@ export function createNetworkTransferController(deps, opts) {
       // If loading fails, just start with empty state
       inflight.length = 0;
       fluxFxInflight.length = 0;
-      inflightDirty = false;
-      inflightStepDirty = false;
+      dirty.clear(DIRTY.INF);
+      dirty.clear(DIRTY.INF_STEP);
       lastSaveTick = nowTick;
 
       throw err; // Re-throw so start() can catch it
@@ -889,7 +1105,9 @@ export function createNetworkTransferController(deps, opts) {
       for (const [k, v] of Object.entries(raw)) {
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) continue;
-        countsMap.set(k, n | 0);
+        const canonical = canonicalizePrismKey(k);
+        if (!canonical) continue;
+        countsMap.set(canonical, n | 0);
       }
 
       setDirty(false);
@@ -908,7 +1126,7 @@ export function createNetworkTransferController(deps, opts) {
       loadInputLevels,
       transferCounts,
       (v) => {
-        levelsDirty = v;
+        dirty.set(DIRTY.LEVELS, !!v);
       },
       (v) => {
         lastLevelsSaveTick = v;
@@ -921,7 +1139,7 @@ export function createNetworkTransferController(deps, opts) {
       loadOutputLevels,
       outputCounts,
       (v) => {
-        outputLevelsDirty = v;
+        dirty.set(DIRTY.OUT, !!v);
       },
       (v) => {
         lastOutputLevelsSaveTick = v;
@@ -934,7 +1152,7 @@ export function createNetworkTransferController(deps, opts) {
       loadPrismLevels,
       prismCounts,
       (v) => {
-        prismLevelsDirty = v;
+        dirty.set(DIRTY.PRISM, !!v);
       },
       (v) => {
         lastPrismLevelsSaveTick = v;
@@ -945,9 +1163,9 @@ export function createNetworkTransferController(deps, opts) {
   function _perfLogIfNeeded(label, ms, extra) {
     if (ms > 10 || ((nowTick % 200) === 0 && nowTick > 0)) {
       if (extra) {
-        sendDiagnosticMessage("[PERF] " + label + ": " + ms + "ms (" + extra + ")", "transfer");
+        noteWatchdog("PERF", label + ": " + ms + "ms (" + extra + ")", nowTick);
       } else {
-        sendDiagnosticMessage("[PERF] " + label + ": " + ms + "ms", "transfer");
+        noteWatchdog("PERF", label + ": " + ms + "ms", nowTick);
       }
     }
   }
@@ -956,18 +1174,15 @@ export function createNetworkTransferController(deps, opts) {
 
   function onTick() {
     nowTick++;
+    noteCount("transfer", "ticks", 1);
 
     // ============================
     // PHASE: TICK (Begin)
     // ============================
     // EMERGENCY SAFEGUARD: Check if previous tick was too long - skip this tick if so
-    const guardResult = tickGuardsPhase.run({ nowTick, sendDiagnosticMessage });
+    const guardResult = tickGuardsPhase.run({ nowTick, emitTrace, noteWatchdog });
     if (guardResult?.stop) {
       return; // Skip entire tick to avoid watchdog
-    }
-    // Optional startup ping (only visible to players with lens/goggles + extended debug group "transfer")
-    if (nowTick <= 5) {
-      sendDiagnosticMessage("[Init] onTick() running (tick=" + nowTick + ")", "transfer");
     }
 
     const ctx = createTickContext({
@@ -975,7 +1190,8 @@ export function createNetworkTransferController(deps, opts) {
       cfg,
       world,
       system,
-      sendDiagnosticMessage,
+      emitTrace,
+      noteWatchdog,
       debugEnabled,
       debugState,
       services,
@@ -991,9 +1207,14 @@ export function createNetworkTransferController(deps, opts) {
 
     orbFxBudgetUsed.value = 0;
 
+    const tickStart = Date.now();
     try {
       runTransferPipeline(pipeline, ctx);
     } finally {
+      const elapsed = Date.now() - tickStart;
+      if (Number.isFinite(elapsed)) {
+        noteDuration("transfer", "tick", elapsed);
+      }
       activeTickContext = null;
     }
   }
@@ -1065,6 +1286,10 @@ export function createNetworkTransferController(deps, opts) {
 
   return { start, stop, getCacheManager };
 }
+
+
+
+
 
 
 

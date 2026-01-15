@@ -1,10 +1,7 @@
 // scripts/chaos/bootstrap/components.js
 
-import { EquipmentSlot, EntityComponentTypes, system } from "@minecraft/server";
 import { handleDeathmarkUseEvent, handleDeathmarkUseOnEvent } from "../deathmark.js";
 import { handleInsightLensUseOn } from "../items/insightLens.js";
-import { handleGogglesUseOn, isWearingGoggles } from "../items/insightGoggles.js";
-import { showDebugMenu } from "../core/debugMenu.js";
 
 let mirrorRegistered = false;
 let deathmarkRegistered = false;
@@ -168,54 +165,6 @@ export function registerInsightLensComponent(ctx) {
     }
   });
 
-  // Helper function to check if lens is in offhand
-  function hasLensInOffhand(player) {
-    try {
-      const equippable = player.getComponent(EntityComponentTypes.Equippable) || player.getComponent("minecraft:equippable");
-      if (equippable) {
-        let offhandItem = null;
-        try {
-          offhandItem = equippable.getEquipment(EquipmentSlot.Offhand);
-        } catch {
-          try {
-            offhandItem = equippable.getEquipment(EquipmentSlot.offhand);
-          } catch {}
-        }
-        return offhandItem?.typeId === "chaos:insight_lens";
-      }
-    } catch {}
-    return false;
-  }
-
-  // Handle playerInteractWithBlock for lens in offhand (when using other items)
-  try {
-    if (world.beforeEvents && world.beforeEvents.playerInteractWithBlock) {
-      world.beforeEvents.playerInteractWithBlock.subscribe((ev) => {
-        try {
-          const player = ev.player;
-          if (!player || player.typeId !== "minecraft:player") return;
-          
-          // Check if lens is in offhand
-          if (!hasLensInOffhand(player)) return;
-          
-          // Crouch + right-click with lens in offhand = open menu (cancel block interaction)
-          if (player.isSneaking && ev.block) {
-            ev.cancel = true; // Prevent block interaction when opening menu
-            // Schedule menu show in unrestricted execution context (ActionFormData requires this)
-            system.run(() => {
-              showDebugMenu(player).catch(() => {});
-            });
-          }
-          // Normal right-click: allow normal block interaction (lens in offhand just enables debug visibility)
-        } catch {
-          // ignore
-        }
-      });
-    }
-  } catch {
-    // ignore
-  }
-
   // Handle itemUseOn when lens is in main hand OR offhand
   try {
     if (world.beforeEvents && world.beforeEvents.itemUseOn) {
@@ -226,32 +175,17 @@ export function registerInsightLensComponent(ctx) {
 
           const item = ev?.itemStack;
           const isLensInMainHand = item && item.typeId === "chaos:insight_lens";
-          const isLensInOffhand = hasLensInOffhand(player);
+          const isLensInOffhand = false;
           
           // Must be using lens in main hand OR have lens in offhand
           if (!isLensInMainHand && !isLensInOffhand) return;
 
-          const block = ev?.block;
-
-          // Crouch + right-click = open menu (cancel block interaction)
-          if (player.isSneaking) {
-            if (block) {
-              ev.cancel = true; // Prevent block interaction when opening menu
-            }
-            // Schedule menu show in unrestricted execution context (ActionFormData requires this)
-            system.run(() => {
-              showDebugMenu(player).catch(() => {});
-            });
-            return;
-          }
-
           // Normal right-click: allow normal block interaction
           // (lens in offhand just enables debug visibility, no special action needed)
-          if (isLensInMainHand && block) {
+          if (isLensInMainHand && ev?.block) {
             handleInsightLensUseOn(ev, { world });
             // Don't cancel - allow normal block interaction to proceed
           }
-          // Air clicks handled in itemUse event below
         } catch {
           // ignore
         }
@@ -261,35 +195,7 @@ export function registerInsightLensComponent(ctx) {
     // ignore
   }
 
-  // Handle itemUse event for right-clicking air (when lens is held in main hand or offhand)
-  try {
-    world.afterEvents.itemUse.subscribe((e) => {
-      try {
-        const player = e.source;
-        if (!player || player.typeId !== "minecraft:player") return;
-        
-        const item = e.itemStack;
-        const isLensInMainHand = item && item.typeId === "chaos:insight_lens";
-        const isLensInOffhand = hasLensInOffhand(player);
-        
-        // Must be using lens in main hand OR have lens in offhand
-        if (!isLensInMainHand && !isLensInOffhand) return;
-        
-        // Only crouch + use (air) opens menu
-        if (player.isSneaking && !e.block) {
-          // Schedule menu show in unrestricted execution context (ActionFormData requires this)
-          system.run(() => {
-            showDebugMenu(player).catch(() => {});
-          });
-        }
-        // Normal use (air) does nothing
-      } catch {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
+  // No extra air-use handling needed.
 }
 
 export function registerInsightGogglesComponent(ctx) {
@@ -311,102 +217,5 @@ export function registerInsightGogglesComponent(ctx) {
     }
   });
 
-  // Handle playerInteractWithBlock for goggles (when wearing and crouching)
-  try {
-    if (world.beforeEvents && world.beforeEvents.playerInteractWithBlock) {
-      world.beforeEvents.playerInteractWithBlock.subscribe((ev) => {
-        try {
-          const player = ev?.player;
-          if (!player || player.typeId !== "minecraft:player") return;
-
-          // Only handle if wearing goggles AND crouching
-          if (!isWearingGoggles(player)) return;
-          if (!player.isSneaking) return;
-
-          // Crouch + right-click = open menu (cancel block interaction)
-          ev.cancel = true;
-          // Schedule menu show in unrestricted execution context (ActionFormData requires this)
-          system.run(() => {
-            showDebugMenu(player).catch(() => {});
-          });
-        } catch {
-          // ignore
-        }
-      });
-    }
-  } catch {
-    // ignore
-  }
-
-  // Handle beforeEvents.itemUseOn for goggles item (when holding it)
-  try {
-    if (world.beforeEvents && world.beforeEvents.itemUseOn) {
-      world.beforeEvents.itemUseOn.subscribe((ev) => {
-        try {
-          const item = ev?.itemStack;
-          if (!item || item.typeId !== "chaos:insight_goggles") return;
-
-          const player = ev?.source;
-          if (!player || player.typeId !== "minecraft:player") return;
-
-          const block = ev?.block;
-
-          // Crouch + right-click = open menu (cancel block interaction)
-          if (player.isSneaking) {
-            if (block) {
-              ev.cancel = true; // Prevent block interaction when opening menu
-            }
-            // Schedule menu show in unrestricted execution context (ActionFormData requires this)
-            system.run(() => {
-              showDebugMenu(player).catch(() => {});
-            });
-            return;
-          }
-
-          // Normal right-click on block = toggle debug group but allow normal interaction
-          if (block) {
-            handleGogglesUseOn(ev, { world });
-            // Don't cancel - allow normal block interaction to proceed
-          }
-        } catch {
-          // ignore
-        }
-      });
-    }
-  } catch {
-    // ignore
-  }
-
-  // Handle itemUse event for right-clicking air (with goggles item or when wearing goggles) - only for crouch menu
-  try {
-    world.afterEvents.itemUse.subscribe((e) => {
-      try {
-        const player = e.source;
-        if (!player || player.typeId !== "minecraft:player") return;
-
-        const item = e.itemStack;
-        const isUsingGogglesItem = item && item.typeId === "chaos:insight_goggles";
-        const isWearing = isWearingGoggles(player);
-
-        // Must be using goggles item OR wearing goggles
-        if (!isUsingGogglesItem && !isWearing) return;
-
-        // Only handle air use (no block)
-        if (e.block) return;
-
-        // Only crouch + use (air) opens menu
-        if (player.isSneaking) {
-          // Schedule menu show in unrestricted execution context (ActionFormData requires this)
-          system.run(() => {
-            showDebugMenu(player).catch(() => {});
-          });
-        }
-        // Normal use (air) does nothing
-      } catch {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
+  // No goggles interaction menu in Insight v2.
 }

@@ -1,18 +1,16 @@
 // scripts/chaos/features/links/transfer/pathfinding/pathfinder.js
-import { DEFAULTS, isPrismBlock } from "../config.js";
+import { DEFAULTS, isPrismBlock, isEndpointId } from "../config.js";
 import { mergeCfg } from "../utils.js";
-import { key, parseKey } from "../keys.js";
-import { makeDirs, scanEdgeFromNode } from "./graph.js";
+import { parseKey } from "../keys.js";
 import { getAllAdjacentInventories } from "../inventory/inventory.js";
 
 export function createTransferPathfinder(deps, opts) {
   const world = deps.world;
+  const linkGraph = deps.linkGraph;
   const getNetworkStamp = deps.getNetworkStamp;
 
   const cfg = mergeCfg(DEFAULTS, opts);
   const cache = new Map();
-  const edgeCache = new Map();
-  let edgeCacheStamp = null;
   // Cache for prism inventory checks during pathfinding (avoid expensive getAllAdjacentInventories calls)
   const prismInventoryCheckCache = new Map(); // prismKey -> { hasInventories: boolean, tick: number }
   const PRISM_INVENTORY_CHECK_CACHE_TTL = 10; // Cache for 10 ticks
@@ -90,16 +88,17 @@ export function createTransferPathfinder(deps, opts) {
     }
 
     const visited = new Set();
+    const parent = new Map();
     let visitedCount = 0;
     const queue = [];
     let qIndex = 0;
     const startPos = { x: parsed.x, y: parsed.y, z: parsed.z };
     queue.push({
+      nodeKey: prismKey,
       nodePos: startPos,
       nodeType: "prism",
-      path: [startPos], // Include starting position in path
     });
-    visited.add(key(parsed.dimId, parsed.x, parsed.y, parsed.z));
+    visited.add(prismKey);
     visitedCount++;
 
     // Note: We don't do early termination anymore - BFS finds closer nodes first,
@@ -117,93 +116,65 @@ export function createTransferPathfinder(deps, opts) {
       if (visitedCount >= cfg.maxVisitedPerSearch) break;
       const cur = queue[qIndex++];
       if (!cur) continue;
-      if (stamp !== edgeCacheStamp) {
-        edgeCache.clear();
-        edgeCacheStamp = stamp;
+      if (!linkGraph || typeof linkGraph.getNeighbors !== "function") {
+        cache.set(prismKey, { tick: nowTick, stamp, outputs: null, filterForPull });
+        return null;
       }
 
-      const curKey = key(parsed.dimId, cur.nodePos.x, cur.nodePos.y, cur.nodePos.z);
-      const edgeKey = `${curKey}|${cur.nodeType}`;
-      let edges = edgeCache.get(edgeKey);
-      if (!edges) {
-        edges = [];
-        const dirs = makeDirs();
-        for (const d of dirs) {
-          const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
-          if (edge) edges.push(edge);
-        }
-        edgeCache.set(edgeKey, edges);
-      }
-
-      for (const edge of edges) {
-        const nextKey = key(parsed.dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
+      const neighbors = linkGraph.getNeighbors(cur.nodeKey, { includePending: false });
+      for (const edge of neighbors) {
+        const nextKey = edge.key;
         if (visited.has(nextKey)) continue;
+        const parsedNext = parseKey(nextKey);
+        if (!parsedNext) continue;
 
-        const nextPath = cur.path.concat(edge.path, [edge.nodePos]);
+        const targetBlock = getBlockCached(parsedNext.x, parsedNext.y, parsedNext.z);
+        const isPrism = isPrismBlock(targetBlock);
+        const isEndpoint = targetBlock && isEndpointId(targetBlock.typeId);
 
-        // Target prisms (or crystallizers) can receive items
-        if (edge.nodeType === "prism" || edge.nodeType === "crystal") {
-          // For prisms, check if they have inventories before adding as output
-          // Crystallizers can always accept items (no check needed)
-          let isValidOutput = true;
-          if (edge.nodeType === "prism") {
-            try {
-              // Use cached inventory check to avoid expensive getAllAdjacentInventories calls
-              const cached = prismInventoryCheckCache.get(nextKey);
-              if (cached && (nowTick - cached.tick) <= PRISM_INVENTORY_CHECK_CACHE_TTL) {
-                isValidOutput = cached.hasInventories;
-              } else {
-                // Not cached or expired - check and cache
-                // Optimization #2: Use block cache to avoid repeated dim.getBlock calls
-                const targetBlock = getBlockCached(edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
-                if (targetBlock && isPrismBlock(targetBlock)) {
-                  const inventories = getAllAdjacentInventories(targetBlock, dim);
-                  isValidOutput = inventories && inventories.length > 0;
-                  // Cache the result
-                  prismInventoryCheckCache.set(nextKey, {
-                    hasInventories: isValidOutput,
-                    tick: nowTick,
-                  });
-                } else {
-                  isValidOutput = false;
-                  // Cache negative result too
-                  prismInventoryCheckCache.set(nextKey, {
-                    hasInventories: false,
-                    tick: nowTick,
-                  });
-                }
-              }
-            } catch {
-              isValidOutput = false;
+        let isValidOutput = true;
+        if (isPrism) {
+          try {
+            const cached = prismInventoryCheckCache.get(nextKey);
+            if (cached && (nowTick - cached.tick) <= PRISM_INVENTORY_CHECK_CACHE_TTL) {
+              isValidOutput = cached.hasInventories;
+            } else {
+              const inventories = getAllAdjacentInventories(targetBlock, dim);
+              isValidOutput = inventories && inventories.length > 0;
+              prismInventoryCheckCache.set(nextKey, {
+                hasInventories: isValidOutput,
+                tick: nowTick,
+              });
             }
+          } catch {
+            isValidOutput = false;
           }
-          
-          if (isValidOutput) {
+        }
+
+        if (!parent.has(nextKey)) {
+          parent.set(nextKey, { prevKey: cur.nodeKey, edgeId: edge.edgeId, key: nextKey });
+        }
+
+        if (isValidOutput && (isPrism || isEndpoint)) {
+          const path = linkGraph.buildPathFromParents(prismKey, nextKey, parent);
+          if (path) {
             outputs.push({
               dimId: parsed.dimId,
               outputKey: nextKey,
-              outputPos: edge.nodePos,
-              path: nextPath,
-              outputType: edge.nodeType,
+              outputPos: { x: parsedNext.x, y: parsedNext.y, z: parsedNext.z },
+              path,
+              outputType: isEndpoint ? "crystal" : "prism",
             });
-            // Only terminate early if we've explored enough nodes AND found many outputs
-            // This ensures we find both close and distant nodes before stopping
-            if (visitedCount >= MIN_EXPLORATION_NODES && outputs.length >= earlyTerminationLimit) {
-              // Found many outputs after exploring enough - terminate search early
-              visitedCount = cfg.maxVisitedPerSearch; // Force loop exit
-              break;
-            }
           }
-          // If prism has no inventories, continue searching through it but don't add as output
+          if (visitedCount >= MIN_EXPLORATION_NODES && outputs.length >= earlyTerminationLimit) {
+            visitedCount = cfg.maxVisitedPerSearch;
+            break;
+          }
         }
 
         visited.add(nextKey);
         visitedCount++;
-        queue.push({
-          nodePos: edge.nodePos,
-          nodeType: edge.nodeType,
-          path: nextPath,
-        });
+        queue.push({ nodeKey: nextKey, nodePos: { x: parsedNext.x, y: parsedNext.y, z: parsedNext.z } });
         if (visitedCount >= cfg.maxVisitedPerSearch) break;
       }
       // Only break outer loop if we've explored enough AND found many outputs

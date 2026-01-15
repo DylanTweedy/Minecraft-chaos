@@ -17,7 +17,7 @@ import { isFurnaceBlock } from "../inventory/inventory.js";
  * @returns {Object} Refinement manager with refinement methods
  */
 export function createRefinementManager(cfg, deps) {
-  const { FX, cacheManager, resolveBlockInfo, dropItemAt, fxManager, enqueuePendingForContainer } = deps;
+  const { FX, cacheManager, resolveBlockInfo, dropItemAt, fxManager, enqueuePendingForContainer, linkGraph } = deps;
 
   /**
    * Finds all prism blocks in a path
@@ -172,7 +172,12 @@ export function createRefinementManager(cfg, deps) {
   function sendExoticsToOutput(prismBlock, job, exotics) {
     try {
       if (!prismBlock || !job || !Array.isArray(exotics) || exotics.length === 0) return;
-      const route = findOutputRouteFromNode(prismBlock, job.dimId, cacheManager.getPrismInventoriesCached.bind(cacheManager));
+      const route = findOutputRouteFromNode(
+        prismBlock,
+        job.dimId,
+        cacheManager.getPrismInventoriesCached.bind(cacheManager),
+        linkGraph
+      );
       if (!route) {
         for (const entry of exotics) {
           dropItemAt(prismBlock.dimension, prismBlock.location, entry.typeId, entry.amount);

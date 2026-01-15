@@ -1,6 +1,8 @@
 // scripts/chaos/features/links/shared/filters.js
 // Node filter storage using world dynamic properties.
 
+import { canonicalizePrismKey, key as makePrismKey } from "../transfer/runtime/prismKeys.js";
+
 const DP_NODE_FILTERS = "chaos:node_filters_v0_json";
 
 let _filtersCache = null; // key -> array of typeIds
@@ -23,12 +25,23 @@ function safeJsonStringify(v) {
   }
 }
 
+function normalizeFilters(obj) {
+  if (!obj || typeof obj !== "object") return {};
+  const normalized = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const canonical = canonicalizePrismKey(key);
+    if (!canonical) continue;
+    normalized[canonical] = Array.isArray(value) ? value.slice() : [];
+  }
+  return normalized;
+}
+
 function ensureLoaded(world) {
   if (_filtersCache) return;
   try {
     const raw = world.getDynamicProperty(DP_NODE_FILTERS);
     const parsed = safeJsonParse(raw);
-    _filtersCache = (parsed && typeof parsed === "object") ? parsed : {};
+    _filtersCache = normalizeFilters(parsed);
     _setsCache.clear();
   } catch {
     _filtersCache = {};
@@ -52,7 +65,7 @@ function keyFromBlock(block) {
     const loc = block.location;
     const dimId = block.dimension?.id;
     if (!dimId) return null;
-    return `${dimId}|${loc.x},${loc.y},${loc.z}`;
+    return makePrismKey(dimId, loc.x, loc.y, loc.z);
   } catch {
     return null;
   }

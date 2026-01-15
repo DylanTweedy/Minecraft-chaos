@@ -1,53 +1,46 @@
 // scripts/chaos/wandBeam.js
-import { world } from "@minecraft/server";
-import { startBeamBetween } from "./beamMover.js";
+import { world, system } from "@minecraft/server";
+import { spawnTestBeam } from "./beamMove.js";
 
 const WAND_ID = "chaos:wand";
 
-const DIST = 8;     // blocks away for testing
-const SPEED = 1;    // blocks per tick
-
-const CARDINAL = [
-  { x: 1, y: 0, z: 0 },
-  { x: -1, y: 0, z: 0 },
-  { x: 0, y: 1, z: 0 },
-  { x: 0, y: -1, z: 0 },
-  { x: 0, y: 0, z: 1 },
-  { x: 0, y: 0, z: -1 },
-];
+// LOCKED ID. If chat shows anything else, you're not running this file.
+const BEAM_ID = "chaos:beam_entity";
 
 world.afterEvents.itemUse.subscribe((ev) => {
   const player = ev.source;
   const item = ev.itemStack;
   if (!player || player.typeId !== "minecraft:player") return;
   if (!item || item.typeId !== WAND_ID) return;
+  
+  player.sendMessage(`[Chaos] WandBeam v7 (spawning ${BEAM_ID})`);
 
   const hit = player.getBlockFromViewDirection?.({ maxDistance: 64 });
-  if (!hit || !hit.block) {
-    player.sendMessage("No block hit.");
+  if (!hit?.block) {
+    player.sendMessage("[Chaos] No block hit.");
     return;
   }
 
   const startBlock = hit.block.location;
 
-  const d = CARDINAL[Math.floor(Math.random() * CARDINAL.length)];
+  // End point is along view direction
+  const dir = player.getViewDirection();
   const endBlock = {
-    x: startBlock.x + d.x * DIST,
-    y: startBlock.y + d.y * DIST,
-    z: startBlock.z + d.z * DIST,
+    x: startBlock.x + Math.round(dir.x * 10),
+    y: startBlock.y + Math.round(dir.y * 10),
+    z: startBlock.z + Math.round(dir.z * 10),
   };
 
   player.sendMessage(
-    `Beam start=${startBlock.x},${startBlock.y},${startBlock.z} dir=(${d.x},${d.y},${d.z}) end=${endBlock.x},${endBlock.y},${endBlock.z}`
+    `[Chaos] Beam test: start=${startBlock.x},${startBlock.y},${startBlock.z} end=${endBlock.x},${endBlock.y},${endBlock.z}`
   );
 
-  const beam = startBeamBetween(player.dimension, {
+  spawnTestBeam(player, {
+    beamId: BEAM_ID,
     startBlock,
     endBlock,
-    speedBlocksPerTick: SPEED,
+    alpha: 1.0,
+    spinDegPerTick: 20,
+    speedBlocksPerTick: 3,
   });
-
-  if (!beam) {
-    player.sendMessage("Beam spawn failed.");
-  }
 });

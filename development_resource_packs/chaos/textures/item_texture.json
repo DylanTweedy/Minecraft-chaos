@@ -1,48 +1,65 @@
 {
-  "resource_pack_name": "Chaos Nodes RP",
-  "texture_name": "atlas.items",
-  "texture_data": {
-    "chaos_wand": {
-      "textures": "textures/items/chaos_wand"
-    },
-    "flux_1": {
-      "textures": "textures/items/flux_1"
-    },
-    "flux_2": {
-      "textures": "textures/items/flux_2"
-    },
-    "flux_3": {
-      "textures": "textures/items/flux_3"
-    },
-    "flux_4": {
-      "textures": "textures/items/flux_4"
-    },
-    "flux_5": {
-      "textures": "textures/items/flux_5"
-    },
-    "exotic_shard": {
-      "textures": "textures/items/exotic_shard"
-    },
-    "exotic_fiber": {
-      "textures": "textures/items/exotic_fiber"
-    },
-    "exotic_alloy_lump": {
-      "textures": "textures/items/exotic_alloy_lump"
-    },
-    "chaos_crystal_shard": {
-      "textures": "textures/items/exotic_shard"
-    },
-    "magic_mirror": {
-      "textures": "textures/items/magic_mirror"
-    },
-    "deathmark": {
-      "textures": "textures/items/deathmark"
-    },
-    "insight_lens": {
-      "textures": "textures/items/insight_lens"
-    },
-    "insight_goggles": {
-      "textures": "textures/items/insight_goggles"
-    }
-  }
+	"texture_data": {
+		"godsteel_helmet": {
+			"textures": "textures/items/godsteel_helmet.png"
+		},
+		"godsteel_chestplate": {
+			"textures": "textures/items/godsteel_chestplate.png"
+		},
+		"godsteel_leggings": {
+			"textures": "textures/items/godsteel_leggings.png"
+		},
+		"godsteel_boots": {
+			"textures": "textures/items/godsteel_boots.png"
+		},
+		"chaos_wand": {
+			"textures": "textures/items/chaos_wand"
+		},
+		"flux_1": {
+			"textures": "textures/items/flux_1"
+		},
+		"flux_2": {
+			"textures": "textures/items/flux_2"
+		},
+		"flux_3": {
+			"textures": "textures/items/flux_3"
+		},
+		"flux_4": {
+			"textures": "textures/items/flux_4"
+		},
+		"flux_5": {
+			"textures": "textures/items/flux_5"
+		},
+		"exotic_shard": {
+			"textures": "textures/items/exotic_shard"
+		},
+		"exotic_fiber": {
+			"textures": "textures/items/exotic_fiber"
+		},
+		"exotic_alloy_lump": {
+			"textures": "textures/items/exotic_alloy_lump"
+		},
+		"chaos_crystal_shard": {
+			"textures": "textures/items/exotic_shard"
+		},
+		"magic_mirror": {
+			"textures": "textures/items/magic_mirror"
+		},
+		"deathmark": {
+			"textures": "textures/items/deathmark"
+		},
+		"insight_lens": {
+			"textures": "textures/items/insight_lens"
+		},
+		"insight_goggles": {
+			"textures": "textures/items/insight_goggles"
+		},
+		"godsteel_greatsword": {
+			"textures": "textures/items/godsteel_greatsword"
+		},
+    "godsteel_ingot": { "textures": "textures/items/godsteel_ingot" }
+
+	},
+	"resource_pack_name": "Chaos",
+	"texture_name": "atlas.items"
 }

@@ -12,9 +12,8 @@ export function createTickContext(opts = {}) {
     cfg,
     world: opts.world || null,
     system: opts.system || null,
-    sendDiagnosticMessage: opts.sendDiagnosticMessage || (() => {}),
-    traceKey: opts.traceKey || null,
-    canTrace: opts.canTrace ?? true,
+    emitTrace: opts.emitTrace || (() => {}),
+    noteWatchdog: opts.noteWatchdog || (() => {}),
     softBudgetMs: opts.softBudgetMs || 0,
     tickStart: Date.now(),
     metrics: {

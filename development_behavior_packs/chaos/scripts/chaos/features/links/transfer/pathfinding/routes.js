@@ -1,14 +1,13 @@
 // scripts/chaos/features/links/transfer/pathfinding/routes.js
-import { CRYSTALLIZER_ID, CRYSTAL_ROUTE_MAX_NODES, isPrismBlock } from "../config.js";
-import { key, parseKey, getContainerKey, getContainerKeyFromInfo } from "../keys.js";
-import { makeDirs, scanEdgeFromNode } from "./graph.js";
+import { CRYSTALLIZER_ID, CRYSTAL_ROUTE_MAX_NODES, isPrismBlock, isEndpointId } from "../config.js";
+import { key, parseKey } from "../keys.js";
 import { getAllAdjacentInventories } from "../inventory/inventory.js";
 
 // Find route from a prism to another prism (or crystallizer) that can accept items
 // Optional getPrismInventoriesCached function for cached inventory checks (from cache manager)
-export function findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCached = null) {
+export function findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCached = null, linkGraph = null) {
   try {
-    if (!startBlock || !dimId) return null;
+    if (!startBlock || !dimId || !linkGraph) return null;
     const dim = startBlock.dimension;
     if (!dim) return null;
     const startPos = startBlock.location;
@@ -23,23 +22,25 @@ export function findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCac
 
     while (qIndex < queue.length && visited.size < CRYSTAL_ROUTE_MAX_NODES) {
       const cur = queue[qIndex++];
-      const dirs = makeDirs();
-      for (const d of dirs) {
-        const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
-        if (!edge) continue;
-        const nextKey = key(dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
+      const neighbors = linkGraph.getNeighbors(cur.key, { includePending: false });
+      for (const edge of neighbors) {
+        const nextKey = edge.key;
         if (visited.has(nextKey)) continue;
+        const parsed = parseKey(nextKey);
+        if (!parsed) continue;
+
         visited.add(nextKey);
         parent.set(nextKey, {
           prevKey: cur.key,
-          edgePath: edge.path,
-          nodePos: { x: edge.nodePos.x, y: edge.nodePos.y, z: edge.nodePos.z },
-          nodeType: edge.nodeType,
+          edgeId: edge.edgeId,
+          nodePos: { x: parsed.x, y: parsed.y, z: parsed.z },
         });
 
-        // Check if target prism has inventories (can accept items)
-        if (edge.nodeType === "prism") {
-          const targetBlock = dim.getBlock(edge.nodePos);
+        const targetBlock = dim.getBlock({ x: parsed.x, y: parsed.y, z: parsed.z });
+        const isPrism = isPrismBlock(targetBlock);
+        const isEndpoint = targetBlock && isEndpointId(targetBlock.typeId);
+
+        if (isPrism) {
           if (!targetBlock || !isPrismBlock(targetBlock)) {
             continue;
           }
@@ -48,16 +49,15 @@ export function findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCac
             ? getPrismInventoriesCached(nextKey, targetBlock, dim)
             : getAllAdjacentInventories(targetBlock, dim);
           if (inventories && inventories.length > 0) {
-            return buildPrismRoute(startKey, nextKey, parent);
+            return buildPrismRoute(startKey, nextKey, parent, linkGraph);
           }
         }
 
-        // Crystallizers can always accept items
-        if (edge.nodeType === "crystal") {
-          return buildPrismRoute(startKey, nextKey, parent);
+        if (isEndpoint) {
+          return buildPrismRoute(startKey, nextKey, parent, linkGraph);
         }
 
-        queue.push({ nodePos: edge.nodePos, nodeType: edge.nodeType, key: nextKey });
+        queue.push({ nodePos: { x: parsed.x, y: parsed.y, z: parsed.z }, nodeType: isEndpoint ? "endpoint" : "prism", key: nextKey });
         if (visited.size >= CRYSTAL_ROUTE_MAX_NODES) break;
       }
     }
@@ -68,34 +68,14 @@ export function findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCac
 }
 
 // Legacy function name
-export function findOutputRouteFromNode(startBlock, dimId, getPrismInventoriesCached = null) {
-  return findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCached);
+export function findOutputRouteFromNode(startBlock, dimId, getPrismInventoriesCached = null, linkGraph = null) {
+  return findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCached, linkGraph);
 }
 
-function buildPrismRoute(startKey, targetKey, parent) {
+function buildPrismRoute(startKey, targetKey, parent, linkGraph) {
   try {
-    const steps = [];
-    let curKey = targetKey;
-    while (curKey && curKey !== startKey) {
-      const info = parent.get(curKey);
-      if (!info) break;
-      steps.push(info);
-      curKey = info.prevKey;
-    }
-    if (curKey !== startKey) return null;
-    steps.reverse();
-
-    const parsedStart = parseKey(startKey);
-    if (!parsedStart) return null;
-    const forward = [{ x: parsedStart.x, y: parsedStart.y, z: parsedStart.z }];
-    for (const step of steps) {
-      if (Array.isArray(step.edgePath) && step.edgePath.length > 0) {
-        for (const p of step.edgePath) forward.push({ x: p.x, y: p.y, z: p.z });
-      }
-      forward.push({ x: step.nodePos.x, y: step.nodePos.y, z: step.nodePos.z });
-    }
-    if (forward.length < 2) return null;
-
+    const forward = linkGraph.buildPathFromParents(startKey, targetKey, parent);
+    if (!forward || forward.length < 2) return null;
     const reversed = forward.slice().reverse();
     const outputPos = reversed[0];
     return {
@@ -115,9 +95,9 @@ function buildOutputRoute(startKey, targetKey, parent) {
   return buildPrismRoute(startKey, targetKey, parent);
 }
 
-export function findCrystallizerRouteFromPrism(prismBlock, dimId) {
+export function findCrystallizerRouteFromPrism(prismBlock, dimId, linkGraph = null) {
   try {
-    if (!prismBlock || !dimId) return null;
+    if (!prismBlock || !dimId || !linkGraph) return null;
     const dim = prismBlock.dimension;
     if (!dim) return null;
     const startPos = prismBlock.location;
@@ -132,23 +112,23 @@ export function findCrystallizerRouteFromPrism(prismBlock, dimId) {
 
     while (qIndex < queue.length && visited.size < CRYSTAL_ROUTE_MAX_NODES) {
       const cur = queue[qIndex++];
-      const dirs = makeDirs();
-      for (const d of dirs) {
-        const edge = scanEdgeFromNode(dim, cur.nodePos, d, cur.nodeType);
-        if (!edge) continue;
-        const nextKey = key(dimId, edge.nodePos.x, edge.nodePos.y, edge.nodePos.z);
+      const neighbors = linkGraph.getNeighbors(cur.key, { includePending: false });
+      for (const edge of neighbors) {
+        const nextKey = edge.key;
         if (visited.has(nextKey)) continue;
+        const parsed = parseKey(nextKey);
+        if (!parsed) continue;
         visited.add(nextKey);
         parent.set(nextKey, {
           prevKey: cur.key,
-          edgePath: edge.path,
-          nodePos: { x: edge.nodePos.x, y: edge.nodePos.y, z: edge.nodePos.z },
-          nodeType: edge.nodeType,
+          edgeId: edge.edgeId,
+          nodePos: { x: parsed.x, y: parsed.y, z: parsed.z },
         });
-        if (edge.nodeType === "crystal") {
-          return buildCrystallizerRoute(startKey, nextKey, parent);
+        const targetBlock = dim.getBlock({ x: parsed.x, y: parsed.y, z: parsed.z });
+        if (targetBlock && isEndpointId(targetBlock.typeId)) {
+          return buildCrystallizerRoute(startKey, nextKey, parent, linkGraph);
         }
-        queue.push({ nodePos: edge.nodePos, nodeType: edge.nodeType, key: nextKey });
+        queue.push({ nodePos: { x: parsed.x, y: parsed.y, z: parsed.z }, nodeType: "prism", key: nextKey });
         if (visited.size >= CRYSTAL_ROUTE_MAX_NODES) break;
       }
     }
@@ -158,29 +138,10 @@ export function findCrystallizerRouteFromPrism(prismBlock, dimId) {
   }
 }
 
-function buildCrystallizerRoute(startKey, targetKey, parent) {
+function buildCrystallizerRoute(startKey, targetKey, parent, linkGraph) {
   try {
-    const steps = [];
-    let curKey = targetKey;
-    while (curKey && curKey !== startKey) {
-      const info = parent.get(curKey);
-      if (!info) break;
-      steps.push(info);
-      curKey = info.prevKey;
-    }
-    if (curKey !== startKey) return null;
-    steps.reverse();
-
-    const parsedStart = parseKey(startKey);
-    if (!parsedStart) return null;
-    const forward = [{ x: parsedStart.x, y: parsedStart.y, z: parsedStart.z }];
-    for (const step of steps) {
-      if (Array.isArray(step.edgePath) && step.edgePath.length > 0) {
-        for (const p of step.edgePath) forward.push({ x: p.x, y: p.y, z: p.z });
-      }
-      forward.push({ x: step.nodePos.x, y: step.nodePos.y, z: step.nodePos.z });
-    }
-      if (forward.length < 2) return null;
+    const forward = linkGraph.buildPathFromParents(startKey, targetKey, parent);
+    if (!forward || forward.length < 2) return null;
     const reversed = forward.slice().reverse();
     const crystalPos = reversed[0];
     return {
@@ -195,6 +156,6 @@ function buildCrystallizerRoute(startKey, targetKey, parent) {
 }
 
 // Legacy function name
-export function findCrystallizerRouteFromOutput(outputBlock, dimId) {
-  return findCrystallizerRouteFromPrism(outputBlock, dimId);
+export function findCrystallizerRouteFromOutput(outputBlock, dimId, linkGraph = null) {
+  return findCrystallizerRouteFromPrism(outputBlock, dimId, linkGraph);
 }

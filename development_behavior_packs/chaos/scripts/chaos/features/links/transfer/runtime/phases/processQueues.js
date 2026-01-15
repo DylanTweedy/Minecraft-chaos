@@ -23,7 +23,7 @@ function createProcessQueuesHandler(deps) {
     debugEnabled,
     debugState,
     getNowTick,
-    sendDiagnosticMessage,
+    noteWatchdog,
     runTransferPipeline,
     perfLogIfNeeded,
     setInflightDirty,
@@ -107,10 +107,9 @@ function createProcessQueuesHandler(deps) {
 
     const queuesTotalTime = Date.now() - queuesStart;
     if (queuesTotalTime > 20 || ((nowTick % 200) === 0 && nowTick > 0)) {
-      sendDiagnosticMessage(
-        "[PERF] Queues+Inflight Total: " + queuesTotalTime + "ms",
-        "transfer"
-      );
+      if (typeof noteWatchdog === "function") {
+        noteWatchdog("PERF", "Queues+Inflight Total: " + queuesTotalTime + "ms", nowTick);
+      }
     }
 
     return { ...ok(), queuesTotalTime };

@@ -21,6 +21,7 @@ export function createInflightProcessorManager(cfg, deps) {
     finalizeManager,
     debugEnabled,
     debugState,
+    linkGraph,
   } = deps;
 
   function isPrismBlockFast(block) {
@@ -57,6 +58,20 @@ export function createInflightProcessorManager(cfg, deps) {
       const next = job.path[nextIdx];
       const dim = cacheManager.getDimensionCached(job.dimId);
       if (!dim) continue;
+
+      if (Array.isArray(job.edgeEpochs) && job.edgeEpochs.length > job.stepIndex && linkGraph && typeof linkGraph.getEdgeBetweenKeys === "function") {
+        const curKey = key(job.dimId, cur.x, cur.y, cur.z);
+        const nextKey = key(job.dimId, next.x, next.y, next.z);
+        const edge = linkGraph.getEdgeBetweenKeys(curKey, nextKey);
+        const expectedEpoch = job.edgeEpochs[job.stepIndex] | 0;
+        if (!edge || (edge.epoch | 0) !== expectedEpoch) {
+          dropItemAt(dim, cur, job.itemTypeId, job.amount);
+          releaseContainerSlot(job.containerKey, job.itemTypeId, job.amount);
+          inflight.splice(i, 1);
+          inflightDirty = true;
+          continue;
+        }
+      }
 
       const curBlock =
         cacheManager.getBlockCached(job.dimId, cur) ||
@@ -167,6 +182,17 @@ export function createInflightProcessorManager(cfg, deps) {
       const nextBlock =
         cacheManager.getBlockCached(job.dimId, next) ||
         dim.getBlock({ x: next.x, y: next.y, z: next.z });
+
+      if (Array.isArray(job.edgeEpochs) && job.edgeEpochs.length > job.stepIndex && linkGraph && typeof linkGraph.getEdgeBetweenKeys === "function") {
+        const curKey = key(job.dimId, cur.x, cur.y, cur.z);
+        const nextKey = key(job.dimId, next.x, next.y, next.z);
+        const edge = linkGraph.getEdgeBetweenKeys(curKey, nextKey);
+        const expectedEpoch = job.edgeEpochs[job.stepIndex] | 0;
+        if (!edge || (edge.epoch | 0) !== expectedEpoch) {
+          fluxFxInflight.splice(i, 1);
+          continue;
+        }
+      }
 
       if (isPrismBlockFast(curBlock)) {
         refinementManager.applyPrismSpeedBoost(job, curBlock);

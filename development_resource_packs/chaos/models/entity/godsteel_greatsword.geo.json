@@ -1,0 +1,37 @@
+{
+  "format_version": "1.16.0",
+  "minecraft:geometry": [
+    {
+      "description": {
+        "identifier": "geometry.godsteel_greatsword",
+        "texture_width": 32,
+        "texture_height": 32,
+        "visible_bounds_width": 64,
+        "visible_bounds_height": 64,
+        "visible_bounds_offset": [0, 32, 0]
+      },
+
+      	"bones": [
+				{
+					"name": "rightitem",
+					"pivot": [0, 23, 0],
+					"rotation": [90, 0, 0],
+					"binding": "'rightitem'",
+					"cubes": [
+						{"origin": [-1, 20, -1], "size": [2, 6, 2], "pivot": [0, 23, 0], "rotation": [0, -45, 0], "uv": [23, 1]},
+						{"origin": [-1.5, 26, -6], "size": [3, 3, 12], "uv": [0, 1]},
+						{"origin": [0.5, 52, -6], "size": [2, 2, 12], "pivot": [1.5, 51, 0], "rotation": [0, 0, -45], "uv": [0, 1]},
+						{"origin": [-1, 29, -1], "size": [2, 37, 2], "pivot": [0, 23, 0], "rotation": [0, -45, 0], "uv": [1, 11]},
+						{"origin": [0, 27, -5], "size": [0.01, 8, 10], "uv": [12, 14]},
+						{"origin": [0, 35, -5], "size": [0.01, 8, 10], "uv": [12, 14]},
+						{"origin": [0, 43, -5], "size": [0.01, 8, 10], "uv": [12, 14]},
+						{"origin": [0, 51, -5], "size": [0.01, 8, 10], "uv": [12, 14]},
+						{"origin": [0, 59, -5], "size": [0.01, 14, 10], "uv": [12, 8]},
+						{"origin": [-2, 27, -1.75], "size": [4, 2, 2], "pivot": [-1, 27, -0.75], "rotation": [-45, 0, 0], "uv": [0, 2]},
+						{"origin": [-2, 17, -2], "size": [4, 4, 4], "uv": [6, 8]}
+					]
+				}
+			]
+    }
+  ]
+}

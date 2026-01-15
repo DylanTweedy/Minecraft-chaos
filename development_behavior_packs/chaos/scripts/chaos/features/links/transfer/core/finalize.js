@@ -28,6 +28,7 @@ export function createFinalizeManager(cfg, deps) {
     getContainerKey,
     debugEnabled,
     debugState,
+    linkGraph,
   } = deps;
 
   /**
@@ -159,7 +160,7 @@ export function createFinalizeManager(cfg, deps) {
         deps.noteOutputTransfer(job.outputKey, outBlock);
       }
       if (debugEnabled && debugState) debugState.fluxGenChecks++;
-      const crystalRoute = findCrystallizerRouteFromPrism(outBlock, job.dimId);
+      const crystalRoute = findCrystallizerRouteFromPrism(outBlock, job.dimId, linkGraph);
       const outContainerInfo = outInventories[0] || null;
       
       const fluxGenerated = tryGenerateFluxOnTransfer({

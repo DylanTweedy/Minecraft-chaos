@@ -2,10 +2,18 @@
 import { bootChaos } from "./bootChaos.js";
 import { startSystems } from "./startSystems.js";
 import "../wandBeam.js";
-import "../beamMover.js";
+import "../beamMove.js";
+
+
+import { initAutoElytraSwap } from "../features/armor/autoElytraSwap.js";
+initAutoElytraSwap();
+import { initEffectsLab } from "../dev/effectsLab.js";
+initEffectsLab();
+//import { initAwakeningSystem } from "../features/awakening/awakeningSystem.js";
+//initAwakeningSystem();
+
 
 import { registerScript, markScriptLoaded, notifyPlayers } from "../core/scriptLoader.js";
-import { isDevModeEnabled } from "../core/debugGroups.js";
 
 import {
   registerMagicMirrorComponent,
@@ -76,7 +84,7 @@ export function startChaos(ctx) {
   }
   __started = true;
 
-  const DEV_MODE = isDevModeEnabled();
+  const DEV_MODE = false;
 
   chat(world, prefix(`§a✓§r startChaos() called${DEV_MODE ? " §7(DEV_MODE on)§r" : ""}`));
 

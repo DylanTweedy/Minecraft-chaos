@@ -8,7 +8,6 @@ export const linksModuleList = [
   "runtime/controller",
   "keys",
   "utils",
-  "pathfinding/graph",
   "pathfinding/path",
   "pathfinding/pathfinder",
   "pathfinding/routes",
@@ -21,12 +20,7 @@ export const linksModuleList = [
   "systems/levels",
   "systems/fx",
   "beam/config",
-  "beam/storage",
   "beam/axis",
-  "beam/validation",
-  "beam/queue",
-  "beam/rebuild",
-  "beam/events",
 ];
 
 export function getLinksModuleStatus() {

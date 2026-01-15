@@ -24,7 +24,7 @@ function createUpdateVirtualStateHandler(deps) {
     debugEnabled,
     debugState,
     getNowTick,
-    sendDiagnosticMessage,
+    noteWatchdog,
     sendInitMessage,
   } = deps || {};
 
@@ -56,10 +56,9 @@ function createUpdateVirtualStateHandler(deps) {
 
         const prismKeysTime = Date.now() - prismKeysStart;
         if (prismKeysTime > 10 || ((nowTick % 200) === 0 && nowTick > 0)) {
-          sendDiagnosticMessage(
-            "[PERF] GetPrismKeys (virtualInv): " + prismKeysTime + "ms",
-            "transfer"
-          );
+          if (typeof noteWatchdog === "function") {
+            noteWatchdog("PERF", "GetPrismKeys (virtualInv): " + prismKeysTime + "ms", nowTick);
+          }
         }
 
         const updateStart = Date.now();
@@ -67,20 +66,24 @@ function createUpdateVirtualStateHandler(deps) {
         const updateTime = Date.now() - updateStart;
 
         if (updateTime > 10 || ((nowTick % 200) === 0 && nowTick > 0)) {
-          sendDiagnosticMessage(
-            "[PERF] VirtualInv.updateState: " + updateTime + "ms",
-            "transfer"
-          );
+          if (typeof noteWatchdog === "function") {
+            noteWatchdog("PERF", "VirtualInv.updateState: " + updateTime + "ms", nowTick);
+          }
         }
       }
     } catch (err) {
       const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
-      sendInitMessage("¶õc[Flow] Tick " + nowTick + ": ERROR in virtual inventory update: " + errMsg);
+      sendInitMessage("õc[Flow] Tick " + nowTick + ": ERROR in virtual inventory update: " + errMsg);
+      if (typeof noteWatchdog === "function") {
+        noteWatchdog("ERROR", "VirtualInv update error: " + errMsg, nowTick);
+      }
     }
 
     const virtualInvTime = Date.now() - virtualInvStart;
     if (virtualInvTime > 15 || ((nowTick % 200) === 0 && nowTick > 0)) {
-      sendDiagnosticMessage("[PERF] VirtualInv Total: " + virtualInvTime + "ms", "transfer");
+      if (typeof noteWatchdog === "function") {
+        noteWatchdog("PERF", "VirtualInv Total: " + virtualInvTime + "ms", nowTick);
+      }
     }
 
     if (debugEnabled) {
@@ -90,4 +93,3 @@ function createUpdateVirtualStateHandler(deps) {
     return { ...ok(), virtualInvTime };
   };
 }
-

@@ -1,6 +1,11 @@
 // scripts/chaos/cleanupOnBreak.js
 import { world, system } from "@minecraft/server";
 import { PRISM_IDS } from "../features/links/transfer/config.js";
+import {
+  canonicalizePrismKey,
+  key as makePrismKey,
+  parseKey as parsePrismKey,
+} from "../features/links/transfer/keys.js";
 
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
@@ -18,28 +23,16 @@ const pendingTierDrops = [];
 const pendingInventoryTags = [];
 
 function makeKeyFromParts(dimId, loc) {
-  // matches your persisted format: "dimId|x,y,z"
-  return `${dimId}|${loc.x},${loc.y},${loc.z}`;
+  return makePrismKey(dimId, loc.x, loc.y, loc.z);
 }
 
 function parseKey(key) {
-  try {
-    const bar = key.indexOf("|");
-    if (bar === -1) return null;
-    const dimId = key.slice(0, bar);
-    const rest = key.slice(bar + 1);
-    const parts = rest.split(",");
-    if (parts.length !== 3) return null;
-
-    const x = Number(parts[0]);
-    const y = Number(parts[1]);
-    const z = Number(parts[2]);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
-
-    return { dimId, pos: { x, y, z } };
-  } catch {
-    return null;
-  }
+  const parsed = parsePrismKey(key);
+  if (!parsed) return null;
+  return {
+    dimId: parsed.dimId,
+    pos: { x: parsed.x, y: parsed.y, z: parsed.z },
+  };
 }
 
 function safeJsonParse(s) {
@@ -49,6 +42,17 @@ function safeJsonParse(s) {
   } catch {
     return null;
   }
+}
+
+function normalizeLevelMap(obj) {
+  if (!obj || typeof obj !== "object") return {};
+  const normalized = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const canonical = canonicalizePrismKey(key);
+    if (!canonical) continue;
+    normalized[canonical] = value;
+  }
+  return normalized;
 }
 
 function safeJsonStringify(v) {
@@ -64,7 +68,7 @@ function loadLevelMap(dpKey) {
     const raw = world.getDynamicProperty(dpKey);
     const parsed = safeJsonParse(raw);
     if (!parsed || typeof parsed !== "object") return {};
-    return parsed;
+    return normalizeLevelMap(parsed);
   } catch {
     return {};
   }

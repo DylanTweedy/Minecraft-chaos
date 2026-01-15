@@ -1,13 +1,12 @@
-// scripts/chaos/bootstrap/startSystems.js
+﻿// scripts/chaos/bootstrap/startSystems.js
 
 import { startCleanupOnBreak } from "../systems/cleanupOnBreak.js";
-import { startBeamSimV0 } from "../features/links/beam/beamSim.js";
 import { startFxQueue } from "../systems/fxQueue.js";
 import { startFilterInteract } from "../systems/filterInteract.js";
 import { startCrystallizerSystem } from "../crystallizer.js";
 import { startPrestigeSystem } from "../prestige.js";
 import { startDeathmarkSystem } from "../deathmark.js";
-import { startInsightObservation } from "../systems/insightObservation.js";
+import { startInsightRouter } from "../core/insight/router.js";
 
 import {
   initializeScriptLoader,
@@ -17,11 +16,10 @@ import {
   startPlayerJoinNotifier,
 } from "../core/scriptLoader.js";
 
-import { loadDebugSettings } from "../core/debugGroups.js";
 
-// ─────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Chat-only logging helpers (future Insight Lens routing point)
-// ─────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function chat(world, msg) {
   try { world?.sendMessage(msg); } catch {}
 }
@@ -32,80 +30,68 @@ function fmtErr(err, maxStackChars = 900) {
   if (!stack) return msg;
 
   const trimmed = stack.length > maxStackChars
-    ? stack.slice(0, maxStackChars) + "…"
+    ? stack.slice(0, maxStackChars) + "â€¦"
     : stack;
 
-  return `${msg}\n§7${trimmed}§r`;
+  return `${msg}\nÂ§7${trimmed}Â§r`;
 }
 
 function runSystem({ world, name, fn }) {
   registerScript(name);
-  chat(world, `§8[§dChaos§8]§r §b…§r ${name}`);
+  chat(world, `Â§8[Â§dChaosÂ§8]Â§r Â§bâ€¦Â§r ${name}`);
 
   try {
     fn();
     markScriptLoaded(name);
-    chat(world, `§8[§dChaos§8]§r §a✓§r ${name}`);
+    chat(world, `Â§8[Â§dChaosÂ§8]Â§r Â§aâœ“Â§r ${name}`);
     return true;
   } catch (err) {
-    chat(world, `§8[§dChaos§8]§r §c✗§r ${name}`);
-    chat(world, `§c${fmtErr(err)}`);
+    chat(world, `Â§8[Â§dChaosÂ§8]Â§r Â§câœ—Â§r ${name}`);
+    chat(world, `Â§c${fmtErr(err)}`);
     return false;
   }
 }
 
-// ─────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Entry point
-// ─────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function startSystems({ world, system }) {
   if (!world) throw new Error("startSystems missing world");
   if (!system) throw new Error("startSystems missing system");
 
   // 1) Initialize ScriptLoader first
   initializeScriptLoader(world, system);
-
-  // 2) Load persistent debug settings shortly after startup
-  system.runTimeout(() => {
-    try {
-      loadDebugSettings();
-      chat(world, "§8[§dChaos§8]§r §a✓§r Debug settings loaded");
-    } catch (err) {
-      chat(world, "§8[§dChaos§8]§r §e!§r Debug settings load failed");
-      chat(world, `§c${fmtErr(err)}`);
-    }
-  }, 1);
-
-  // 3) Declare systems in explicit startup order
+  // 2) Declare systems in explicit startup order
   const systems = [
     { name: "FX Queue", fn: () => startFxQueue() },
     { name: "Cleanup on Break", fn: () => startCleanupOnBreak() },
     { name: "Filter Interact", fn: () => startFilterInteract() },
-    { name: "Beam Simulation", fn: () => startBeamSimV0() },
     { name: "Crystallizer", fn: () => startCrystallizerSystem() },
     { name: "Prestige", fn: () => startPrestigeSystem() },
     { name: "Deathmark System", fn: () => startDeathmarkSystem(world, system) },
-    { name: "Insight Observation", fn: () => startInsightObservation() },
+    { name: "Insight Router", fn: () => startInsightRouter() },
   ];
 
   for (const sys of systems) {
     runSystem({ world, ...sys });
   }
 
-  // 4) Player join notifier
+  // 3) Player join notifier
   try {
     startPlayerJoinNotifier();
   } catch (err) {
-    chat(world, "§8[§dChaos§8]§r §e!§r Player join notifier failed");
-    chat(world, `§c${fmtErr(err)}`);
+    chat(world, "Â§8[Â§dChaosÂ§8]Â§r Â§e!Â§r Player join notifier failed");
+    chat(world, `Â§c${fmtErr(err)}`);
   }
 
-  // 5) Notify existing players after reload
+  // 4) Notify existing players after reload
   system.runTimeout(() => {
     try {
       notifyPlayers();
     } catch (err) {
-      chat(world, "§8[§dChaos§8]§r §e!§r notifyPlayers failed");
-      chat(world, `§c${fmtErr(err)}`);
+      chat(world, "Â§8[Â§dChaosÂ§8]Â§r Â§e!Â§r notifyPlayers failed");
+      chat(world, `Â§c${fmtErr(err)}`);
     }
   }, 40);
 }
+

@@ -1,4 +1,4 @@
-﻿// scripts/chaos/features/links/transfer/runtime/phases/tickGuards.js
+// scripts/chaos/features/links/transfer/runtime/phases/tickGuards.js
 
 import { ok, phaseStep } from "../helpers/result.js";
 
@@ -16,7 +16,6 @@ export function createTickGuardsPhase(deps) {
 
 function createTickGuardsHandler(deps) {
   const {
-    world,
     getNowTick,
     getLastTickEndTime,
     setLastTickEndTime,
@@ -39,22 +38,12 @@ function createTickGuardsHandler(deps) {
         if (typeof setConsecutiveLongTicks === "function") {
           setConsecutiveLongTicks(consecutiveLongTicks);
         }
-
-        if ((consecutiveLongTicks % 10) === 0) {
-          try {
-            const players = world && typeof world.getAllPlayers === "function" ? world.getAllPlayers() : [];
-            for (const player of players) {
-              if (player && typeof player.sendMessage === "function") {
-                player.sendMessage(
-                  "¶õc[PERF] ƒsÿƒsÿƒsÿ EMERGENCY SKIP: " +
-                    consecutiveLongTicks +
-                    " consecutive long ticks detected, skipping tick " +
-                    nowTick
-                );
-                break;
-              }
-            }
-          } catch {}
+        if ((consecutiveLongTicks % 10) === 0 && typeof ctx?.noteWatchdog === "function") {
+          ctx.noteWatchdog(
+            "EMERGENCY",
+            `Skip tick ${nowTick} after ${consecutiveLongTicks} long ticks`,
+            nowTick
+          );
         }
 
         if (typeof setLastTickEndTime === "function") {
@@ -68,3 +57,4 @@ function createTickGuardsHandler(deps) {
     return ok();
   };
 }
+

@@ -1,0 +1,29 @@
+{
+  "format_version": "1.21.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "chaos:beam_entity",
+      "textures": { "default": "textures/entity/chaos_beam" },
+      "geometry": { "default": "geometry.chaos.beam_entity" },
+
+      "materials": { "default": "entity_beam_additive" },
+      "render_controllers": [ "controller.render.chaos_beam" ],
+
+      "animations": {
+        "beam_transform": "animation.chaos.beam.transform"
+      },
+
+      "scripts": {
+        "pre_animation": [
+          "variable.has_canary = query.has_property('chaos:canary');",
+          "variable.canary = query.property('chaos:canary');",
+
+          "variable.beam_len = math.clamp(query.property('chaos:beam_len'), 1.0, 64.0);",
+          "variable.beam_alpha = math.clamp(query.property('chaos:beam_alpha'), 0.0, 1.0);",
+          "variable.beam_spin = query.property('chaos:beam_spin');"
+        ],
+        "animate": [ "beam_transform" ]
+      }
+    }
+  }
+}

@@ -1,8 +1,9 @@
 // scripts/chaos/features/links/shared/keys.js
-// Pure helpers only. No imports, no side effects.
+// Pure helpers that delegate to the canonical prism key helpers.
+import { makePrismKey } from "../transfer/runtime/prismKeys.js";
 
 export function makeKey(dimId, x, y, z) {
-  return `${dimId}|${x},${y},${z}`;
+  return makePrismKey(dimId, x, y, z);
 }
 
 export function makeKeyFromBlock(block) {

@@ -1,0 +1,32 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:recipe_shaped": {
+    "description": {
+      "identifier": "chaos:insight_goggles"
+    },
+    "tags": ["crafting_table"],
+    "pattern": [
+      "L L",
+      "IGI",
+      " S "
+    ],
+    "key": {
+      "L": {
+        "item": "chaos:insight_lens"
+      },
+      "I": {
+        "item": "minecraft:iron_ingot"
+      },
+      "G": {
+        "item": "minecraft:glass_pane"
+      },
+      "S": {
+        "item": "minecraft:leather"
+      }
+    },
+    "result": {
+      "item": "chaos:insight_goggles",
+      "count": 1
+    }
+  }
+}

@@ -1,5 +1,6 @@
 // scripts/chaos/features/links/transfer/systems/levels.js
 import { isPrismBlock, getPrismTier, getPrismTypeIdForTier } from "../config.js";
+import { key as makePrismKey } from "../keys.js";
 
 export function createLevelsManager(cfg, state, deps = {}) {
   // State maps and flags are maintained by controller, passed in
@@ -80,15 +81,15 @@ export function createLevelsManager(cfg, state, deps = {}) {
   }
 
   function notePrismPassage(prismKey, block) {
-    // Ensure we have a valid key in the format "dimId|x,y,z"
+    // Ensure we have a valid canonical prism key
     // If we have a block but the key might be wrong, regenerate it from the block
     let actualKey = prismKey;
     if (block && block.location) {
       const loc = block.location;
-      const dim = block.dimension;
-      if (dim && dim.id) {
-        // Use dimension.id format to match linkVision
-        actualKey = `${dim.id}|${loc.x},${loc.y},${loc.z}`;
+      const dimId = block.dimension?.id;
+      const canonical = makePrismKey(dimId, loc.x, loc.y, loc.z);
+      if (canonical) {
+        actualKey = canonical;
       }
     }
     

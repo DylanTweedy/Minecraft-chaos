@@ -1,10 +1,10 @@
-// scripts/chaos/features/links/transfer/core/pipeline.js
+﻿// scripts/chaos/features/links/transfer/core/pipeline.js
 
 /**
  * A tiny, safe "phase runner" for your transfer tick.
  * - Makes controller orchestration clean.
  * - Captures per-phase timing + counters.
- * - Supports "trace" output for a single focused key (e.g. prismKey) driven by Insight Lens/Goggles UI.
+ * - Supports "trace" output keyed to a context (e.g. prismKey) for Insight v2.
  *
  * Philosophy: phases do the work, pipeline just coordinates + observes.
  */
@@ -69,24 +69,15 @@ export function createTransferPipeline(opts) {
     if (fields?.errors) p.errors += fields.errors;
   }
 
-  function shouldTrace(ctx, prismKey) {
-    // Trace is controlled externally (Insight Lens/Goggles UI should set ctx.traceKey or similar).
-    // Keep this generic so you can later trace output nodes / blocks too.
-    const traceKey = ctx?.traceKey;
-    if (!traceKey) return false;
-    return String(traceKey) === String(prismKey);
-  }
 
   function trace(ctx, msg, prismKey) {
     try {
-      if (!ctx || typeof ctx.sendDiagnosticMessage !== "function") return;
-      if (prismKey != null && !shouldTrace(ctx, prismKey)) return;
+      if (!ctx || typeof ctx.emitTrace !== "function") return;
 
-      // Only send trace if the player has insight enabled (your UI logic should decide this).
-      // This is intentionally soft: ctx.canTrace can be toggled by controller based on hasInsight/isHoldingLens/isWearingGoggles.
-      if (ctx.canTrace === false) return;
-
-      ctx.sendDiagnosticMessage(`§7[Trace] ${String(msg || "")}`, "transfer");
+      ctx.emitTrace(null, "transfer", {
+        text: `[Trace] ${String(msg || "")}`,
+        category: "transfer",
+      });
     } catch {
       // Never throw from trace.
     }
@@ -134,8 +125,8 @@ export function createTransferPipeline(opts) {
 
       // Optional warnings
       const warnMs = (ph.warnMs | 0) || 0;
-      if (warnMs > 0 && dt > warnMs && typeof ctx.sendDiagnosticMessage === "function") {
-        ctx.sendDiagnosticMessage(`§e[PERF] ${pipelineName}.${phaseName}: ${dt}ms`, "transfer");
+      if (warnMs > 0 && dt > warnMs && typeof ctx.noteWatchdog === "function") {
+        ctx.noteWatchdog("PERF", `${pipelineName}.${phaseName} ${dt}ms`, ctx?.nowTick | 0);
       }
 
       // Optional hard stop if phase was too slow
@@ -155,7 +146,7 @@ export function createTransferPipeline(opts) {
         break;
       }
 
-      // Safety: If we’re already taking too long, allow ctx to request phase skipping.
+      // Safety: If weâ€™re already taking too long, allow ctx to request phase skipping.
       const elapsed = safeNow() - tickStart;
       ctx.tickElapsedMs = elapsed;
 

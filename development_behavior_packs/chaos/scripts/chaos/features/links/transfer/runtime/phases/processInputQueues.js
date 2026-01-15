@@ -29,11 +29,17 @@ function createProcessInputQueuesHandler(deps) {
     attemptPushTransferWithDestination,
     attemptPushTransfer,
     findPathForInput,
-    sendDiagnosticMessage,
     debugEnabled,
     debugState,
     nextQueueTransferAllowed,
     getNowTick,
+    traceNoteQueueSize,
+    traceNoteError,
+    traceNotePathfind,
+    traceNoteTransferResult,
+    noteGlobalPathfind,
+    noteGlobalPerf,
+    inflightLockManager,
   } = deps || {};
 
   return function runProcessInputQueues() {
@@ -46,44 +52,25 @@ function createProcessInputQueuesHandler(deps) {
     let inputQueueMaxEntryTime = 0; // Track max time for a single queue entry processing
     let inputQueueTotalEntries = 0; // Count total entries processed
 
-    // Aggregate failures by reason and item for summary logging (reduce spam)
-    const failureCounts = new Map(); // Map<"reason:itemType", count>
-
-    // DIAGNOSTIC: Log queue status (disabled - was too spammy, use extended debug instead)
-    // Removed per-tick queue status logging to reduce chat spam
-
     if (inputQueuesManager && typeof inputQueuesManager.getTotalQueueSize === "function") {
       const totalQueueSize = inputQueuesManager.getTotalQueueSize();
 
       // Process input queues if they exist
       if (totalQueueSize > 0) {
-        // Only log queue status occasionally (every 200 ticks) to reduce clutter
-        const shouldLogQueueStatus = (nowTick <= 3 || (nowTick % 200) === 0);
-        if (shouldLogQueueStatus) {
-          sendDiagnosticMessage("[Queue] Active: " + totalQueueSize + " queues", "transfer");
-        }
-
         const prismKeys = getPrismKeys();
         if (prismKeys.length > 0) {
           // Process queues for prisms that have them
           for (const prismKey of prismKeys) {
             if (inputQueueTransferBudget <= 0 && inputQueueSearchBudget <= 0) {
-              // Only log budget exhaustion occasionally
-              if ((nowTick % 100) === 0) {
-                sendDiagnosticMessage(
-                  "[Queue] Budget exhausted: transfer=" +
-                    inputQueueTransferBudget +
-                    ", search=" +
-                    inputQueueSearchBudget,
-                  "transfer"
-                );
-              }
               break;
             }
 
             if (!inputQueuesManager.hasQueueForPrism(prismKey)) continue;
 
-            // Don't log every prism processing - too spammy
+            const queueEntries = inputQueuesManager.getQueuesForPrism(prismKey);
+            if (typeof traceNoteQueueSize === "function") {
+              traceNoteQueueSize(prismKey, queueEntries.length);
+            }
 
             const prismInfo = resolveBlockInfo(prismKey);
             if (!prismInfo) continue;
@@ -216,32 +203,31 @@ function createProcessInputQueuesHandler(deps) {
                   pathResult = findPathForInput(prismKey, nowTick);
 
                   const pathfindTime = Date.now() - pathfindStart;
-                  if (pathfindTime > 50 || ((nowTick % 200) === 0 && nowTick > 0)) {
-                    sendDiagnosticMessage(
-                      "[PERF] Pathfind (queue): " + pathfindTime + "ms for " + prismKey,
-                      "transfer"
-                    );
+                  if (typeof traceNotePathfind === "function") {
+                    traceNotePathfind(prismKey, pathfindTime, nowTick, "queue");
+                  }
+                  if (typeof noteGlobalPathfind === "function") {
+                    noteGlobalPathfind(pathfindTime, "ok");
                   }
 
                   // EMERGENCY: If pathfinding takes too long, abort and skip
                   if (pathfindTime > 100) {
-                    sendDiagnosticMessage(
-                      "[PERF] ⚠ Pathfind TIMEOUT (queue): " + pathfindTime + "ms - aborting for " + prismKey,
-                      "transfer"
-                    );
+                    if (typeof noteGlobalPathfind === "function") {
+                      noteGlobalPathfind(pathfindTime, "timeout");
+                    }
                     inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
                     consecutiveFailures++;
                     continue;
                   }
                 } catch (err) {
                   const pathfindTime = Date.now() - pathfindStart;
-                  sendDiagnosticMessage(
-                    "[PERF] Pathfind ERROR (queue) after " +
-                      pathfindTime +
-                      "ms: " +
-                      ((err && err.message) ? String(err.message) : String(err)),
-                    "transfer"
-                  );
+                  if (typeof noteGlobalPathfind === "function") {
+                    noteGlobalPathfind(pathfindTime, "error");
+                  }
+                  if (typeof traceNoteError === "function") {
+                    const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
+                    traceNoteError(prismKey, errMsg, nowTick);
+                  }
                   inputQueuesManager.invalidateInputQueue(prismKey, queueEntry.containerKey);
                   consecutiveFailures++;
                   continue;
@@ -287,16 +273,7 @@ function createProcessInputQueuesHandler(deps) {
                 });
 
                 const pickTime = Date.now() - pickStart;
-                if (pickTime > 20) {
-                  sendDiagnosticMessage(
-                    "[PERF] Pick destination (queue): " +
-                      pickTime +
-                      "ms (" +
-                      pathResult.length +
-                      " candidates)",
-                    "transfer"
-                  );
-                }
+                void pickTime;
 
                 if (pick && Array.isArray(pick.path) && pick.path.length > 0) {
                   route = pick.path;
@@ -344,17 +321,10 @@ function createProcessInputQueuesHandler(deps) {
                   queueEntry
                 );
               } catch (err) {
-                // ALWAYS log errors - these are important
                 const errorMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
-                sendDiagnosticMessage(
-                  "[Queue] Transfer ERROR: prism=" +
-                    prismKey +
-                    ", item=" +
-                    queueEntry.itemTypeId +
-                    ", error=" +
-                    errorMsg,
-                  "transfer"
-                );
+                if (typeof traceNoteError === "function") {
+                  traceNoteError(prismKey, errorMsg, nowTick);
+                }
                 transferResult = { ...makeResult(false, "transfer_error"), amount: 0, searchesUsed: 0 };
               }
 
@@ -364,23 +334,32 @@ function createProcessInputQueuesHandler(deps) {
               if (entryTime > inputQueueMaxEntryTime) inputQueueMaxEntryTime = entryTime;
 
               if (entryTime > 50 || transferTime > 30) {
-                sendDiagnosticMessage(
-                  "[PERF] Queue Entry: " + entryTime + "ms total (transfer: " + transferTime + "ms)",
-                  "transfer"
-                );
+                if (typeof noteGlobalPerf === "function") {
+                  noteGlobalPerf("inputQueues", entryTime);
+                }
               }
 
-              if (transferResult.ok) {
-                inputQueueTransfersThisTick++;
-                inputQueueTransferBudget--;
-                inputQueueSearchBudget -= transferResult.searchesUsed || 0;
+              if (typeof traceNoteTransferResult === "function") {
+                const statusLabel = transferResult.ok ? "ok" : "no_transfer";
+                const reasonLabel = transferResult.reason || (transferResult.ok ? "ok" : "unknown");
+                traceNoteTransferResult(prismKey, { status: statusLabel, reason: reasonLabel }, nowTick);
+              }
 
-                // Update queue entry with transferred amount
-                inputQueuesManager.updateQueueEntry(
-                  prismKey,
-                  queueEntry.itemTypeId,
-                  transferResult.amount || 1
-                );
+            if (transferResult.ok) {
+              inputQueueTransfersThisTick++;
+              inputQueueTransferBudget--;
+              inputQueueSearchBudget -= transferResult.searchesUsed || 0;
+
+              // Update queue entry with transferred amount
+              inputQueuesManager.updateQueueEntry(
+                prismKey,
+                queueEntry.itemTypeId,
+                transferResult.amount || 1
+              );
+
+              if (inflightLockManager && typeof inflightLockManager.release === "function") {
+                inflightLockManager.release(prismKey, queueEntry.itemTypeId);
+              }
 
                 inputQueueProcessed++;
                 entriesProcessedThisPrism++;
@@ -394,18 +373,7 @@ function createProcessInputQueuesHandler(deps) {
                 inputQueueSearchBudget -= transferResult.searchesUsed || 0;
                 consecutiveFailures++;
 
-                // Aggregate failures for summary logging (reduce spam)
                 const reason = transferResult.reason || "unknown";
-                const failureKey = reason + ":" + queueEntry.itemTypeId;
-                failureCounts.set(failureKey, (failureCounts.get(failureKey) || 0) + 1);
-
-                // Only log transfer_error immediately (these are critical)
-                if (reason === "transfer_error") {
-                  sendDiagnosticMessage(
-                    "[Queue] Transfer ERROR: reason=" + reason + ", item=" + queueEntry.itemTypeId,
-                    "transfer"
-                  );
-                }
 
                 // Unfiltered prisms: process one entry per tick, or too many failures
                 if (!isFilteredPrism || consecutiveFailures >= maxConsecutiveFailures) {
@@ -415,34 +383,12 @@ function createProcessInputQueuesHandler(deps) {
             } // End while (entries per prism)
 
             const prismQueueTime = Date.now() - prismQueueStart;
-            if (prismQueueTime > 100) {
-              sendDiagnosticMessage(
-                "[PERF] Prism Queue (" + prismKey + "): " + prismQueueTime + "ms (" + entriesProcessedThisPrism + " entries)",
-                "transfer"
-              );
+            if (typeof noteGlobalPerf === "function") {
+              noteGlobalPerf("inputQueues", prismQueueTime);
             }
           } // End for (prismKey)
         } // End if (prismKeys.length > 0)
       } // End if (totalQueueSize > 0)
-      // Summary: Log queue processing results only when significant changes occur (reduced frequency)
-      if (totalQueueSize > 0) {
-        const finalQueueSize = inputQueuesManager.getTotalQueueSize();
-
-        // Log summary only every 200 ticks, or if queue size changed significantly (>75% reduction)
-        const shouldLogSummary =
-          ((nowTick % 200) === 0) ||
-          (inputQueueTransfersThisTick > 0 &&
-            (totalQueueSize - finalQueueSize) > (totalQueueSize * 0.75));
-
-        if (shouldLogSummary) {
-          // Simplified summary - only show essential info
-          sendDiagnosticMessage(
-            "[Queue] " + finalQueueSize + " remaining (" + inputQueueTransfersThisTick + " transferred)",
-            "transfer"
-          );
-          failureCounts.clear(); // Clear for next summary period
-        }
-      }
     } else {
       // Don't log when no queues exist - too spammy (only extended debug if needed)
       // if ((nowTick % 100) === 0) {
@@ -455,19 +401,8 @@ function createProcessInputQueuesHandler(deps) {
       debugState.msInputQueues = (debugState.msInputQueues || 0) + inputQueueTime;
     }
 
-    if (inputQueueTime > 100 || ((nowTick % 200) === 0 && nowTick > 0)) {
-      sendDiagnosticMessage(
-        "[PERF] InputQueues Total: " +
-          inputQueueTime +
-          "ms (" +
-          inputQueueTotalEntries +
-          " entries, max entry: " +
-          inputQueueMaxEntryTime +
-          "ms, transfers: " +
-          inputQueueTransfersThisTick +
-          ")",
-        "transfer"
-      );
+    if (typeof noteGlobalPerf === "function") {
+      noteGlobalPerf("inputQueues", inputQueueTime);
     }
 
     return { ...ok(), inputQueueTransfersThisTick, inputQueueTotalEntries, inputQueueMaxEntryTime, inputQueueTime };

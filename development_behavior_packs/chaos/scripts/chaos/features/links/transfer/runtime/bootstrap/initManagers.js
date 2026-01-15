@@ -3,17 +3,112 @@
 import { createGetFilterForBlock } from "../helpers/filters.js";
 import { createDropItemAt } from "../helpers/items.js";
 import { createResolvePrismKeysFromWorld } from "../helpers/prismKeys.js";
-export function initManagers(deps) {
+import { noteGlobalPathfind, noteGlobalPerf, noteWatchdog } from "../../../../../core/insight/transferStats.js";
+export function initManagers(runtime) {
   const {
-    cfg,
-    world,
-    FX,
-    debugEnabled,
-    debugState,
-    sendInitMessage,
-    sendDiagnosticMessage,
-    logError,
-    handleManagerCreationError,
+    core,
+    adapters,
+    algorithms,
+    factories,
+    phases,
+    functions,
+  } = runtime || {};
+
+  const cfg = core?.cfg;
+  const world = core?.world;
+  const FX = core?.FX;
+  const debug = core?.debug;
+  const state = core?.state;
+  const constants = core?.constants;
+  const helpers = core?.helpers;
+  const events = core?.events || {};
+
+  const beamBreakDrainLimit = Math.max(1, Number(cfg?.beamBreaksPerTick || 32) | 0);
+  const getBeamBreaks = () => {
+    try {
+      const drainFn = events?.getBeamBreaks;
+      if (typeof drainFn !== "function") return [];
+      return drainFn(beamBreakDrainLimit) || [];
+    } catch {
+      return [];
+    }
+  };
+
+  const debugEnabled = !!debug?.enabled;
+  const debugState = debug?.state;
+  const debugInterval = debug?.interval;
+  const sendInitMessage = debug?.sendInitMessage || (() => {});
+  const logError = debug?.logError || (() => {});
+  const handleManagerCreationError =
+    debug?.handleManagerCreationError ||
+    ((_, err) => {
+      throw err;
+    });
+  const getLastDebugTick = debug?.getLastTick;
+  const setLastDebugTick = debug?.setLastTick;
+
+  const getNowTick = state?.tick?.getNowTick;
+  const getCursor = state?.cursor?.get;
+  const setCursor = state?.cursor?.set;
+
+  const queueByContainer = state?.queues?.queueByContainer;
+  const fullContainers = state?.queues?.fullContainers;
+  const getQueueState = state?.queues?.getQueueState;
+
+  const inputBackoff = state?.backoff?.inputBackoff;
+  const nextAllowed = state?.backoff?.nextAllowed;
+  const nextQueueTransferAllowed = state?.backoff?.nextQueueTransferAllowed;
+  const clearBackoff = state?.backoff?.clearBackoff;
+  const bumpBackoff = state?.backoff?.bumpBackoff;
+  const getBackoffTicks = state?.backoff?.getBackoffTicks;
+
+  const inflight = state?.inflight?.list;
+  const fluxFxInflight = state?.inflight?.fluxFxInflight;
+  const orbFxBudgetUsed = state?.inflight?.orbFxBudgetUsed;
+  const getInflightDirty = state?.inflight?.getDirty;
+  const setInflightDirty = state?.inflight?.setDirty;
+  const getInflightStepDirty = state?.inflight?.getStepDirty;
+  const setInflightStepDirty = state?.inflight?.setStepDirty;
+  const getInflightLastSaveTick = state?.inflight?.getLastSaveTick;
+  const setInflightLastSaveTick = state?.inflight?.setLastSaveTick;
+
+  const transferCounts = state?.levels?.transferCounts;
+  const outputCounts = state?.levels?.outputCounts;
+  const prismCounts = state?.levels?.prismCounts;
+  const getLevelsDirty = state?.levels?.getDirty;
+  const setLevelsDirty = state?.levels?.setDirty;
+  const getLevelsLastSaveTick = state?.levels?.getLastSaveTick;
+  const setLevelsLastSaveTick = state?.levels?.setLastSaveTick;
+  const getOutputLevelsDirty = state?.levels?.getOutputDirty;
+  const setOutputLevelsDirty = state?.levels?.setOutputDirty;
+  const getOutputLevelsLastSaveTick = state?.levels?.getOutputLastSaveTick;
+  const setOutputLevelsLastSaveTick = state?.levels?.setOutputLastSaveTick;
+  const getPrismLevelsDirty = state?.levels?.getPrismDirty;
+  const setPrismLevelsDirty = state?.levels?.setPrismDirty;
+  const getPrismLevelsLastSaveTick = state?.levels?.getPrismLastSaveTick;
+  const setPrismLevelsLastSaveTick = state?.levels?.setPrismLastSaveTick;
+
+  const getCachedInputKeys = state?.cachedInputs?.getCachedInputKeys;
+  const getCachedInputsStamp = state?.cachedInputs?.getCachedInputsStamp;
+  const setCachedInputKeys = state?.cachedInputs?.setCachedInputKeys;
+  const setCachedInputsStamp = state?.cachedInputs?.setCachedInputsStamp;
+  const shouldSave = state?.dirty?.shouldSave;
+  const dirtyKeys = state?.dirty?.keys;
+
+  const adaptersInventory = adapters?.inventory || {};
+  const adaptersFilters = adapters?.filters || {};
+  const adaptersReservations = adapters?.reservations || {};
+  const adaptersPersistence = adapters?.persistence || {};
+  const adaptersRegistry = adapters?.registry || {};
+  const adaptersFlux = adapters?.flux || {};
+  const adaptersTransfer = adapters?.transfer || {};
+  const adaptersPrism = adapters?.prism || {};
+
+  const algorithmsBalance = algorithms?.balance || {};
+  const algorithmsRouting = algorithms?.routing || {};
+  const algorithmsTracing = algorithms?.tracing || {};
+
+  const {
     createVirtualInventoryManager,
     createCacheManager,
     createLevelsManager,
@@ -23,9 +118,15 @@ export function initManagers(deps) {
     createRefinementManager,
     createFinalizeManager,
     createInflightProcessorManager,
+  } = factories || {};
+
+  const {
     createBeginTickPhase,
     createRefreshPrismRegistryPhase,
     createScanDiscoveryPhase,
+    createValidateLinksPhase,
+    createUpdateBeamsPhase,
+    createHandleBeamBreaksPhase,
     createPushTransfersPhase,
     createAttemptTransferForPrismPhase,
     createProcessQueuesPhase,
@@ -34,28 +135,38 @@ export function initManagers(deps) {
     createPersistAndReportPhase,
     createScanTransfersPhase,
     createTickGuardsPhase,
-    runTransferPipeline,
-    getContainerKey,
-    getContainerKeyFromInfo,
+  } = phases || {};
+
+  const { getContainerKey, getContainerKeyFromInfo, key, parseKey } = helpers || {};
+
+  const {
     getAttachedInventoryInfo,
     getAllAdjacentInventories,
     getInventoryContainer,
     getFurnaceSlots,
     isFurnaceBlock,
-    getFilterContainer,
-    getFilterSet,
-    getFilterSetForBlock,
-    getReservedForContainer,
-    getInsertCapacityWithReservations,
-    reserveContainerSlot,
-    releaseContainerSlot,
-    clearReservations,
+    tryInsertAmountForContainer,
+    tryInsertIntoInventories,
     getTotalCountForType,
     getRandomItemFromInventories,
     findInputSlotForContainer,
     decrementInputSlotSafe,
     decrementInputSlotsForType,
-    calculateBalancedTransferAmount,
+  } = adaptersInventory || {};
+
+  const { getFilterContainer, getFilterSet, getFilterSetForBlock } = adaptersFilters || {};
+
+  const {
+    getReservedForContainer,
+    getInsertCapacityWithReservations,
+    reserveContainerSlot,
+    releaseContainerSlot,
+    clearReservations,
+  } = adaptersReservations || {};
+
+  const { calculateBalancedTransferAmount } = algorithmsBalance || {};
+
+  const {
     validatePathStart,
     isPathBlock,
     isNodeBlock,
@@ -66,14 +177,23 @@ export function initManagers(deps) {
     pickWeightedRandomWithBias,
     findOutputRouteFromNode,
     findCrystallizerRouteFromPrism,
-    getTraceKey,
-    isTracing,
+  } = algorithmsRouting || {};
+
+  const {
     traceMarkDirty,
     traceClearDirty,
     traceNoteScan,
     traceNoteError,
     traceNoteQueueSize,
+    traceNotePathfind,
+    traceNoteNeighborInventories,
+    traceNoteVirtualCapacity,
+    traceNoteVirtualCapacityReason,
+    traceNoteTransferResult,
     traceNoteCooldown,
+  } = algorithmsTracing || {};
+
+  const {
     tryGenerateFluxOnTransfer,
     tryRefineFluxInTransfer,
     getFluxTier,
@@ -82,12 +202,10 @@ export function initManagers(deps) {
     getFluxValueForItem,
     fxFluxGenerate,
     queueFxParticle,
-    hasInsight,
-    isHoldingLens,
-    isWearingGoggles,
-    key,
-    parseKey,
-    loadBeamsMap,
+  } = adaptersFlux || {};
+
+
+  const {
     loadInflightStateFromWorld,
     persistInflightStateToWorld,
     loadInputLevels,
@@ -96,66 +214,39 @@ export function initManagers(deps) {
     saveOutputLevels,
     loadPrismLevels,
     savePrismLevels,
+  } = adaptersPersistence || {};
+
+  const { prismRegistry, linkGraph } = adaptersRegistry || {};
+
+  const {
     getSpeedForInput,
     findPathForInput,
     invalidateInput,
+    getPathStats,
     getNetworkStamp,
     getSpeed,
-    attemptTransferForPrism,
-    attemptPushTransferWithDestination,
-    attemptPushTransfer,
-    makeMarkAdjacentPrismsDirty,
-    _perfLogIfNeeded,
-    getNowTick,
-    debugInterval,
-    getLastDebugTick,
-    setLastDebugTick,
-    clearBackoff,
-    bumpBackoff,
-    getBackoffTicks,
-    inputBackoff,
-    nextAllowed,
-    nextQueueTransferAllowed,
-    inflight,
-    fluxFxInflight,
-    orbFxBudgetUsed,
-    outputCounts,
-    prismCounts,
-    transferCounts,
-    queueByContainer,
-    fullContainers,
-    getQueueState,
-    isPrismBlock,
-    getPrismTier,
+  } = adaptersTransfer || {};
+
+  const { isPrismBlock, getPrismTier } = adaptersPrism || {};
+
+  const {
     CRYSTALLIZER_ID,
     CRYSTAL_FLUX_WEIGHT,
     MAX_STEPS,
     SPEED_SCALE_MAX,
     PRISM_SPEED_BOOST_BASE,
     PRISM_SPEED_BOOST_PER_TIER,
-    getInflightDirty,
-    getInflightStepDirty,
-    setInflightDirty,
-    setInflightStepDirty,
-    getInflightLastSaveTick,
-    setInflightLastSaveTick,
-    getLevelsDirty,
-    setLevelsDirty,
-    getLevelsLastSaveTick,
-    setLevelsLastSaveTick,
-    getOutputLevelsDirty,
-    setOutputLevelsDirty,
-    getOutputLevelsLastSaveTick,
-    setOutputLevelsLastSaveTick,
-    getPrismLevelsDirty,
-    setPrismLevelsDirty,
-    getPrismLevelsLastSaveTick,
-    setPrismLevelsLastSaveTick,
-    getCachedInputKeys,
-    getCachedInputsStamp,
-    setCachedInputKeys,
-    setCachedInputsStamp,
-  } = deps || {};
+  } = constants || {};
+
+  const {
+    getPrismKeys,
+    attemptTransferForPrism,
+    attemptPushTransferWithDestination,
+    attemptPushTransfer,
+    makeMarkAdjacentPrismsDirty,
+    _perfLogIfNeeded,
+    runTransferPipeline,
+  } = functions || {};
 
   // ============================
   // PHASE: INIT (Managers)
@@ -274,17 +365,7 @@ export function initManagers(deps) {
   });
 
   const resolvePrismKeysFromWorld = createResolvePrismKeysFromWorld({
-    getNetworkStamp,
-    getCachedInputKeys,
-    getCachedInputsStamp,
-    setCachedInputKeys,
-    setCachedInputsStamp,
-    loadBeamsMap,
-    world,
-    cacheManager,
-    isPrismBlock,
-    debugEnabled,
-    debugState,
+    prismRegistry,
   });
 
   const getFilterForBlock = createGetFilterForBlock({
@@ -454,17 +535,154 @@ export function initManagers(deps) {
     }
   );
 
+  // INIT DEBUG: Input queues manager
+  sendInitMessage("§b[Init] Step 7/8: Creating inputQueuesManager...");
+
+  // Create input queue manager - needs world, getContainerKey, getContainerKeyFromInfo, isPathBlock
+  let inputQueuesManager = createOrFail(
+    "inputQueuesManager created",
+    "inputQueuesManager",
+    () =>
+      createInputQueuesManager(cfg, {
+        world,
+        getContainerKey,
+        getContainerKeyFromInfo,
+        isPathBlock,
+      })
+  );
+  // INIT DEBUG: Refinement manager
+  sendInitMessage("§b[Init] Step 8/8: Creating refinementManager, finalizeManager, inflightProcessorManager...");
+
+  // Bind queuesManager methods ONCE, but use non-colliding local names
+  const enqueuePendingForContainerBound =
+    queuesManager && typeof queuesManager.enqueuePendingForContainer === "function"
+      ? queuesManager.enqueuePendingForContainer.bind(queuesManager)
+      : null;
+
+  const resolveContainerInfoBound =
+    queuesManager && typeof queuesManager.resolveContainerInfo === "function"
+      ? queuesManager.resolveContainerInfo.bind(queuesManager)
+      : null;
+
+  // Create refinement manager - needs fxManager and cacheManager
+  let refinementManager = createOrFail(
+    "refinementManager created",
+    "refinementManager",
+    () => {
+      if (!cacheManager || typeof cacheManager.getPrismInventoriesCached !== "function") {
+        throw new Error("cacheManager.getPrismInventoriesCached is not a function");
+      }
+      if (!fxManager || typeof fxManager.enqueueFluxTransferFxPositions !== "function") {
+        throw new Error("fxManager.enqueueFluxTransferFxPositions is not a function");
+      }
+      if (!enqueuePendingForContainerBound) {
+        throw new Error("queuesManager.enqueuePendingForContainer is not a function");
+      }
+
+      return createRefinementManager(cfg, {
+        FX,
+        cacheManager,
+        resolveBlockInfo,
+        dropItemAt,
+        fxManager,
+        enqueuePendingForContainer: enqueuePendingForContainerBound,
+        linkGraph,
+      });
+    }
+  );
+
+  // Create finalize manager - needs fxManager, refinementManager, and other dependencies
+  let finalizeManager = createOrFail(
+    "finalizeManager created",
+    "finalizeManager",
+    () => {
+      if (!cacheManager || typeof cacheManager.getDimensionCached !== "function") {
+        throw new Error("cacheManager.getDimensionCached is not a function");
+      }
+      if (!fxManager || typeof fxManager.enqueueFluxTransferFx !== "function") {
+        throw new Error("fxManager.enqueueFluxTransferFx is not a function");
+      }
+      if (!enqueuePendingForContainerBound) {
+        throw new Error("queuesManager.enqueuePendingForContainer is not a function");
+      }
+      if (!resolveContainerInfoBound) {
+        throw new Error("queuesManager.resolveContainerInfo is not a function");
+      }
+
+      return createFinalizeManager(cfg, {
+        world,
+        FX,
+        cacheManager,
+        resolveBlockInfo,
+        dropItemAt,
+        getFilterForBlock,
+        enqueuePendingForContainer: enqueuePendingForContainerBound,
+        fxManager,
+        getContainerKey,
+        debugEnabled,
+        debugState,
+        linkGraph,
+        noteOutputTransfer,
+        resolveContainerInfo: resolveContainerInfoBound,
+      });
+    }
+  );
+
+  // Create inflight processor manager - needs all other managers
+  let inflightProcessorManager = createOrFail(
+    "inflightProcessorManager created",
+    "inflightProcessorManager",
+    () => {
+      if (!cacheManager || typeof cacheManager.getDimensionCached !== "function") {
+        throw new Error("cacheManager.getDimensionCached is not a function");
+      }
+      if (!levelsManager || typeof levelsManager.notePrismPassage !== "function") {
+        throw new Error("levelsManager.notePrismPassage is not a function");
+      }
+      if (!refinementManager || typeof refinementManager.applyPrismSpeedBoost !== "function") {
+        throw new Error("refinementManager.applyPrismSpeedBoost is not a function");
+      }
+      if (!fxManager || typeof fxManager.spawnOrbStep !== "function") {
+        throw new Error("fxManager.spawnOrbStep is not a function");
+      }
+      if (!finalizeManager || typeof finalizeManager.finalizeJob !== "function") {
+        throw new Error("finalizeManager.finalizeJob is not a function");
+      }
+
+      return createInflightProcessorManager(cfg, {
+        cacheManager,
+        dropItemAt,
+        levelsManager,
+        refinementManager,
+        fxManager,
+        finalizeManager,
+        debugEnabled,
+        debugState,
+        linkGraph,
+      });
+    }
+  );
+
+
+  let lastTickEndTime = 0;
+  let consecutiveLongTicks = 0;
+  let emergencyDisableTicks = 0;
+
   const services = {
     cacheManager,
     queuesManager,
     inputQueuesManager,
     virtualInventoryManager,
     levelsManager,
+    prismRegistry,
+    linkGraph,
     fxManager,
     refinementManager,
     inflightProcessorManager,
-    sendDiagnosticMessage,
     resolveBlockInfo,
+    traceNotePathfind,
+    traceNoteNeighborInventories,
+    traceNoteVirtualCapacity,
     getFilterForBlock,
     getFilterSet,
     getContainerKey,
@@ -478,11 +696,12 @@ export function initManagers(deps) {
     reserveContainerSlot,
     inflight,
     setInflightDirty: (v) => {
-      if (v) inflightDirty = true;
+      if (!v) return;
+      if (typeof setInflightDirty === "function") setInflightDirty(true);
     },
     debugEnabled,
     debugState,
-    getNowTick: () => nowTick,
+    getNowTick,
     findPathForInput,
     invalidateInput,
     pickWeightedRandomWithBias,
@@ -502,7 +721,23 @@ export function initManagers(deps) {
   });
 
   const refreshPrismPhase = createRefreshPrismRegistryPhase({
+    cfg,
     services,
+  });
+
+  const validateLinksPhase = createValidateLinksPhase({
+    cfg,
+    services,
+  });
+
+  const handleBeamBreaksPhase = createHandleBeamBreaksPhase({
+    services,
+    getBeamBreaks,
+  });
+
+  const updateBeamsPhase = createUpdateBeamsPhase({
+    cfg,
+    world,
   });
 
   const scanDiscoveryPhase = createScanDiscoveryPhase({
@@ -555,14 +790,16 @@ export function initManagers(deps) {
     pickWeightedRandomWithBias,
     findOutputRouteFromNode,
     findCrystallizerRouteFromPrism,
-    getTraceKey,
-    isTracing,
     traceMarkDirty,
     traceClearDirty,
     traceNoteScan,
     traceNoteError,
     traceNoteQueueSize,
+    traceNotePathfind,
+    traceNoteNeighborInventories,
+    traceNoteTransferResult,
     traceNoteCooldown,
+    noteGlobalPathfind,
     tryGenerateFluxOnTransfer,
     tryRefineFluxInTransfer,
     getFluxTier,
@@ -571,12 +808,8 @@ export function initManagers(deps) {
     getFluxValueForItem,
     fxFluxGenerate,
     queueFxParticle,
-    hasInsight,
-    isHoldingLens,
-    isWearingGoggles,
     key,
     parseKey,
-    loadBeamsMap,
     getFilterSetForBlock,
     isPrismBlock,
     getPrismTier,
@@ -599,7 +832,6 @@ export function initManagers(deps) {
     saveOutputLevels,
     loadPrismLevels,
     savePrismLevels,
-    sendDiagnosticMessage,
     sendInitMessage,
     logError,
     debugEnabled,
@@ -624,7 +856,7 @@ export function initManagers(deps) {
     markAdjacentPrismsDirty,
     fxManager,
     refinementManager,
-    getNowTick: () => nowTick,
+    getNowTick,
     makeResult: (ok, reason) => ({ ok: !!ok, reason: reason || (ok ? "ok" : "fail") }),
   });
 
@@ -637,15 +869,17 @@ export function initManagers(deps) {
     fluxFxInflight,
     debugEnabled,
     debugState,
-    getNowTick: () => nowTick,
-    sendDiagnosticMessage,
+    getNowTick,
+    noteWatchdog,
     runTransferPipeline,
     perfLogIfNeeded: _perfLogIfNeeded,
     setInflightDirty: (v) => {
-      inflightDirty = inflightDirty || !!v;
+      if (!v) return;
+      if (typeof setInflightDirty === "function") setInflightDirty(true);
     },
     setInflightStepDirty: (v) => {
-      inflightStepDirty = inflightStepDirty || !!v;
+      if (!v) return;
+      if (typeof setInflightStepDirty === "function") setInflightStepDirty(true);
     },
   });
 
@@ -657,8 +891,8 @@ export function initManagers(deps) {
     inflight,
     debugEnabled,
     debugState,
-    getNowTick: () => nowTick,
-    sendDiagnosticMessage,
+    getNowTick,
+    noteWatchdog,
     sendInitMessage,
   });
 
@@ -676,16 +910,20 @@ export function initManagers(deps) {
     attemptPushTransferWithDestination,
     attemptPushTransfer,
     findPathForInput,
-    sendDiagnosticMessage,
     debugEnabled,
     debugState,
     nextQueueTransferAllowed,
-    getNowTick: () => nowTick,
+    getNowTick,
+    traceNoteQueueSize,
+    traceNoteError,
+    traceNotePathfind,
+    traceNoteTransferResult,
+    noteGlobalPathfind,
+    noteGlobalPerf,
   });
 
   const tickGuardsPhase = createTickGuardsPhase({
-    world,
-    getNowTick: () => nowTick,
+    getNowTick,
     getLastTickEndTime: () => lastTickEndTime,
     setLastTickEndTime: (v) => {
       lastTickEndTime = v;
@@ -695,11 +933,14 @@ export function initManagers(deps) {
       consecutiveLongTicks = v;
     },
   });
+
   const persistAndReportPhase = createPersistAndReportPhase({
     cfg,
     world,
     inflight,
     persistInflightStateToWorld,
+    shouldSave,
+    dirtyKeys,
     getInflightDirty,
     getInflightStepDirty,
     setInflightDirty,
@@ -724,7 +965,6 @@ export function initManagers(deps) {
     setPrismLevelsDirty,
     getPrismLevelsLastSaveTick,
     setPrismLevelsLastSaveTick,
-    sendDiagnosticMessage,
     sendInitMessage,
     debugEnabled,
     debugState,
@@ -733,8 +973,8 @@ export function initManagers(deps) {
     setLastDebugTick,
     inputQueuesManager,
     getQueueState,
-    hasInsight,
-    getNowTick: () => nowTick,
+    getNowTick,
+    noteWatchdog,
     getLastTickEndTime: () => lastTickEndTime,
     setLastTickEndTime: (v) => {
       lastTickEndTime = v;
@@ -746,6 +986,8 @@ export function initManagers(deps) {
     setEmergencyDisableTicks: (v) => {
       emergencyDisableTicks = v;
     },
+    prismRegistry,
+    linkGraph,
   });
 
   const scanTransfersPhase = createScanTransfersPhase({
@@ -760,163 +1002,36 @@ export function initManagers(deps) {
     bumpBackoff,
     getBackoffTicks,
     nextAllowed,
-    sendDiagnosticMessage,
     debugEnabled,
     debugState,
-    getNowTick: () => nowTick,
-    getCursor: () => cursor,
-    setCursor: (v) => {
-      cursor = v;
-    },
+    getNowTick,
+    getCursor,
+    setCursor,
     persistAndReport: (ctx) => persistAndReportPhase.run(ctx),
+    traceNoteScan,
+    traceNoteTransferResult,
+    noteGlobalPerf,
+    cacheManager,
+    getFilterForBlock,
+    getFilterSet,
+    findPathForInput,
+    noteGlobalPathfind,
+    traceNoteNeighborInventories,
+    traceNoteVirtualCapacity,
+    traceNoteVirtualCapacityReason,
+    traceNotePathfind,
+    isPrismBlock,
+    validatePathStart,
+    MAX_STEPS,
   });
-
-
-   // INIT DEBUG: Input queues manager
-  sendInitMessage("§b[Init] Step 7/8: Creating inputQueuesManager...");
-
-  // Create input queue manager - needs world, getContainerKey, getContainerKeyFromInfo, isPathBlock
-  let inputQueuesManager;
-  try {
-    inputQueuesManager = createInputQueuesManager(cfg, {
-      world,
-      getContainerKey,
-      getContainerKeyFromInfo,
-      isPathBlock,
-    });
-    if (!inputQueuesManager) {
-      throw new Error("createInputQueuesManager returned null - check cfg and deps parameters");
-    }
-    sendInitMessage("§a[Init] ? inputQueuesManager created");
-  } catch (err) {
-    handleManagerCreationError("inputQueuesManager", err);
-  }
-
-  // INIT DEBUG: Refinement manager
-  sendInitMessage("§b[Init] Step 8/8: Creating refinementManager, finalizeManager, inflightProcessorManager...");
-
-  // Bind queuesManager methods ONCE, but use non-colliding local names
-  const enqueuePendingForContainerBound =
-    queuesManager && typeof queuesManager.enqueuePendingForContainer === "function"
-      ? queuesManager.enqueuePendingForContainer.bind(queuesManager)
-      : null;
-
-  const resolveContainerInfoBound =
-    queuesManager && typeof queuesManager.resolveContainerInfo === "function"
-      ? queuesManager.resolveContainerInfo.bind(queuesManager)
-      : null;
-
-  // Create refinement manager - needs fxManager and cacheManager
-  let refinementManager;
-  try {
-    if (!cacheManager || typeof cacheManager.getPrismInventoriesCached !== "function") {
-      throw new Error("cacheManager.getPrismInventoriesCached is not a function");
-    }
-    if (!fxManager || typeof fxManager.enqueueFluxTransferFxPositions !== "function") {
-      throw new Error("fxManager.enqueueFluxTransferFxPositions is not a function");
-    }
-    if (!enqueuePendingForContainerBound) {
-      throw new Error("queuesManager.enqueuePendingForContainer is not a function");
-    }
-
-    refinementManager = createRefinementManager(cfg, {
-      FX,
-      cacheManager,
-      resolveBlockInfo,
-      dropItemAt,
-      fxManager,
-      enqueuePendingForContainer: enqueuePendingForContainerBound,
-    });
-    if (!refinementManager) {
-      throw new Error("createRefinementManager returned null - check cfg and deps parameters");
-    }
-    sendInitMessage("§a[Init] ? refinementManager created");
-  } catch (err) {
-    handleManagerCreationError("refinementManager", err);
-  }
-
-  // Create finalize manager - needs fxManager, refinementManager, and other dependencies
-  let finalizeManager;
-  try {
-    if (!cacheManager || typeof cacheManager.getDimensionCached !== "function") {
-      throw new Error("cacheManager.getDimensionCached is not a function");
-    }
-    if (!fxManager || typeof fxManager.enqueueFluxTransferFx !== "function") {
-      throw new Error("fxManager.enqueueFluxTransferFx is not a function");
-    }
-    if (!enqueuePendingForContainerBound) {
-      throw new Error("queuesManager.enqueuePendingForContainer is not a function");
-    }
-    if (!resolveContainerInfoBound) {
-      throw new Error("queuesManager.resolveContainerInfo is not a function");
-    }
-
-    finalizeManager = createFinalizeManager(cfg, {
-      world,
-      FX,
-      cacheManager,
-      resolveBlockInfo,
-      dropItemAt,
-      getFilterForBlock,
-      enqueuePendingForContainer: enqueuePendingForContainerBound,
-      fxManager,
-      getContainerKey,
-      debugEnabled,
-      debugState,
-      noteOutputTransfer,
-      resolveContainerInfo: resolveContainerInfoBound,
-    });
-    if (!finalizeManager) {
-      throw new Error("createFinalizeManager returned null - check cfg and deps parameters");
-    }
-    sendInitMessage("§a[Init] ? finalizeManager created");
-  } catch (err) {
-    handleManagerCreationError("finalizeManager", err);
-  }
-
-  // Create inflight processor manager - needs all other managers
-  let inflightProcessorManager;
-  try {
-    if (!cacheManager || typeof cacheManager.getDimensionCached !== "function") {
-      throw new Error("cacheManager.getDimensionCached is not a function");
-    }
-    if (!levelsManager || typeof levelsManager.notePrismPassage !== "function") {
-      throw new Error("levelsManager.notePrismPassage is not a function");
-    }
-    if (!refinementManager || typeof refinementManager.applyPrismSpeedBoost !== "function") {
-      throw new Error("refinementManager.applyPrismSpeedBoost is not a function");
-    }
-    if (!fxManager || typeof fxManager.spawnOrbStep !== "function") {
-      throw new Error("fxManager.spawnOrbStep is not a function");
-    }
-    if (!finalizeManager || typeof finalizeManager.finalizeJob !== "function") {
-      throw new Error("finalizeManager.finalizeJob is not a function");
-    }
-
-    inflightProcessorManager = createInflightProcessorManager(cfg, {
-      cacheManager,
-      dropItemAt,
-      levelsManager,
-      refinementManager,
-      fxManager,
-      finalizeManager,
-      debugEnabled,
-      debugState,
-    });
-    if (!inflightProcessorManager) {
-      throw new Error("createInflightProcessorManager returned null - check cfg and deps parameters");
-    }
-    sendInitMessage("§a[Init] ? inflightProcessorManager created");
-  } catch (err) {
-    handleManagerCreationError("inflightProcessorManager", err);
-  }
-
   // INIT DEBUG: All managers created
   sendInitMessage("§a[Init] ? All managers created! Controller ready.");
   return {
     virtualInventoryManager,
     cacheManager,
     levelsManager,
+    prismRegistry,
+    linkGraph,
     fxManager,
     queuesManager,
     inputQueuesManager,
@@ -931,6 +1046,9 @@ export function initManagers(deps) {
     services,
     beginTickPhase,
     refreshPrismPhase,
+    validateLinksPhase,
+    handleBeamBreaksPhase,
+    updateBeamsPhase,
     scanDiscoveryPhase,
     pushTransfersPhase,
     pushTransferHandlers,
@@ -945,11 +1063,3 @@ export function initManagers(deps) {
     markAdjacentPrismsDirty,
   };
   }
-
-
-
-
-
-
-
-
