@@ -84,6 +84,10 @@ const ENDPOINT_IDS = [
   CRYSTALLIZER_ID,
 ];
 
+const HYBRID_DRIFT_AMOUNT_BY_TIER = [1, 2, 4, 16, 64];
+const HYBRID_DRIFT_INTERVAL_BY_TIER = [20, 15, 10, 7, 5];
+const MAX_HYBRID_INFLIGHT_PERSIST_ENTRIES = 50;
+
 function isEndpointId(typeId) {
   return ENDPOINT_IDS.includes(typeId);
 }
@@ -181,6 +185,8 @@ const DEFAULTS = {
   hybridDriftHopGain: 0.02,
   hybridDriftRerouteGain: 0.05,
   hybridDriftMaxChance: 0.95,
+  hybridDriftAmountByTier: HYBRID_DRIFT_AMOUNT_BY_TIER,
+  hybridDriftIntervalByTier: HYBRID_DRIFT_INTERVAL_BY_TIER,
   hybridAttunedSettleBase: 0.01,
   hybridAttunedHopGain: 0.005,
   hybridAttunedRerouteGain: 0.02,
@@ -191,6 +197,7 @@ const DEFAULTS = {
   hybridRerouteCooldownMaxTicks: 60,
   hybridRerouteDropThreshold: 12,
   hybridHopDropThreshold: 40,
+  maxHybridInflightPersistEntries: MAX_HYBRID_INFLIGHT_PERSIST_ENTRIES,
 
   // 50/50 balance distribution settings
   useBalanceDistribution: true,
@@ -265,4 +272,7 @@ export {
   PRISM_SPEED_BOOST_PER_TIER,
 
   DEFAULTS,
+  HYBRID_DRIFT_AMOUNT_BY_TIER,
+  HYBRID_DRIFT_INTERVAL_BY_TIER,
+  MAX_HYBRID_INFLIGHT_PERSIST_ENTRIES,
 };

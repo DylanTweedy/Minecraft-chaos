@@ -5,7 +5,7 @@
       "identifier": "chaos:beam_h",
       "materials": { "default": "entity_beam_additive" },
       "textures": { "default": "textures/blocks/chaos_beam" },
-      "geometry": { "default": "geometry.chaos.beam" },
+      "geometry": { "default": "geometry.chaos.beam_entity" },
       "animations": {
         "orient_h": "animation.chaos.beam.orient_horizontal",
         "scale": "animation.chaos.beam.scale",
