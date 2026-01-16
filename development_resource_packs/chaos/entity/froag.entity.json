@@ -1,0 +1,40 @@
+{
+	"format_version": "1.10.0",
+	"minecraft:client_entity": {
+		"description": {
+			"identifier": "myname:froag",
+			"materials": {
+				"default": "frog"
+			},
+			"textures": {
+				"temperate": "textures/entity/froag/temperate",
+				"cold": "textures/entity/froag/cold",
+				"warm": "textures/entity/froag/warm"
+			},
+			"geometry": {
+				"default": "geometry.froag"
+			},
+			"spawn_egg": {
+				"base_color": "#ab00ff",
+				"overlay_color": "#34ff00"
+			},
+			"animations": {
+				"croak": "animation.froag.croak",
+				"jump": "animation.froag.jump",
+				"tongue": "animation.froag.tongue",
+				"walk": "animation.froag.walk",
+				"swim": "animation.froag.swim",
+				"idle_water": "animation.froag.idle.water",
+				"look_at_target": "animation.common.look_at_target",
+				"general": "controller.animation.frog.general",
+				"croaking": "controller.animation.frog.croaking",
+				"eat_mob": "controller.animation.frog.eat_mob"
+			},
+			"scripts": {
+				"animate": ["general", "croaking", "eat_mob"],
+				"pre_animation": ["variable.moving = query.ground_speed > 0 || query.vertical_speed > 0;"]
+			},
+			"render_controllers": ["controller.render.frog"]
+		}
+	}
+}
