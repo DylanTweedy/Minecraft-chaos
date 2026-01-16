@@ -1,0 +1,40 @@
+{
+	"format_version": "1.10.0",
+	"minecraft:client_entity": {
+		"description": {
+			"identifier": "myname:purple_nether_toad",
+			"materials": {
+				"default": "frog"
+			},
+			"textures": {
+				"temperate": "textures/entity/purple_nether_toad/temperate",
+				"cold": "textures/entity/purple_nether_toad/cold",
+				"warm": "textures/entity/purple_nether_toad/warm"
+			},
+			"geometry": {
+				"default": "geometry.purple_nether_toad"
+			},
+			"spawn_egg": {
+				"base_color": "#d706a2",
+				"overlay_color": "#cd87ff"
+			},
+			"animations": {
+				"croak": "animation.purple_nether_toad.croak",
+				"jump": "animation.purple_nether_toad.jump",
+				"tongue": "animation.purple_nether_toad.tongue",
+				"walk": "animation.purple_nether_toad.walk",
+				"swim": "animation.purple_nether_toad.swim",
+				"idle_water": "animation.purple_nether_toad.idle.water",
+				"look_at_target": "animation.common.look_at_target",
+				"general": "controller.animation.frog.general",
+				"croaking": "controller.animation.frog.croaking",
+				"eat_mob": "controller.animation.frog.eat_mob"
+			},
+			"scripts": {
+				"animate": ["general", "croaking", "eat_mob"],
+				"pre_animation": ["variable.moving = query.ground_speed > 0 || query.vertical_speed > 0;"]
+			},
+			"render_controllers": ["controller.render.frog"]
+		}
+	}
+}

@@ -2,26 +2,26 @@
 	"format_version": "1.10.0",
 	"minecraft:client_entity": {
 		"description": {
-			"identifier": "myname:froag",
+			"identifier": "myname:copper_bee",
 			"materials": {
 				"default": "entity_alphatest"
 			},
 			"textures": {
-				"default": "textures/entity/froag/froag",
-				"angry": "textures/entity/froag/angry",
-				"nectar": "textures/entity/froag/nectar",
-				"angry_nectar": "textures/entity/froag/angry_nectar"
+				"default": "textures/entity/copper_bee/copper_bee",
+				"angry": "textures/entity/copper_bee/angry",
+				"nectar": "textures/entity/copper_bee/nectar",
+				"angry_nectar": "textures/entity/copper_bee/angry_nectar"
 			},
 			"geometry": {
-				"default": "geometry.froag"
+				"default": "geometry.copper_bee"
 			},
 			"animations": {
-				"flying": "animation.froag.flying",
+				"flying": "animation.copper_bee.flying",
 				"drip": "controller.animation.bee.drip",
 				"controller_bee_sting": "controller.animation.bee.sting",
-				"bee_sting": "animation.froag.sting",
-				"bee_no_stinger": "animation.froag.no_stinger",
-				"bee_fly_bobbing": "animation.froag.fly.bobbing",
+				"bee_sting": "animation.copper_bee.sting",
+				"bee_no_stinger": "animation.copper_bee.no_stinger",
+				"bee_fly_bobbing": "animation.copper_bee.fly.bobbing",
 				"bee_root_controller": "controller.animation.bee.root"
 			},
 			"particle_effects": {

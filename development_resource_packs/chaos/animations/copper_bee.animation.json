@@ -1,7 +1,7 @@
 {
 	"format_version": "1.8.0",
 	"animations": {
-		"animation.froag.flying": {
+		"animation.copper_bee.flying": {
 			"loop": true,
 			"animation_length": 2.55,
 			"bones": {
@@ -147,7 +147,7 @@
 				}
 			}
 		},
-		"animation.froag.sting": {
+		"animation.copper_bee.sting": {
 			"loop": true,
 			"bones": {
 				"body": {
@@ -155,7 +155,7 @@
 				}
 			}
 		},
-		"animation.froag.no_stinger": {
+		"animation.copper_bee.no_stinger": {
 			"loop": true,
 			"bones": {
 				"stinger": {
@@ -163,7 +163,7 @@
 				}
 			}
 		},
-		"animation.froag.fly.bobbing": {
+		"animation.copper_bee.fly.bobbing": {
 			"loop": true,
 			"bones": {
 				"body": {

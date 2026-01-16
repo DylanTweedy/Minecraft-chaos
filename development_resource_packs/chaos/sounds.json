@@ -43,7 +43,7 @@
 				"pitch": [0.8, 1.2],
 				"volume": 1
 			},
-			"myname:froag": {
+			"myname:green_nether_toad": {
 				"events": {
 					"ambient": "mob.frog.ambient",
 					"ambient.baby": {
@@ -54,6 +54,102 @@
 					"death": "mob.frog.death",
 					"eat": "mob.frog.eat",
 					"hurt": "mob.frog.hurt",
+					"jump_to_block": "mob.frog.jump_to_block",
+					"step": "mob.frog.step"
+				},
+				"pitch": [0.8, 1.2],
+				"volume": 1
+			},
+			"myname:purple_nether_toad": {
+				"events": {
+					"ambient": "mob.frog.ambient",
+					"ambient.baby": {
+						"pitch": 1.2,
+						"sound": "mob.frog.ambient",
+						"volume": 2.5
+					},
+					"death": "mob.frog.death",
+					"eat": "mob.frog.eat",
+					"hurt": "mob.frog.hurt",
+					"jump_to_block": "mob.frog.jump_to_block",
+					"step": "mob.frog.step"
+				},
+				"pitch": [0.8, 1.2],
+				"volume": 1
+			},
+			"myname:nether_toad": {
+				"events": {
+					"ambient": "mob.frog.ambient",
+					"ambient.baby": {
+						"pitch": 1.2,
+						"sound": "mob.frog.ambient",
+						"volume": 2.5
+					},
+					"death": "mob.frog.death",
+					"eat": "mob.frog.eat",
+					"hurt": "mob.frog.hurt",
+					"jump_to_block": "mob.frog.jump_to_block",
+					"step": "mob.frog.step"
+				},
+				"pitch": [0.8, 1.2],
+				"volume": 1
+			},
+			"myname:nillager": {
+				"events": {
+					"ambient": "mob.villager.idle",
+					"death": "mob.villager.death",
+					"death.to.zombie": "mob.villager.death",
+					"haggle": "mob.villager.haggle",
+					"haggle.no": "mob.villager.no",
+					"haggle.yes": "mob.villager.yes",
+					"hurt": "mob.villager.hit"
+				},
+				"pitch": [0.8, 1.2],
+				"volume": 1
+			},
+			"myname:copper_bee": {
+				"events": {
+					"ambient.pollinate": {
+						"sound": "mob.bee.pollinate",
+						"volume": 0.85
+					},
+					"attack": {
+						"pitch": [0.8, 1],
+						"sound": "mob.bee.sting"
+					},
+					"death": {
+						"pitch": [0.9, 1.1],
+						"sound": "mob.bee.death",
+						"volume": 0.6
+					},
+					"hurt": {
+						"pitch": [0.9, 1.1],
+						"sound": "mob.bee.hurt",
+						"volume": 0.6
+					}
+				},
+				"pitch": 1,
+				"volume": 0.6
+			},
+			"myname:froag": {
+				"events": {
+					"ambient.pollinate": {
+						"sound": "mob.bee.pollinate",
+						"volume": 0.85
+					},
+					"attack": {
+						"pitch": [0.8, 1],
+						"sound": "mob.bee.sting"
+					},
+					"death": "mob.frog.death",
+					"hurt": "mob.frog.hurt",
+					"ambient": "mob.frog.ambient",
+					"ambient.baby": {
+						"pitch": 1.2,
+						"sound": "mob.frog.ambient",
+						"volume": 2.5
+					},
+					"eat": "mob.frog.eat",
 					"jump_to_block": "mob.frog.jump_to_block",
 					"step": "mob.frog.step"
 				},
