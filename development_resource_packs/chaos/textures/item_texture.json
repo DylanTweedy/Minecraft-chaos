@@ -1,5 +1,11 @@
 {
 	"texture_data": {
+		"satan_chestplate": {
+			"textures": "textures/items/satan_chestplate.png"
+		},
+		"satan_helm": {
+			"textures": "textures/items/satan_helm.png"
+		},
 		"godsteel_helmet": {
 			"textures": "textures/items/godsteel_helmet.png"
 		},
@@ -57,8 +63,9 @@
 		"godsteel_greatsword": {
 			"textures": "textures/items/godsteel_greatsword"
 		},
-    "godsteel_ingot": { "textures": "textures/items/godsteel_ingot" }
-
+		"godsteel_ingot": {
+			"textures": "textures/items/godsteel_ingot"
+		}
 	},
 	"resource_pack_name": "Chaos",
 	"texture_name": "atlas.items"
