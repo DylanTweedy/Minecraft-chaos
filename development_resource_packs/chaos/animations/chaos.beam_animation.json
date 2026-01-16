@@ -34,7 +34,7 @@
       "loop": true,
       "bones": {
         "bb_main": {
-          "rotation": [0, 0, "query.life_time * 360 * 0.25"]
+          "rotation": [0, "query.life_time * 360 * 0.25", 0]
         }
       }
     }    

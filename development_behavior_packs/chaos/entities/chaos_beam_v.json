@@ -1,0 +1,55 @@
+{
+  "format_version": "1.21.50",
+  "minecraft:entity": {
+    "description": {
+      "identifier": "chaos:beam_v",
+      "is_spawnable": false,
+      "is_summonable": true,
+      "is_experimental": false,
+      "properties": {
+        "chaos:beam_len": {
+          "type": "float",
+          "range": [1.0, 64.0],
+          "default": 1.0,
+          "client_sync": true
+        },
+        "chaos:beam_alpha": {
+          "type": "float",
+          "range": [0.0, 1.0],
+          "default": 1.0,
+          "client_sync": true
+        },
+        "chaos:beam_spin": {
+          "type": "float",
+          "range": [0.0, 360.0],
+          "default": 0.0,
+          "client_sync": true
+        }
+      }
+    },
+    "components": {
+      "minecraft:physics": { "has_gravity": false, "has_collision": false },
+      "minecraft:collision_box": { "width": 0.0, "height": 0.0 },
+      "minecraft:pushable": { "is_pushable": false, "is_pushable_by_piston": false },
+
+      "minecraft:damage_sensor": {
+        "triggers": [
+          { "cause": "all", "deals_damage": "no" }
+        ]
+      },
+
+      "minecraft:health": { "value": 1, "max": 1 },
+
+      "minecraft:despawn": { "despawn_from_distance": { "max_distance": 256 } }
+    },
+    "events": {
+      "chaos:init": {
+        "set_property": {
+          "chaos:beam_len": 1.0,
+          "chaos:beam_alpha": 1.0,
+          "chaos:beam_spin": 0.0
+        }
+      }
+    }
+  }
+}

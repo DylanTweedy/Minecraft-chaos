@@ -361,6 +361,14 @@ export function initManagers(runtime) {
     findDropLocation,
   });
 
+  const safeGetFilterSetForBlock =
+    typeof getFilterSetForBlock === "function" ? getFilterSetForBlock : () => null;
+  const getFilterForBlock = createGetFilterForBlock({
+    world,
+    getFilterContainer,
+    getFilterSetForBlock: safeGetFilterSetForBlock,
+  });
+
   const hybridPendingCooldowns = new Map();
   const hybridScheduler = createHybridScheduler(cfg);
   const hybridArrivalHandler = createHybridArrivalHandler({
@@ -386,12 +394,6 @@ export function initManagers(runtime) {
 
   const resolvePrismKeysFromWorld = createResolvePrismKeysFromWorld({
     prismRegistry,
-  });
-
-  const getFilterForBlock = createGetFilterForBlock({
-    world,
-    getFilterContainer,
-    getFilterSetForBlock,
   });
 
    function createOrFail(stepLabel, managerName, factoryFn) {
@@ -952,6 +954,7 @@ export function initManagers(runtime) {
     linkGraph,
     getPrismKeys,
     resolveBlockInfo,
+    getPrismTier,
     getFilterForBlock,
     getFilterSet,
     getAllAdjacentInventories,

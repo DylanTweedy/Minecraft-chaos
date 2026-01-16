@@ -8,9 +8,30 @@ import { getContainerKey, getContainerKeyFromInfo } from "../keys.js";
 function sanitizeInflightEntry(entry) {
   try {
     if (!entry || typeof entry !== "object") return null;
+    const mode = typeof entry.mode === "string" ? entry.mode : null;
+    const isHybrid = typeof mode === "string" && mode.startsWith("hybrid");
+    if (isHybrid && !entry.mode) entry.mode = "hybrid_drift";
     if (typeof entry.dimId !== "string") return null;
     if (typeof entry.itemTypeId !== "string") return null;
-    if (!Array.isArray(entry.path) || entry.path.length === 0) return null;
+    if (isHybrid) {
+      if (!entry.sourcePrismKey || typeof entry.sourcePrismKey !== "string") {
+        if (typeof entry.currentPrismKey === "string") {
+          entry.sourcePrismKey = entry.currentPrismKey;
+        } else {
+          return null;
+        }
+      }
+      if (!entry.currentPrismKey || typeof entry.currentPrismKey !== "string") {
+        entry.currentPrismKey = entry.sourcePrismKey;
+      }
+      if (!entry.destPrismKey || typeof entry.destPrismKey !== "string") {
+        return null;
+      }
+      if (!Array.isArray(entry.path)) entry.path = [];
+    } else {
+      if (!Array.isArray(entry.path) || entry.path.length === 0) return null;
+      if (!entry.outputKey || typeof entry.outputKey !== "string") return null;
+    }
     if (!Number.isFinite(entry.stepIndex)) entry.stepIndex = 0;
     if (!Number.isFinite(entry.ticksUntilStep)) entry.ticksUntilStep = 1;
     if (!Number.isFinite(entry.stepTicks)) entry.stepTicks = entry.ticksUntilStep;
@@ -18,9 +39,7 @@ function sanitizeInflightEntry(entry) {
     entry.amount = Math.max(1, entry.amount | 0);
     if (typeof entry.containerKey !== "string") entry.containerKey = null;
     if (entry.prismKey && typeof entry.prismKey !== "string") entry.prismKey = null;
-    if (!entry.outputKey || typeof entry.outputKey !== "string") return null;
     if (!entry.startPos || !Number.isFinite(entry.startPos.x)) entry.startPos = null;
-    // Initialize countedPrisms array if not present (for saved/loaded state)
     if (!Array.isArray(entry.countedPrisms)) entry.countedPrisms = [];
     return entry;
   } catch {

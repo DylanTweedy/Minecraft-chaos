@@ -14,6 +14,13 @@ const _global = {
   pathfindErrors: 0,
   watchdog: null,
   watchdogTick: 0,
+  hybrid: {
+    inflight: 0,
+    spawned: 0,
+    cooldown: 0,
+    caps: 0,
+    noPath: 0,
+  },
 };
 
 export function noteGlobalQueues({ queues = 0, queuedContainers = 0, queuedItems = 0 } = {}) {
@@ -24,6 +31,15 @@ export function noteGlobalQueues({ queues = 0, queuedContainers = 0, queuedItems
 
 export function noteGlobalInflight(count) {
   _global.inflight = Math.max(0, count | 0);
+}
+
+export function noteHybridActivity(stats = {}) {
+  const hybrid = _global.hybrid || {};
+  hybrid.inflight = Math.max(0, Number(stats.inflight) || 0);
+  hybrid.spawned = Math.max(0, Number(stats.spawned) || 0);
+  hybrid.cooldown = Math.max(0, Number(stats.cooldown) || 0);
+  hybrid.caps = Math.max(0, Number(stats.caps) || 0);
+  hybrid.noPath = Math.max(0, Number(stats.noPath) || 0);
 }
 
 export function noteGlobalPerf(name, ms) {
@@ -61,6 +77,21 @@ export function getGlobalSummaryMessages() {
     dedupeKey: `transfer:timing:${_global.tickMs}:${_global.scanMs}:${_global.persistMs}`,
     category: "perf",
   });
+
+  const hybrid = _global.hybrid || null;
+  if (hybrid) {
+    const hybridParts = [`Inflight: ${hybrid.inflight}`];
+    if (hybrid.spawned > 0) hybridParts.push(`Spawned: ${hybrid.spawned}`);
+    if (hybrid.cooldown > 0) hybridParts.push(`Cooldown: ${hybrid.cooldown}`);
+    if (hybrid.caps > 0) hybridParts.push(`Caps: ${hybrid.caps}`);
+    if (hybrid.noPath > 0) hybridParts.push(`NoPath: ${hybrid.noPath}`);
+    const dedupeKey = `transfer:hybrid:${hybrid.inflight}:${hybrid.spawned}:${hybrid.cooldown}:${hybrid.caps}:${hybrid.noPath}`;
+    lines.push({
+      text: `Hybrid | ${hybridParts.join(" | ")}`,
+      dedupeKey,
+      category: "hybrid",
+    });
+  }
 
   if (_global.inputQueuesMs > 0) {
     lines.push({
