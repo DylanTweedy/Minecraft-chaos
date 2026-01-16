@@ -62,3 +62,6 @@ item.myname:satan_chestplate=Satan Chestplate
 item.myname:satan_chestplate=Satan Chestplate
 item.chaos:satan_helm=Satan Helm
 item.chaos:satan_chestplate=Satan Chestplate
+item.myname:biomech_helm=Biomech Helm
+entity.myname:ass.name=ass
+item.spawn_egg.entity.myname:ass.name=Spawn ass

@@ -1,5 +1,8 @@
 {
 	"texture_data": {
+		"biomech_helm": {
+			"textures": "textures/items/biomech_helm.png"
+		},
 		"satan_chestplate": {
 			"textures": "textures/items/satan_chestplate.png"
 		},
