@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/runtime/hybrid/arrival.js
 
-import { ItemStack } from "@minecraft/server";
+import { ItemStack, system } from "@minecraft/server";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -93,6 +93,12 @@ export function createHybridArrivalHandler(deps = {}) {
     emitTrace,
   } = deps;
 
+  // Hybrid drift can get chat-spammy when many jobs reroute.
+  // Aggregate reroutes per-destination prism and emit a short summary per window.
+  const rerouteCountsByPrism = new Map(); // prismKey -> count
+  const rerouteLastLogTickByPrism = new Map();
+  const rerouteWindowTicks = Math.max(20, Number(cfg?.hybridRerouteLogWindowTicks) || 40);
+
   function dropRemaining(job, location, dim) {
     if (!dropItemAt || !location || job.amount <= 0) return;
     const dimObj = dim || (location?.dim ? location.dim : null);
@@ -166,12 +172,25 @@ export function createHybridArrivalHandler(deps = {}) {
     const cooldownTicks = computeCooldownTicks(cfg, job.reroutes);
     pendingCooldowns.set(job.id, { job, cooldownTicks });
 
-    if (emitTrace) {
-      emitTrace(destKey, "transfer", {
-        text: `[HybridDrift] reroute job=${job.id} cooldown=${cooldownTicks}`,
-        category: "hybrid",
-        dedupeKey: `hybrid_reroute_${job.id}`,
-      });
+    // Aggregate reroutes instead of logging every single job.
+    if (typeof emitTrace === "function") {
+      const nowTick = Number.isFinite(system?.currentTick) ? system.currentTick : 0;
+      const count = (rerouteCountsByPrism.get(destKey) || 0) + 1;
+      rerouteCountsByPrism.set(destKey, count);
+
+      const lastLog = rerouteLastLogTickByPrism.get(destKey) || -Infinity;
+      if ((nowTick - lastLog) >= rerouteWindowTicks) {
+        rerouteLastLogTickByPrism.set(destKey, nowTick);
+        const total = rerouteCountsByPrism.get(destKey) || count;
+        rerouteCountsByPrism.set(destKey, 0);
+
+        // Keep it short; details belong in deeper debugging, not chat spam.
+        emitTrace(destKey, "transfer", {
+          text: `[HybridDrift] ${total} reroute(s) (last cooldown=${cooldownTicks})`,
+          category: "hybrid",
+          dedupeKey: `hybrid_reroute_${destKey}_${nowTick}`,
+        });
+      }
     }
 
     return true;

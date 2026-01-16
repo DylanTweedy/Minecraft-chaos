@@ -1,7 +1,7 @@
 // scripts/chaos/features/links/transfer/core/inflightProcessor.js
 import { isPrismId } from "../config.js";
 import { isFluxTypeId } from "../../../../flux.js";
-import { isPathBlock } from "../pathfinding/path.js";
+import { isPathBlock } from "../routing/path.js";
 import { releaseContainerSlot } from "../inventory/reservations.js";
 import { key } from "../keys.js";
 import { buildHybridPath } from "../runtime/hybrid/jobFactory.js";

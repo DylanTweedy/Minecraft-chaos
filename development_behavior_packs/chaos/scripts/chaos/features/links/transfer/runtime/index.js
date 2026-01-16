@@ -19,4 +19,4 @@ export { createPersistAndReportPhase } from "./phases/persistAndReport.js";
 export { createScanTransfersPhase } from "./phases/scanTransfers.js";
 export { createHybridTransfersPhase } from "./phases/hybridTransfers.js";
 
-export { ok, fail, phaseStep } from "./helpers/result.js";
+export { ok, fail, phaseStep } from "../util/result.js";

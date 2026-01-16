@@ -53,9 +53,9 @@ import {
 } from "./index.js";
 import { initManagers } from "./bootstrap/initManagers.js";
 import { createTransferStartup } from "./bootstrap/startup.js";
-import { createGetSpeed } from "./helpers/speed.js";
-import { createPrismRegistry } from "./registry/prismRegistry.js";
-import { createLinkGraph } from "./registry/linkGraph.js";
+import { createGetSpeed } from "../util/speed.js";
+import { createPrismRegistry } from "../../network/graph/prismRegistry.js";
+import { createLinkGraph } from "../../network/graph/linkGraph.js";
 import { subscribeLinkEvents } from "./events/linkEvents.js";
 
 // Persistence
@@ -97,7 +97,7 @@ import {
   clearReservations,
 } from "../inventory/reservations.js";
 import { calculateBalancedTransferAmount } from "../inventory/balance.js";
-import { createTransferPathfinder } from "../pathfinding/pathfinder.js";
+import { createTransferPathfinder } from "../routing/pathfinder.js";
 
 // Pathfinding & routing
 import {
@@ -109,8 +109,8 @@ import {
   buildFluxFxSegments,
   findDropLocation,
   pickWeightedRandomWithBias,
-} from "../pathfinding/path.js";
-import { findOutputRouteFromNode, findCrystallizerRouteFromPrism } from "../pathfinding/routes.js";
+} from "../routing/path.js";
+import { findOutputRouteFromNode, findCrystallizerRouteFromPrism } from "../routing/routes.js";
 
 // Tracing
 import {
@@ -132,7 +132,7 @@ import { noteDuration, noteCount } from "../../../../core/insight/perf.js";
 import { noteWatchdog } from "../../../../core/insight/transferStats.js";
 
 // Cross-feature filters
-import { getFilterSetForBlock } from "../../shared/filters.js";
+import { getFilterSetForBlock } from "../../network/filters.js";
 
 // Flux / crystallizer / FX (chaos root is 3 levels up)
 import { tryGenerateFluxOnTransfer, tryRefineFluxInTransfer, getFluxTier, isFluxTypeId } from "../../../../flux.js";

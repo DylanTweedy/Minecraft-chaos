@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/runtime/phases/scanDiscovery.js
 
-import { ok, phaseStep } from "../helpers/result.js";
+import { ok, phaseStep } from "../../util/result.js";
 import {
   emitInsightError,
   hasAnyRegisteredPrism,

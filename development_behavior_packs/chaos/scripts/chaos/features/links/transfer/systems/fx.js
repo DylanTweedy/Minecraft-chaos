@@ -1,7 +1,7 @@
 // scripts/chaos/features/links/transfer/systems/fx.js
 import { MolangVariableMap } from "@minecraft/server";
 import { isPrismBlock, getPrismTier } from "../config.js";
-import { buildFluxFxSegments } from "../pathfinding/path.js";
+import { buildFluxFxSegments } from "../routing/path.js";
 import { queueFxParticle } from "../../../../fx/fx.js";
 import { getFluxTier, isFluxTypeId } from "../../../../flux.js";
 

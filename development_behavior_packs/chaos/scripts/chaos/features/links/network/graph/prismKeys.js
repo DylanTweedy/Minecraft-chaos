@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/runtime/prismKeys.js
 
-import { isPrismBlock } from "../config.js";
+import { isPrismBlock } from "../../transfer/config.js";
 
 const CANONICAL_SEPARATOR = "|";
 const DIMENSION_ALIASES = {

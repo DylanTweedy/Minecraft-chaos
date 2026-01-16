@@ -5,7 +5,7 @@
 function isFluxTypeId(typeId) { return false; }
 function tryRefineFluxInTransfer(ctx) { return null; }
 import { SPEED_SCALE_MAX, PRISM_SPEED_BOOST_BASE, PRISM_SPEED_BOOST_PER_TIER, isPrismBlock, CRYSTALLIZER_ID } from "../config.js";
-import { findOutputRouteFromNode } from "../pathfinding/routes.js";
+import { findOutputRouteFromNode } from "../routing/routes.js";
 import { getAttachedInventoryInfo, tryInsertAmountForContainer } from "../inventory/inventory.js";
 import { getContainerKeyFromInfo } from "../keys.js";
 import { isFurnaceBlock } from "../inventory/inventory.js";

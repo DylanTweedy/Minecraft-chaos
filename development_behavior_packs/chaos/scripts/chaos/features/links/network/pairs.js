@@ -5,7 +5,7 @@ import {
   DP_PAIRS_CHUNK_PREFIX,
   DP_PAIRS_MAX_CHUNKS,
   DP_PAIRS_CHUNK_SIZE,
-} from "../../../core/constants.js";
+} from "../../../../core/constants.js";
 
 // inputKey -> Set(outputKey)
 const pairs = new Map();

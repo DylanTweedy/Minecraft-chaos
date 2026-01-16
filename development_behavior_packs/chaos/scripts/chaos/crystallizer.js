@@ -1,6 +1,6 @@
 // scripts/chaos/crystallizer.js
 import { world, system, ItemStack } from "@minecraft/server";
-import { makeKeyFromBlock } from "./features/links/shared/keys.js";
+import { makeKeyFromBlock } from "./features/links/network/keys.js";
 import { FLUX_IDS } from "./flux.js";
 
 const CRYSTALLIZER_ID = "chaos:crystallizer";

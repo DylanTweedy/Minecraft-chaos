@@ -105,6 +105,36 @@ function boolFlag(value) {
   return value ? "Y" : "N";
 }
 
+function hasAdjacentInventory(world, dimId, pos) {
+  try {
+    if (!world || !dimId || !pos) return false;
+    const dim = world.getDimension(dimId);
+    if (!dim) return false;
+    const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
+    if (!block) return false;
+    const dirs = [
+      { x: 1, y: 0, z: 0 },
+      { x: -1, y: 0, z: 0 },
+      { x: 0, y: 1, z: 0 },
+      { x: 0, y: -1, z: 0 },
+      { x: 0, y: 0, z: 1 },
+      { x: 0, y: 0, z: -1 },
+    ];
+    for (const d of dirs) {
+      const adj = dim.getBlock({ x: pos.x + d.x, y: pos.y + d.y, z: pos.z + d.z });
+      if (!adj) continue;
+      // Most containers expose the inventory component.
+      try {
+        const inv = adj.getComponent?.("minecraft:inventory");
+        if (inv && inv.container) return true;
+      } catch {}
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export const PrismProvider = {
   id: "prism",
   match(ctx) {
@@ -118,36 +148,22 @@ export const PrismProvider = {
     const prismKey = focus?.key || "";
     const trace = getPrismTrace(prismKey);
     const diag = getPrismDiagnosticSnapshot(prismKey, trace || {});
-    const queueSize = trace?.queueSize != null ? trace.queueSize : 0;
     const nowTick = Number.isFinite(system?.currentTick) ? system.currentTick : 0;
-    const scanLabel = formatStatusWithReason(diag.scanStatus, diag.scanReason, diag.vcReason);
-    const pathMs = trace?.lastPathfindMs ? `${trace.lastPathfindMs}ms` : "-";
-    const transferLabel = formatStatusWithReason(
-      diag.transferStatus,
-      diag.transferReason,
-      diag.vcReason
-    );
-    const rawVirtCap = Number.isFinite(diag?.virtCapacity)
-      ? Math.max(0, Math.floor(Number(diag.virtCapacity) || 0))
-      : 0;
-    const vcTick = Number.isFinite(diag?.vcTick) ? diag.vcTick : 0;
-    const vcAge = Number.isFinite(vcTick) ? nowTick - vcTick : Number.MAX_SAFE_INTEGER;
-    const vcFresh = Number.isFinite(vcAge) && vcAge >= 0 && vcAge <= 40;
-    let vcLabel = "VC -";
-    if (vcFresh) {
-      if (rawVirtCap > 0) {
-        vcLabel = `VC ${rawVirtCap}`;
-      } else {
-        const reasonToken = diag.vcReason || "vc_unknown";
-        vcLabel = `VC 0(${reasonToken})`;
-      }
-    }
-    const fullFlag = boolFlag(diag.targetFull);
-    const neighborFlag = boolFlag(diag.neighborInventory);
-    const regFlag = boolFlag(diag.registered);
+    const queueSize = trace?.queueSize != null ? trace.queueSize : 0;
+    const cooldownUntil = trace?.cooldownUntil != null ? (trace.cooldownUntil | 0) : 0;
+    const cooldownLeft = Math.max(0, cooldownUntil - nowTick);
 
-    const actionbarLine =
-      `Prism T${tier} | Queue ${queueSize} | Scan ${scanLabel} | Path ${pathMs} | Xfer ${transferLabel} | ${vcLabel} | Full ${fullFlag} | NbrInv ${neighborFlag} | Reg ${regFlag}`;
+    // IMPORTANT: don't trust trace.hasNeighborInventory for player-facing state.
+    // It can be stale if scan phases are budgeted off or if a prism was never scanned yet.
+    const liveHasInv = hasAdjacentInventory(world, focus?.dimId, focus?.pos);
+
+    let state = "Idle";
+    if (!liveHasInv) state = "Blocked (NoInv)";
+    if (queueSize > 0) state = "Busy";
+    if (cooldownLeft > 0) state = `Cooling (${cooldownLeft})`;
+
+    // Keep actionbar short + player-facing.
+    const actionbarLine = `Prism T${tier} • Q${queueSize} • ${state}`;
 
     return {
       actionbarLine,

@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/shared/keys.js
 // Pure helpers that delegate to the canonical prism key helpers.
-import { makePrismKey } from "../transfer/runtime/prismKeys.js";
+import { makePrismKey } from "./graph/prismKeys.js";
 
 export function makeKey(dimId, x, y, z) {
   return makePrismKey(dimId, x, y, z);

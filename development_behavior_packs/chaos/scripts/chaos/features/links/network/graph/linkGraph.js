@@ -1,8 +1,8 @@
 // scripts/chaos/features/links/transfer/runtime/registry/linkGraph.js
-import { BEAM_ID, MAX_BEAM_LEN, isPrismBlock, isEndpointId, getPrismTier } from "../../config.js";
-import { key, parseKey } from "../../keys.js";
-import { loadLinkGraph, saveLinkGraph } from "../../persistence/storage.js";
-import { enqueueBuildJob, enqueueCollapseJob } from "../../../beam/jobs.js";
+import { BEAM_ID, MAX_BEAM_LEN, isPrismBlock, isEndpointId, getPrismTier } from "../../transfer/config.js";
+import { key, parseKey } from "../../transfer/keys.js";
+import { loadLinkGraph, saveLinkGraph } from "../../transfer/persistence/storage.js";
+import { enqueueBuildJob, enqueueCollapseJob } from "../../network/beams/jobs.js";
 
 function clampInt(n, min, max) {
   const v = Number(n);

@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/runtime/phases/updateBeams.js
-import { ok, phaseStep } from "../helpers/result.js";
-import { tickBeamJobs } from "../../../beam/jobs.js";
+import { ok, phaseStep } from "../../util/result.js";
+import { tickBeamJobs } from "../../../network/beams/jobs.js";
 
 export function createUpdateBeamsPhase(deps) {
   const cfg = deps?.cfg || {};

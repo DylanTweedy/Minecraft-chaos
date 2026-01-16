@@ -1,7 +1,7 @@
 // scripts/chaos/features/links/shared/filters.js
 // Node filter storage using world dynamic properties.
 
-import { canonicalizePrismKey, key as makePrismKey } from "../transfer/runtime/prismKeys.js";
+import { canonicalizePrismKey, key as makePrismKey } from "./graph/prismKeys.js";
 
 const DP_NODE_FILTERS = "chaos:node_filters_v0_json";
 
