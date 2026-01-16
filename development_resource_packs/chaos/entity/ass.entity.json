@@ -1,0 +1,84 @@
+{
+	"format_version": "1.8.0",
+	"minecraft:client_entity": {
+		"description": {
+			"identifier": "myname:ass",
+			"materials": {
+				"default": "villager_v2",
+				"masked": "villager_v2_masked"
+			},
+			"textures": {
+				"base": "textures/entity/ass/base",
+				"base2": "textures/entity/ass/base2",
+				"base3": "textures/entity/ass/base3",
+				"base4": "textures/entity/ass/base4",
+				"base5": "textures/entity/ass/base5",
+				"base6": "textures/entity/ass/base6",
+				"desert": "textures/entity/ass/desert",
+				"jungle": "textures/entity/ass/jungle",
+				"plains": "textures/entity/ass/plains",
+				"savanna": "textures/entity/ass/savanna",
+				"snow": "textures/entity/ass/snow",
+				"swamp": "textures/entity/ass/swamp",
+				"taiga": "textures/entity/ass/taiga",
+				"armorer": "textures/entity/ass/armorer",
+				"butcher": "textures/entity/ass/butcher",
+				"cartographer": "textures/entity/ass/cartographer",
+				"cleric": "textures/entity/ass/cleric",
+				"farmer": "textures/entity/ass/farmer",
+				"fisherman": "textures/entity/ass/fisherman",
+				"fletcher": "textures/entity/ass/fletcher",
+				"leatherworker": "textures/entity/ass/leatherworker",
+				"librarian": "textures/entity/ass/librarian",
+				"shepherd": "textures/entity/ass/shepherd",
+				"tool_smith": "textures/entity/villager2/professions/toolsmith",
+				"weapon_smith": "textures/entity/villager2/professions/weaponsmith",
+				"stonemason": "textures/entity/ass/stonemason",
+				"nitwit": "textures/entity/ass/nitwit",
+				"unskilled": "textures/entity/ass/unskilled",
+				"level_stone": "textures/entity/ass/level_stone",
+				"level_iron": "textures/entity/ass/level_iron",
+				"level_gold": "textures/entity/ass/level_gold",
+				"level_emerald": "textures/entity/ass/level_emerald",
+				"level_diamond": "textures/entity/ass/level_diamond",
+				"toolsmith": "textures/entity/ass/toolsmith",
+				"weaponsmith": "textures/entity/ass/weaponsmith"
+			},
+			"geometry": {
+				"default": "geometry.ass"
+			},
+			"scripts": {
+				"scale": "0.9375",
+				"pre_animation": [
+					"variable.num_professions = 15;",
+					"variable.num_tiers = 3;",
+					"variable.profession_index = (query.variant < variable.num_professions ? query.variant : 0);",
+					"variable.level_index = query.trade_tier;"
+				]
+			},
+			"animations": {
+				"general": "animation.villager.general",
+				"look_at_target": "animation.common.look_at_target",
+				"move": "animation.villager.move",
+				"baby_transform": "animation.villager.baby_transform",
+				"get_in_bed": "animation.villager.get_in_bed"
+			},
+			"animation_controllers": [
+				{
+					"general": "controller.animation.villager_v2.general"
+				},
+				{
+					"move": "controller.animation.villager_v2.move"
+				},
+				{
+					"baby": "controller.animation.villager_v2.baby"
+				}
+			],
+			"render_controllers": ["controller.render.villager_v2_base", "controller.render.villager_v2_masked", "controller.render.villager_v2_level"],
+			"spawn_egg": {
+				"base_color": "#815a5a",
+				"overlay_color": "#34ff00"
+			}
+		}
+	}
+}

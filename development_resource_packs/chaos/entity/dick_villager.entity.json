@@ -1,0 +1,84 @@
+{
+	"format_version": "1.8.0",
+	"minecraft:client_entity": {
+		"description": {
+			"identifier": "myname:dick_villager",
+			"materials": {
+				"default": "villager_v2",
+				"masked": "villager_v2_masked"
+			},
+			"textures": {
+				"base": "textures/entity/dick_villager/base",
+				"base2": "textures/entity/dick_villager/base2",
+				"base3": "textures/entity/dick_villager/base3",
+				"base4": "textures/entity/dick_villager/base4",
+				"base5": "textures/entity/dick_villager/base5",
+				"base6": "textures/entity/dick_villager/base6",
+				"desert": "textures/entity/dick_villager/desert",
+				"jungle": "textures/entity/dick_villager/jungle",
+				"plains": "textures/entity/dick_villager/plains",
+				"savanna": "textures/entity/dick_villager/savanna",
+				"snow": "textures/entity/dick_villager/snow",
+				"swamp": "textures/entity/dick_villager/swamp",
+				"taiga": "textures/entity/dick_villager/taiga",
+				"armorer": "textures/entity/dick_villager/armorer",
+				"butcher": "textures/entity/dick_villager/butcher",
+				"cartographer": "textures/entity/dick_villager/cartographer",
+				"cleric": "textures/entity/dick_villager/cleric",
+				"farmer": "textures/entity/dick_villager/farmer",
+				"fisherman": "textures/entity/dick_villager/fisherman",
+				"fletcher": "textures/entity/dick_villager/fletcher",
+				"leatherworker": "textures/entity/dick_villager/leatherworker",
+				"librarian": "textures/entity/dick_villager/librarian",
+				"shepherd": "textures/entity/dick_villager/shepherd",
+				"tool_smith": "textures/entity/villager2/professions/toolsmith",
+				"weapon_smith": "textures/entity/villager2/professions/weaponsmith",
+				"stonemason": "textures/entity/dick_villager/stonemason",
+				"nitwit": "textures/entity/dick_villager/nitwit",
+				"unskilled": "textures/entity/dick_villager/unskilled",
+				"level_stone": "textures/entity/dick_villager/level_stone",
+				"level_iron": "textures/entity/dick_villager/level_iron",
+				"level_gold": "textures/entity/dick_villager/level_gold",
+				"level_emerald": "textures/entity/dick_villager/level_emerald",
+				"level_diamond": "textures/entity/dick_villager/level_diamond",
+				"toolsmith": "textures/entity/dick_villager/toolsmith",
+				"weaponsmith": "textures/entity/dick_villager/weaponsmith"
+			},
+			"geometry": {
+				"default": "geometry.dick_villager"
+			},
+			"scripts": {
+				"scale": "0.9375",
+				"pre_animation": [
+					"variable.num_professions = 15;",
+					"variable.num_tiers = 3;",
+					"variable.profession_index = (query.variant < variable.num_professions ? query.variant : 0);",
+					"variable.level_index = query.trade_tier;"
+				]
+			},
+			"animations": {
+				"general": "animation.villager.general",
+				"look_at_target": "animation.common.look_at_target",
+				"move": "animation.villager.move",
+				"baby_transform": "animation.villager.baby_transform",
+				"get_in_bed": "animation.villager.get_in_bed"
+			},
+			"animation_controllers": [
+				{
+					"general": "controller.animation.villager_v2.general"
+				},
+				{
+					"move": "controller.animation.villager_v2.move"
+				},
+				{
+					"baby": "controller.animation.villager_v2.baby"
+				}
+			],
+			"render_controllers": ["controller.render.villager_v2_base", "controller.render.villager_v2_masked", "controller.render.villager_v2_level"],
+			"spawn_egg": {
+				"base_color": "#00cfff",
+				"overlay_color": "#34ff00"
+			}
+		}
+	}
+}
