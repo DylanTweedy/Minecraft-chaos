@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/runtime/phases/beginTick.js
 
-import { ok } from "../helpers/result.js";
+import { ok } from "../../util/result.js";
 
 export function createBeginTickPhase(deps) {
   const services = deps?.services || {};

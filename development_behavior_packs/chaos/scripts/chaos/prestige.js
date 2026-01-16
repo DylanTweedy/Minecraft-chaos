@@ -1,7 +1,7 @@
 // scripts/chaos/prestige.js
 import { world, system, ItemStack } from "@minecraft/server";
-import { makeKey } from "./features/links/shared/keys.js";
-import { MAX_BEAM_LEN } from "./features/links/shared/beamConfig.js";
+import { makeKey } from "./features/links/network/keys.js";
+import { MAX_BEAM_LEN } from "./features/links/network/beams/beamConfig.js";
 import { queueFxParticle } from "./fx/fx.js";
 import { FX } from "./fx/fxConfig.js";
 import {

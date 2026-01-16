@@ -1,11 +1,11 @@
 // scripts/chaos/features/links/transfer/runtime/bootstrap/initManagers.js
 
-import { createGetFilterForBlock } from "../helpers/filters.js";
-import { createDropItemAt } from "../helpers/items.js";
-import { createResolvePrismKeysFromWorld } from "../helpers/prismKeys.js";
+import { createGetFilterForBlock } from "../../util/filters.js";
+import { createDropItemAt } from "../../util/items.js";
+import { createResolvePrismKeysFromWorld } from "../../util/prismKeys.js";
 import { noteGlobalPathfind, noteGlobalPerf, noteWatchdog } from "../../../../../core/insight/transferStats.js";
 import { emitTrace } from "../../../../../core/insight/trace.js";
-import { findDropLocation } from "../../pathfinding/path.js";
+import { findDropLocation } from "../../routing/path.js";
 import { createHybridScheduler } from "../hybrid/scheduler.js";
 import { createHybridArrivalHandler } from "../hybrid/arrival.js";
 export function initManagers(runtime) {

@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/runtime/phases/persistAndReport.js
 
-import { ok, phaseStep } from "../helpers/result.js";
+import { ok, phaseStep } from "../../util/result.js";
 
 export function createPersistAndReportPhase(deps) {
   const handler = createPersistAndReportHandler(deps);

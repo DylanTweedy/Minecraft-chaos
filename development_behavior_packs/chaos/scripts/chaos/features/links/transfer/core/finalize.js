@@ -3,7 +3,7 @@ import { CRYSTALLIZER_ID, isPrismBlock } from "../config.js";
 import { getFluxValueForItem, addFluxForItem } from "../../../../crystallizer.js";
 import { fxFluxGenerate } from "../../../../fx/fx.js";
 import { tryGenerateFluxOnTransfer, tryRefineFluxInTransfer, isFluxTypeId } from "../../../../flux.js";
-import { findCrystallizerRouteFromPrism } from "../pathfinding/routes.js";
+import { findCrystallizerRouteFromPrism } from "../routing/routes.js";
 import { getAttachedInventoryInfo, tryInsertIntoInventories, tryInsertAmountForContainer } from "../inventory/inventory.js";
 import { getFilterSet, getFilterContainer } from "../inventory/filters.js";
 import { releaseContainerSlot } from "../inventory/reservations.js";

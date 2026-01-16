@@ -5,7 +5,7 @@ import {
   canonicalizePrismKey,
   normalizeDimId,
   prismKeyFromBlock,
-} from "./runtime/prismKeys.js";
+} from "../network/graph/prismKeys.js";
 
 export { makePrismKey, parsePrismKey, canonicalizePrismKey, normalizeDimId };
 export { prismKeyFromBlock };

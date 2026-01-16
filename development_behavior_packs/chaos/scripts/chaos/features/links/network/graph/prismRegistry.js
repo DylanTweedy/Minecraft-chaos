@@ -1,11 +1,11 @@
 // scripts/chaos/features/links/transfer/runtime/registry/prismRegistry.js
-import { isPrismBlock } from "../../config.js";
-import { key, parseKey, prismKeyFromBlock } from "../../keys.js";
-import { loadPrismRegistry, savePrismRegistry } from "../../persistence/storage.js";
+import { isPrismBlock } from "../../transfer/config.js";
+import { key, parseKey, prismKeyFromBlock } from "../../transfer/keys.js";
+import { loadPrismRegistry, savePrismRegistry } from "../../transfer/persistence/storage.js";
 import {
   notePrismRegistryStatus,
   notePrismRegistrySource,
-} from "../../../../../core/insight/trace.js";
+} from "../../../../core/insight/trace.js";
 
 const BLOCK_MISS_THRESHOLD = 10;
 

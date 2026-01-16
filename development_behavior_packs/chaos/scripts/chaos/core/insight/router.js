@@ -12,7 +12,7 @@ import { PrismProvider } from "./providers/prism.js";
 import { FallbackProvider } from "./providers/fallback.js";
 import { isHoldingLens } from "../../items/insightLens.js";
 import { isWearingGoggles } from "../../items/insightGoggles.js";
-import { makePrismKey } from "../../features/links/transfer/runtime/prismKeys.js";
+import { makePrismKey } from "../../features/links/network/graph/prismKeys.js";
 
 let _started = false;
 const MAX_ERROR_MESSAGES_PER_TICK = 3;

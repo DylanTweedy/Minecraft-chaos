@@ -1,6 +1,6 @@
 // scripts/chaos/features/links/transfer/runtime/phases/updateVirtualState.js
 
-import { ok, phaseStep } from "../helpers/result.js";
+import { ok, phaseStep } from "../../util/result.js";
 
 export function createUpdateVirtualStatePhase(deps) {
   const handler = createUpdateVirtualStateHandler(deps);

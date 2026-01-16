@@ -1,5 +1,5 @@
 // scripts/chaos/features/links/transfer/runtime/helpers/prismPos.js
-import { withDim } from "./pos.js";
+import { withDim } from "../transfer/util/pos.js";
 
 export function getPrismPos({ prismKey, prismBlock, dim, prismInfo, resolveBlockInfo }) {
   const prefer = prismBlock?.location || prismInfo?.pos;

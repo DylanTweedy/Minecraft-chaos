@@ -1,5 +1,5 @@
 // scripts/chaos/features/links/transfer/config.js
-import { MAX_BEAM_LEN } from "../shared/beamConfig.js";
+import { MAX_BEAM_LEN } from "../network/beams/beamConfig.js";
 
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
