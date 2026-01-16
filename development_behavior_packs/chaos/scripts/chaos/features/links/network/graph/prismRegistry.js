@@ -67,8 +67,37 @@ export function createPrismRegistry(deps) {
     const next = current + 1;
     missingBlockCounts.set(prismKey, next);
     if (current < BLOCK_MISS_THRESHOLD && next >= BLOCK_MISS_THRESHOLD) {
-      const message = `Prism registry can't read block at ${parsed.dimId} ${parsed.x} ${parsed.y} ${parsed.z} (chunk not loaded). Move closer or keep the area loaded. Registry will retry.`;
-      emitRegistryError("PRISM_REGISTRY_BLOCK_UNAVAILABLE", message, nowTick, prismKey);
+      // Only warn when a player is plausibly near the missing prism.
+      // On world load, the registry may contain prisms in unloaded chunks far away;
+      // spamming warnings in that case is noisy and not actionable.
+      const warnDist = clampInt(cfg.prismRegistryWarnDistance, 0, 256);
+      let shouldWarn = warnDist === 0;
+      if (!shouldWarn && warnDist > 0) {
+        try {
+          const players = world?.getAllPlayers?.() || [];
+          for (const p of players) {
+            const pd = p?.dimension;
+            const pl = p?.location;
+            if (!pd || !pl) continue;
+            if (pd.id !== parsed.dimId) continue;
+            const dx = (pl.x - parsed.x);
+            const dy = (pl.y - parsed.y);
+            const dz = (pl.z - parsed.z);
+            if ((dx*dx + dy*dy + dz*dz) <= (warnDist * warnDist)) {
+              shouldWarn = true;
+              break;
+            }
+          }
+        } catch {
+          // if in doubt, still warn
+          shouldWarn = true;
+        }
+      }
+
+      if (shouldWarn) {
+        const message = `Prism registry can't read block at ${parsed.dimId} ${parsed.x} ${parsed.y} ${parsed.z} (chunk not loaded). Move closer or keep the area loaded. Registry will retry.`;
+        emitRegistryError("PRISM_REGISTRY_BLOCK_UNAVAILABLE", message, nowTick, prismKey);
+      }
     }
     addToValidationQueue(prismKey);
   }

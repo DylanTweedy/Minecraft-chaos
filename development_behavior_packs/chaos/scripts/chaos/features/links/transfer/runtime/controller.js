@@ -73,7 +73,8 @@ import {
 } from "../persistence/storage.js";
 import { loadInflightStateFromWorld, persistInflightStateToWorld } from "../persistence/inflight.js";
 
-// Inventory & containers
+// Inventory (adapter)
+import { createTransferPathfinder } from "../routing/pathfinder.js";
 import {
   getAttachedInventoryInfo,
   getAllAdjacentInventories,
@@ -87,17 +88,19 @@ import {
   findInputSlotForContainer,
   decrementInputSlotSafe,
   decrementInputSlotsForType,
-} from "../inventory/inventory.js";
-import { getFilterContainer, getFilterSet } from "../inventory/filters.js";
-import {
+  // Filters placeholders until new filter system lands
+  getFilterContainer,
+  getFilterSet,
+  // Reservations placeholders until/if reintroduced
   getInsertCapacityWithReservations,
   getReservedForContainer,
   reserveContainerSlot,
   releaseContainerSlot,
   clearReservations,
-} from "../inventory/reservations.js";
-import { calculateBalancedTransferAmount } from "../inventory/balance.js";
-import { createTransferPathfinder } from "../routing/pathfinder.js";
+  // Balance
+  calculateBalancedTransferAmount,
+} from "../util/inventoryAdapter.js";
+
 
 // Pathfinding & routing
 import {
@@ -1301,68 +1304,3 @@ export function createNetworkTransferController(deps = {}, opts) {
 
   return { start, stop, getCacheManager };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

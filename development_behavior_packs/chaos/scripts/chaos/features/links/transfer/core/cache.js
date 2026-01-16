@@ -1,8 +1,8 @@
 // scripts/chaos/features/links/transfer/core/cache.js
 import { CRYSTALLIZER_ID, isPrismBlock } from "../config.js";
 import { key, parseKey } from "../keys.js";
-import { getAllAdjacentInventories, getInventoryContainer } from "../inventory/inventory.js";
-import { getInsertCapacityWithReservations } from "../inventory/reservations.js";
+import { getAllAdjacentInventories, getInventoryContainer } from "../util/inventoryAdapter.js";
+import { getInsertCapacityWithReservations } from "../util/inventoryAdapter.js";
 
 export function createCacheManager(deps, cfg) {
   const world = deps.world;

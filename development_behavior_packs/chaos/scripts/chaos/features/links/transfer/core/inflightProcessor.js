@@ -2,7 +2,7 @@
 import { isPrismId } from "../config.js";
 import { isFluxTypeId } from "../../../../flux.js";
 import { isPathBlock } from "../routing/path.js";
-import { releaseContainerSlot } from "../inventory/reservations.js";
+import { releaseContainerSlot } from "../util/inventoryAdapter.js";
 import { key } from "../keys.js";
 import { buildHybridPath } from "../runtime/hybrid/jobFactory.js";
 

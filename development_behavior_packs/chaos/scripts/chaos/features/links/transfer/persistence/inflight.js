@@ -2,7 +2,7 @@
 import { MAX_STEPS } from "../config.js";
 import { loadInflight, saveInflight } from "./storage.js";
 import { resolveBlockInfoStatic } from "../utils.js";
-import { getAttachedInventoryInfo } from "../inventory/inventory.js";
+import { getAttachedInventoryInfo } from "../util/inventoryAdapter.js";
 import { getContainerKey, getContainerKeyFromInfo } from "../keys.js";
 
 function sanitizeInflightEntry(entry) {

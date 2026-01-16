@@ -1,7 +1,7 @@
 // scripts/chaos/features/links/transfer/core/queues.js
 import { isPrismBlock, CRYSTALLIZER_ID } from "../config.js";
-import { tryInsertAmountForContainer, isFurnaceBlock } from "../inventory/inventory.js";
-import { releaseContainerSlot } from "../inventory/reservations.js";
+import { tryInsertAmountForContainer, isFurnaceBlock } from "../util/inventoryAdapter.js";
+import { releaseContainerSlot } from "../util/inventoryAdapter.js";
 
 /**
  * Creates a queue manager for transfer queue operations

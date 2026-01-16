@@ -1,6 +1,48 @@
 {
 	"entity_sounds": {
 		"entities": {
+			"myname:ad": {
+				"events": {
+					"ambient": "mob.vindicator.idle",
+					"ambient.in.raid": {
+						"pitch": [0.8, 1.2],
+						"sound": "mob.vindicator.idle",
+						"volume": 3
+					},
+					"celebrate": "mob.vindicator.celebrate",
+					"death": "mob.vindicator.death",
+					"hurt": "mob.vindicator.hurt"
+				},
+				"pitch": [0.8, 1.2],
+				"volume": 1
+			},
+			"myname:druggo": {
+				"events": {
+					"ambient": "mob.zombie.say",
+					"death": "mob.zombie.death",
+					"hurt": "mob.zombie.hurt",
+					"step": {
+						"pitch": 1,
+						"sound": "mob.zombie.step",
+						"volume": 0.45
+					}
+				},
+				"pitch": [0.8, 1.2],
+				"volume": 1
+			},
+			"myname:testvillagers": {
+				"events": {
+					"ambient": "mob.villager.idle",
+					"death": "mob.villager.death",
+					"death.to.zombie": "mob.villager.death",
+					"haggle": "mob.villager.haggle",
+					"haggle.no": "mob.villager.no",
+					"haggle.yes": "mob.villager.yes",
+					"hurt": "mob.villager.hit"
+				},
+				"pitch": [0.8, 1.2],
+				"volume": 1
+			},
 			"myname:froag": {
 				"events": {
 					"ambient": "mob.frog.ambient",

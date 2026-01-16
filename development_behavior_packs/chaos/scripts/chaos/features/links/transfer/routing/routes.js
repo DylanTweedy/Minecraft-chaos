@@ -1,7 +1,7 @@
 // scripts/chaos/features/links/transfer/pathfinding/routes.js
 import { CRYSTALLIZER_ID, CRYSTAL_ROUTE_MAX_NODES, isPrismBlock, isEndpointId } from "../config.js";
 import { key, parseKey } from "../keys.js";
-import { getAllAdjacentInventories } from "../inventory/inventory.js";
+import { getAllAdjacentInventories } from "../util/inventoryAdapter.js";
 
 // Find route from a prism to another prism (or crystallizer) that can accept items
 // Optional getPrismInventoriesCached function for cached inventory checks (from cache manager)

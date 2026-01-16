@@ -2,7 +2,7 @@
 import { DEFAULTS, isPrismBlock, isEndpointId } from "../config.js";
 import { mergeCfg } from "../utils.js";
 import { parseKey } from "../keys.js";
-import { getAllAdjacentInventories } from "../inventory/inventory.js";
+import { getAllAdjacentInventories } from "../util/inventoryAdapter.js";
 
 export function createTransferPathfinder(deps, opts) {
   const world = deps.world;
