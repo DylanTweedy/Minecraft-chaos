@@ -78,7 +78,7 @@ export function createTransferPipeline(opts) {
         text: `[Trace] ${String(msg || "")}`,
         category: "transfer",
       });
-    } catch {
+    } catch (e) {
       // Never throw from trace.
     }
   }

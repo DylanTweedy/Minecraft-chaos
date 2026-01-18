@@ -17,7 +17,7 @@ function _tryGetBlockContainer(block) {
   try {
     const inv = block?.getComponent?.("minecraft:inventory");
     return inv?.container || null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -61,7 +61,7 @@ export function getAllAdjacentInventories(block, dim) {
       if (!c) continue;
       out.push({ block: b, container: c, dim, pos: b.location });
     }
-  } catch {
+  } catch (e) {
     // ignore
   }
   return out;
@@ -70,7 +70,7 @@ export function getAllAdjacentInventories(block, dim) {
 function _safeCreateStack(typeId, amount) {
   try {
     return new ItemStack(typeId, amount);
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -115,7 +115,7 @@ function _tryInsertIntoContainer(container, typeId, amount) {
     }
 
     return { ok: remaining === 0, inserted };
-  } catch {
+  } catch (e) {
     return { ok: false, inserted: 0 };
   }
 }
@@ -138,7 +138,7 @@ export function tryInsertIntoInventories(inventories, itemTypeId, amount) {
       if (remaining <= 0) return true;
     }
     return remaining <= 0;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -155,29 +155,50 @@ export function getTotalCountForType(inventories, itemTypeId) {
         if (it && it.typeId === itemTypeId) total += (it.amount | 0);
       }
     }
-  } catch {
+  } catch (e) {
     // ignore
   }
   return total;
 }
 
-export function getRandomItemFromInventories(inventories) {
+// NOTE: This MUST return the "itemSource" shape expected by pushTransfers/hybridTransfers:
+// { container, slot, stack, inventoryIndex, entity?, block?, dim? }
+// The previous adapter returned { item, slot, container } which caused ALL transfers to silently fail
+// at "if (!sourceStack)" (no_item) gates.
+export function getRandomItemFromInventories(inventories, filterSet) {
   try {
     if (!Array.isArray(inventories) || inventories.length === 0) return null;
+
+    const hasFilter = !!(filterSet && filterSet.size > 0);
     let chosen = null;
     let seen = 0;
-    for (const inv of inventories) {
+
+    for (let invIndex = 0; invIndex < inventories.length; invIndex++) {
+      const inv = inventories[invIndex];
       const c = inv?.container || inv;
       const size = c?.size || 0;
-      for (let i = 0; i < size; i++) {
-        const it = c.getItem(i);
-        if (!it) continue;
+      for (let slot = 0; slot < size; slot++) {
+        const it = c.getItem(slot);
+        if (!it || (it.amount | 0) <= 0) continue;
+        if (hasFilter && filterSet.has(it.typeId)) continue;
+
         seen++;
-        if ((Math.random() * seen) < 1) chosen = { item: it, slot: i, container: c };
+        if ((Math.random() * seen) < 1) {
+          chosen = {
+            container: c,
+            slot,
+            stack: it,
+            inventoryIndex: invIndex,
+            entity: inv?.entity || null,
+            block: inv?.block || null,
+            dim: inv?.dim || null,
+          };
+        }
       }
     }
+
     return chosen;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -190,7 +211,7 @@ export function findInputSlotForContainer(container, itemTypeId) {
       const it = c.getItem(i);
       if (it && it.typeId === itemTypeId) return i;
     }
-  } catch {
+  } catch (e) {
     // ignore
   }
   return -1;
@@ -210,7 +231,7 @@ export function decrementInputSlotSafe(container, slot, amount) {
       c.setItem(slot, undefined);
     }
     return true;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -235,7 +256,7 @@ export function decrementInputSlotsForType(container, itemTypeId, amount) {
       }
     }
     return remaining <= 0;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -246,18 +267,128 @@ export function decrementInputSlotsForType(container, itemTypeId, amount) {
 export function getFilterContainer() { return null; }
 export function getFilterSet() { return null; }
 
-export function getInsertCapacityWithReservations(containerInfo, _itemTypeId) {
+// -----------------------------------------------------------------------------
+// Reservations (replacement for legacy virtualInventory.js)
+//
+// Goal: keep InputQueues + PushTransfers behaviour intact WITHOUT any separate
+// "virtual inventory manager". We only need one thing: a lightweight, in-memory
+// reservation book so multiple prisms don't overbook the same destination.
+//
+// This is *not persisted*. It's rebuilt best-effort from inflight jobs on load
+// (see controller.js) and naturally self-heals if it drifts.
+// -----------------------------------------------------------------------------
+
+// containerKey -> { total: number, byType: Map<string, number> }
+const _reservations = new Map();
+
+function _getState(containerKey) {
+  let s = _reservations.get(containerKey);
+  if (!s) {
+    s = { total: 0, byType: new Map() };
+    _reservations.set(containerKey, s);
+  }
+  return s;
+}
+
+export function getReservedForContainer(containerKey) {
+  const s = _reservations.get(containerKey);
+  if (!s) return { total: 0, byType: new Map() };
+  return s;
+}
+
+export function reserveContainerSlot(containerKey, typeId, amount) {
   try {
-    const c = containerInfo?.container || containerInfo;
-    return (c && typeof c.size === "number") ? (c.size * 64) : 0;
-  } catch {
+    const amt = Math.max(0, amount | 0);
+    if (!containerKey || amt <= 0) return false;
+
+    const s = _getState(containerKey);
+    s.total = (s.total | 0) + amt;
+
+    const key = typeId || "*";
+    const prev = s.byType.get(key) || 0;
+    s.byType.set(key, (prev | 0) + amt);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export function releaseContainerSlot(containerKey, typeId, amount) {
+  try {
+    const amt = Math.max(0, amount | 0);
+    if (!containerKey || amt <= 0) return false;
+
+    const s = _reservations.get(containerKey);
+    if (!s) return false;
+
+    const key = typeId || "*";
+    const prev = s.byType.get(key) || 0;
+    const next = Math.max(0, (prev | 0) - amt);
+    if (next > 0) s.byType.set(key, next);
+    else s.byType.delete(key);
+
+    s.total = Math.max(0, (s.total | 0) - amt);
+    if (s.total <= 0 && s.byType.size === 0) _reservations.delete(containerKey);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export function clearReservations() {
+  _reservations.clear();
+}
+
+// Signature-compatible capacity helper.
+//
+// Legacy call sites pass: (containerKey, container, typeId, stack, block, reservationProvider?)
+// The new adapter may also call it with (containerInfo, typeId).
+export function getInsertCapacityWithReservations(
+  containerKeyOrInfo,
+  containerMaybe,
+  typeIdMaybe,
+  stackMaybe,
+  _block,
+  _reservationProvider
+) {
+  try {
+    // Detect "new" call shape: (containerInfo, typeId)
+    const isInfoShape =
+      containerKeyOrInfo &&
+      typeof containerKeyOrInfo === "object" &&
+      (containerKeyOrInfo.container || containerKeyOrInfo.block);
+
+    const containerKey = isInfoShape ? null : containerKeyOrInfo;
+    const containerInfo = isInfoShape ? containerKeyOrInfo : null;
+    const container =
+      (containerInfo && (containerInfo.container || containerInfo)) ||
+      containerMaybe;
+
+    const typeId = isInfoShape ? containerMaybe : typeIdMaybe;
+    const stack = isInfoShape ? null : stackMaybe;
+
+    const maxStack = Math.max(1, stack?.maxAmount || 64);
+    const baseCapacity =
+      container && typeof container.size === "number" ? (container.size * maxStack) : 0;
+
+    // Apply reservations (total + per-type).
+    if (containerKey) {
+      const state = getReservedForContainer(containerKey);
+      const reservedTotal = state && typeof state.total === "number" ? state.total : 0;
+      const reservedForType =
+        state && state.byType && typeId ? (state.byType.get(typeId) || 0) : 0;
+
+      // If a type is specified, subtract type-specific reservations first.
+      // Otherwise fall back to total reservations.
+      const reserved = typeId ? reservedForType : reservedTotal;
+      return Math.max(0, (baseCapacity | 0) - (reserved | 0));
+    }
+
+    return baseCapacity | 0;
+  } catch (e) {
     return 0;
   }
 }
-export function getReservedForContainer() { return 0; }
-export function reserveContainerSlot() { return false; }
-export function releaseContainerSlot() { return false; }
-export function clearReservations() {}
 
 // -----------------------------------------------------------------------------
 // Balance (migrated from legacy inventory/balance.js)
@@ -290,7 +421,7 @@ export function calculateBalancedTransferAmount(args) {
     if (amt < minT) return { ok: false, amount: 0, reason: "below_min" };
 
     return { ok: true, amount: amt, reason: "ok" };
-  } catch {
+  } catch (e) {
     return { ok: false, amount: 0, reason: "error" };
   }
 }

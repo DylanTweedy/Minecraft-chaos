@@ -21,7 +21,7 @@ export function createLevelsManager(cfg, state, deps = {}) {
       } else if (dirtyFlag !== undefined) {
         state.prismLevelsDirty = value;
       }
-    } catch {
+    } catch (e) {
       // Ignore errors setting dirty flag
     }
   }
@@ -129,7 +129,7 @@ export function createLevelsManager(cfg, state, deps = {}) {
       // Replace block with new tier (no state preservation needed - prisms use same texture on all sides)
       try {
         dim.setBlock(loc, newTypeId);
-      } catch {
+      } catch (e) {
         return; // Failed to replace block
       }
       
@@ -138,7 +138,7 @@ export function createLevelsManager(cfg, state, deps = {}) {
       if (updatedBlock && typeof spawnLevelUpBurst === "function") {
         spawnLevelUpBurst(updatedBlock);
       }
-    } catch {
+    } catch (e) {
       // Ignore errors
     }
   }

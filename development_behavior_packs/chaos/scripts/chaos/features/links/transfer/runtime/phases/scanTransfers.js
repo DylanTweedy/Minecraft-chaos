@@ -18,7 +18,6 @@ function createScanTransfersHandler(deps) {
   const {
     cfg,
     inputQueuesManager,
-    virtualInventoryManager,
     cacheManager,
     getPrismKeys,
     resolveBlockInfo,
@@ -150,6 +149,7 @@ function createScanTransfersHandler(deps) {
           inventoryIndex: invIndex,
           entity: inv.entity,
           block: inv.block,
+          dim: inv.dim,
         });
         if (sources.size >= autoScanMaxTypes) {
           return { sources, hasAny: seenAny, hasUnfiltered: true };
@@ -391,27 +391,17 @@ function createScanTransfersHandler(deps) {
 
     const hasActiveQueues = scanQueueSize > 0;
 
-    // Get dirty prisms (if virtual inventory supports it)
-    let dirtyPrisms = null;
-    let dirtyPrismsCount = 0;
-
-    if (virtualInventoryManager && typeof virtualInventoryManager.getDirtyPrisms === "function") {
-      dirtyPrisms = virtualInventoryManager.getDirtyPrisms();
-      dirtyPrismsCount = dirtyPrisms ? dirtyPrisms.size : 0;
-    }
+    // Dirty-prism scanning was previously driven by the legacy virtual inventory manager.
+    // With the inventory adapter + reservations, we scan normally and rely on budgets.
+    const dirtyPrisms = null;
+    const dirtyPrismsCount = 0;
 
     // Reduce scan budget if queues are active (prioritize queue processing)
     // But still allow some scanning to discover new items.
     const baseScanLimit = Math.max(1, cfg.maxPrismsScannedPerTick | 0);
     const scanLimitWhenQueuesActive = Math.max(1, Math.floor(baseScanLimit * 0.3)); // 30% when queues active
 
-    // Prioritize dirty prisms if they exist, otherwise scan normally.
-    const scanDirtyOnly = dirtyPrismsCount > 0;
-
-    // NOTE: When scanning only dirty prisms, cap budget to both config + dirty count.
-    const dirtyScanBudget = scanDirtyOnly
-      ? Math.min((cfg.maxPrismsScannedPerTick || 8), dirtyPrismsCount)
-      : Infinity;
+    const scanDirtyOnly = false;
 
     if (cursor >= prismKeys.length) cursor = 0;
 
@@ -424,17 +414,10 @@ function createScanTransfersHandler(deps) {
     let prismsToScan = null;
     let scanLimit = 0;
 
-    if (scanDirtyOnly && dirtyPrisms && dirtyPrisms.size > 0) {
-      // Scan only dirty prisms (prioritize them)
-      prismsToScan = Array.from(dirtyPrisms);
-      scanLimit = Math.min(dirtyScanBudget, prismsToScan.length);
-    } else {
-      // Scan all prisms, but reduce limit if queues are active (to prioritize queue processing)
-      prismsToScan = prismKeys;
-
-      const effectiveScanLimit = hasActiveQueues ? scanLimitWhenQueuesActive : baseScanLimit;
-      scanLimit = Math.min(prismKeys.length, Math.max(1, effectiveScanLimit));
-    }
+    // Scan all prisms, but reduce limit if queues are active (to prioritize queue processing)
+    prismsToScan = prismKeys;
+    const effectiveScanLimit = hasActiveQueues ? scanLimitWhenQueuesActive : baseScanLimit;
+    scanLimit = Math.min(prismKeys.length, Math.max(1, effectiveScanLimit));
 
     let scanLoopMaxPrismTime = 0;
     const scanLoopStart = Date.now();
@@ -452,14 +435,7 @@ function createScanTransfersHandler(deps) {
 
       scanned++;
 
-      // Clear dirty flag after scanning (if virtual inventory supports it)
-      if (
-        scanDirtyOnly &&
-        virtualInventoryManager &&
-        typeof virtualInventoryManager.clearPrismDirty === "function"
-      ) {
-        virtualInventoryManager.clearPrismDirty(prismKey);
-      }
+      // (dirty-prism scanning removed)
 
       const allowedAt = nextAllowed.has(prismKey) ? nextAllowed.get(prismKey) : 0;
       if (nowTick < allowedAt) {

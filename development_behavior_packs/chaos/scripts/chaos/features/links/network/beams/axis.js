@@ -24,7 +24,7 @@ export function getBeamAxis(block) {
   try {
     const axis = block?.permutation?.getState("chaos:axis");
     if (axis === AXIS_X || axis === AXIS_Y || axis === AXIS_Z) return axis;
-  } catch {
+  } catch (e) {
     // ignore
   }
   return AXIS_X;

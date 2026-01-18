@@ -146,7 +146,7 @@ export function createTransferPathfinder(deps, opts) {
                 tick: nowTick,
               });
             }
-          } catch {
+          } catch (e) {
             isValidOutput = false;
           }
         }

@@ -30,13 +30,13 @@ export function createTransferStartup(deps) {
       const hasLevels = !!levelsManager;
       const currentTickId = typeof getTickId === "function" ? getTickId() : null;
       sendInitMessage("§b[Init] start() called - tickId=" + currentTickId + ", levelsManager=" + hasLevels);
-    } catch {}
+    } catch (e) {}
 
     const currentTickId = typeof getTickId === "function" ? getTickId() : null;
     if (currentTickId !== null) {
       try {
         sendInitMessage("§e[Init] Already started (tickId=" + currentTickId + ") - skipping");
-      } catch {}
+      } catch (e) {}
       return;
     }
 
@@ -59,7 +59,7 @@ export function createTransferStartup(deps) {
         const maxAttempts = maxRetries + 1;
         const nameStr = String(name || "unknown");
         sendInitMessage("§b[Init] Loading " + nameStr + " (attempt " + attemptNum + "/" + maxAttempts + ")...");
-      } catch {}
+      } catch (e) {}
 
       try {
         loadFn();
@@ -68,7 +68,7 @@ export function createTransferStartup(deps) {
         try {
           const nameStr = String(name || "unknown");
           sendInitMessage("§a[Init] V " + nameStr + " loaded successfully");
-        } catch {}
+        } catch (e) {}
       } catch (err) {
         if (retryIndex < maxRetries) {
           const delay = retryDelays[retryIndex] || 20;
@@ -78,21 +78,21 @@ export function createTransferStartup(deps) {
             const nameStr = String(name || "unknown");
             const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown");
             sendInitMessage("§e[Init] " + nameStr + " failed (" + errMsg + "), retrying in " + delay + " ticks...");
-          } catch {}
+          } catch (e) {}
 
           // Retry after delay
           try {
             system.runTimeout(() => {
               attemptLoadWithRetry(loadFn, name, retryIndex + 1);
             }, delay);
-          } catch {
+          } catch (e) {
             logError("Error scheduling retry for " + (name || "unknown"), err);
           }
         } else {
           try {
             const nameStr = String(name || "unknown");
             logError("Error loading " + nameStr + " (after " + maxRetries + " retries)", err);
-          } catch {}
+          } catch (e) {}
         }
       }
     }
@@ -113,7 +113,7 @@ export function createTransferStartup(deps) {
         const keys = prismRegistry.resolvePrismKeys?.() || [];
         for (const k of keys) linkGraph.markNodeDirty(k);
       }
-    } catch {}
+    } catch (e) {}
 
     try {
       const newTickId = system.runInterval(onTick, 1);
@@ -133,7 +133,7 @@ export function createTransferStartup(deps) {
             ", fluxFxInflight=" +
             fluxFxLen
         );
-      } catch {}
+      } catch (e) {}
 
       // Debug messages are emitted later via postDebugStats only
     } catch (err) {

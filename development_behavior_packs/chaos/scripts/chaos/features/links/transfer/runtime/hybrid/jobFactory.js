@@ -1,4 +1,5 @@
 // scripts/chaos/features/links/transfer/runtime/hybrid/jobFactory.js
+// Option B: drift jobs are prism->prism hops with explicit segment length + edge epoch.
 
 import { parsePrismKey } from "../../keys.js";
 
@@ -9,37 +10,37 @@ export function createHybridJobId() {
   return `hybrid-${HYBRID_JOB_COUNTER}`;
 }
 
-function buildAxisStep(start, end) {
-  if (start === end) return 0;
-  return Math.sign(end - start) || 0;
+function hopPathFromKeys(fromKey, toKey) {
+  const a = parsePrismKey(fromKey);
+  const b = parsePrismKey(toKey);
+  if (!a || !b) return null;
+  return [
+    { x: a.x, y: a.y, z: a.z },
+    { x: b.x, y: b.y, z: b.z },
+  ];
 }
 
-export function buildHybridPath(sourceKey, destKey) {
-  const source = parsePrismKey(sourceKey);
-  const dest = parsePrismKey(destKey);
-  if (!source || !dest) return null;
+function normalizeHopMeta(meta) {
+  const segLenRaw =
+    meta && meta.segmentLength != null
+      ? meta.segmentLength
+      : Array.isArray(meta?.segmentLengths)
+        ? meta.segmentLengths[0]
+        : null;
+  const epochRaw =
+    meta && meta.edgeEpoch != null
+      ? meta.edgeEpoch
+      : Array.isArray(meta?.edgeEpochs)
+        ? meta.edgeEpochs[0]
+        : null;
 
-  const dx = buildAxisStep(source.x, dest.x);
-  const dy = buildAxisStep(source.y, dest.y);
-  const dz = buildAxisStep(source.z, dest.z);
+  const segLen = Math.max(1, Number(segLenRaw) || 1) | 0;
+  const epoch = (epochRaw | 0) || 0;
 
-  const totalSteps = Math.max(
-    Math.abs(dest.x - source.x),
-    Math.abs(dest.y - source.y),
-    Math.abs(dest.z - source.z)
-  );
-  if (totalSteps <= 0) return [{ x: source.x, y: source.y, z: source.z }];
-
-  const path = [];
-  let cursor = { x: source.x, y: source.y, z: source.z };
-  path.push({ ...cursor });
-
-  for (let step = 0; step < totalSteps; step++) {
-    cursor = { x: cursor.x + dx, y: cursor.y + dy, z: cursor.z + dz };
-    path.push({ ...cursor });
-  }
-
-  return path;
+  return {
+    segmentLengths: [segLen],
+    edgeEpochs: [epoch],
+  };
 }
 
 export function createHybridJob(params = {}) {
@@ -57,9 +58,16 @@ export function createHybridJob(params = {}) {
     reroutes = 0,
   } = params;
 
-  if (!id || !itemTypeId || !sourcePrismKey || !destPrismKey) return null;
-  const path = buildHybridPath(sourcePrismKey, destPrismKey);
-  if (!Array.isArray(path) || path.length === 0) return null;
+  if (!id || !itemTypeId || !dimId || !sourcePrismKey || !destPrismKey) return null;
+
+  const path =
+    Array.isArray(params.path) && params.path.length >= 2
+      ? params.path
+      : hopPathFromKeys(sourcePrismKey, destPrismKey);
+
+  if (!Array.isArray(path) || path.length < 2) return null;
+
+  const meta = normalizeHopMeta(params);
 
   return {
     id,
@@ -74,26 +82,33 @@ export function createHybridJob(params = {}) {
     path,
     stepIndex: 0,
     ticksUntilStep: 0,
-    stepTicks,
-    edgeEpochs: null,
-    segmentLengths: null,
+    stepTicks: Math.max(1, stepTicks | 0),
+    edgeEpochs: meta.edgeEpochs,
+    segmentLengths: meta.segmentLengths,
     hops: Math.max(0, hops | 0),
     reroutes: Math.max(0, reroutes | 0),
     cooldownTicks: 0,
     createdTick: startTick || 0,
+    refineOnPrism: true,
   };
 }
 
-export function refreshHybridJobForNextHop(job, destPrismKey, stepTicks = 16) {
+export function refreshHybridJobForNextHop(job, destPrismKey, stepTicks = 16, hopMeta = null) {
   if (!job || !destPrismKey) return false;
-  const path = buildHybridPath(job.currentPrismKey, destPrismKey);
-  if (!Array.isArray(path) || path.length === 0) return false;
+
+  const fromKey = job.currentPrismKey || job.sourcePrismKey;
+  const path = hopPathFromKeys(fromKey, destPrismKey);
+  if (!Array.isArray(path) || path.length < 2) return false;
+
+  const meta = normalizeHopMeta(hopMeta || {});
 
   job.destPrismKey = destPrismKey;
   job.path = path;
+  job.segmentLengths = meta.segmentLengths;
+  job.edgeEpochs = meta.edgeEpochs;
   job.stepIndex = 0;
   job.ticksUntilStep = 0;
-  job.stepTicks = stepTicks;
+  job.stepTicks = Math.max(1, stepTicks | 0);
   job.cooldownTicks = 0;
   return true;
 }

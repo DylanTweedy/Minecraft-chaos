@@ -30,7 +30,7 @@ function getBeamTier(block) {
   try {
     const level = block?.permutation?.getState("chaos:level");
     if (Number.isFinite(level)) return Math.max(1, Math.min(5, level | 0));
-  } catch {
+  } catch (e) {
     // ignore
   }
   return 1;
@@ -55,7 +55,7 @@ export function enqueueBuildJob(job) {
   if (debugLog) {
     try {
       debugLog(`[Beam] Build job queued: ${key}`);
-    } catch {
+    } catch (e) {
       // ignore
     }
   }
@@ -78,7 +78,7 @@ export function enqueueCollapseJob(job) {
   if (debugLog) {
     try {
       debugLog(`[Beam] Collapse job queued: ${key}`);
-    } catch {
+    } catch (e) {
       // ignore
     }
   }
@@ -120,7 +120,7 @@ function stepBuildJob(world, job) {
   if (b.typeId === "minecraft:air") {
     try {
       placeBeamBlock(b, axis, tier);
-    } catch {
+    } catch (e) {
       return true;
     }
     job.step += 1;
@@ -134,7 +134,7 @@ function stepBuildJob(world, job) {
     if (newTier !== curTier) {
       try {
         b.setPermutation(b.permutation.withState("chaos:level", newTier));
-      } catch {
+      } catch (e) {
         return true;
       }
     }
@@ -161,7 +161,7 @@ function stepCollapseJob(world, job) {
     if (beamAxisMatchesDir(b, job.dir.dx, job.dir.dy, job.dir.dz)) {
       try {
         b.setType("minecraft:air");
-      } catch {
+      } catch (e) {
         return true;
       }
     }
@@ -208,7 +208,7 @@ export function tickBeamJobs(world, { buildBudget = 0, collapseBudget = 0 } = {}
   if ((buildProcessed > 0 || collapseProcessed > 0) && debugLog) {
     try {
       debugLog(`[Beam] Jobs ticked: build=${buildProcessed} collapse=${collapseProcessed}`);
-    } catch {
+    } catch (e) {
       // ignore
     }
   }

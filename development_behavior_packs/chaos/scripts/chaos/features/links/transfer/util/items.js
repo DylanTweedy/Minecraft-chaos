@@ -15,14 +15,14 @@ export function createDropItemAt(deps) {
       try {
         const probe = new ItemStack(typeId, 1);
         maxStack = probe.maxAmount || 64;
-      } catch {}
+      } catch (e) {}
 
       while (remaining > 0) {
         const n = Math.min(maxStack, remaining);
         dim.spawnItem(new ItemStack(typeId, n), dropLoc);
         remaining -= n;
       }
-    } catch {
+    } catch (e) {
       // ignore
     }
   };

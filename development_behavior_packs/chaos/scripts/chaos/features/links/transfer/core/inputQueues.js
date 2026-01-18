@@ -1,4 +1,5 @@
 // scripts/chaos/features/links/transfer/core/inputQueues.js
+import { parseKey } from "../keys.js";
 /**
  * Input Queue Manager
  * 
@@ -69,7 +70,12 @@ export function createInputQueuesManager(cfg, deps) {
       const { container, slot, stack } = itemSource;
       if (!stack || !stack.typeId || stack.amount <= 0) continue;
 
-      const containerKey = getContainerKeyFromInfo({ container, entity: itemSource.entity, block: itemSource.block });
+      const containerKey = getContainerKeyFromInfo({
+        container,
+        entity: itemSource.entity,
+        block: itemSource.block,
+        dim: itemSource.dim,
+      });
       if (!containerKey) continue;
 
       // Check if entry already exists for this type and container/slot
@@ -229,7 +235,7 @@ export function createInputQueuesManager(cfg, deps) {
 
       queueEntry.lastValidatedTick = nowTick;
       return true;
-    } catch {
+    } catch (e) {
       return false;
     }
   }
@@ -262,7 +268,7 @@ export function createInputQueuesManager(cfg, deps) {
       }
 
       return true; // Route is valid
-    } catch {
+    } catch (e) {
       return false;
     }
   }
@@ -388,7 +394,7 @@ export function createInputQueuesManager(cfg, deps) {
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
 
       return { dimId, x, y, z };
-    } catch {
+    } catch (e) {
       return null;
     }
   }

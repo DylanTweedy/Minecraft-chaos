@@ -37,7 +37,7 @@ export function createFinalizeManager(cfg, deps) {
   function safeCreateStack(typeId, amount) {
     try {
       return new ItemStack(typeId, amount);
-    } catch {
+    } catch (e) {
       return null;
     }
   }
@@ -49,7 +49,7 @@ export function createFinalizeManager(cfg, deps) {
       const inv = block.getComponent("minecraft:inventory");
       const container = inv?.container || null;
       return container;
-    } catch {
+    } catch (e) {
       return null;
     }
   }
@@ -67,7 +67,7 @@ export function createFinalizeManager(cfg, deps) {
     if (!filterSet) return true;
     try {
       return filterSet.has(typeId);
-    } catch {
+    } catch (e) {
       return true;
     }
   }
@@ -152,7 +152,7 @@ export function createFinalizeManager(cfg, deps) {
       } else if (typeof deps.releaseReservation === "function") {
         deps.releaseReservation(job.containerKey, job.itemTypeId, job.amount);
       }
-    } catch {
+    } catch (e) {
       // ignore
     }
   }
@@ -414,7 +414,7 @@ export function createFinalizeManager(cfg, deps) {
       // Drop if allowed
       if (job.suppressDrop) return;
       if (job.dropPos) dropItemAt(dim, job.dropPos, job.itemTypeId, job.amount);
-    } catch {
+    } catch (e) {
       // ignore
     }
   }

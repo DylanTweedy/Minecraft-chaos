@@ -35,7 +35,7 @@ export function createRefinementManager(cfg, deps) {
         if (isPrismBlock(b)) prisms.push(b);
       }
       return prisms;
-    } catch {
+    } catch (e) {
       return [];
     }
   }
@@ -158,7 +158,7 @@ export function createRefinementManager(cfg, deps) {
       const boost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, level) - 1) * PRISM_SPEED_BOOST_PER_TIER);
       const current = Math.max(0.1, Number(job.speedScale) || 1.0);
       job.speedScale = Math.min(SPEED_SCALE_MAX, current * boost);
-    } catch {
+    } catch (e) {
       // ignore
     }
   }
@@ -218,7 +218,7 @@ export function createRefinementManager(cfg, deps) {
           }
         }
       }
-    } catch {
+    } catch (e) {
       // ignore
     }
   }

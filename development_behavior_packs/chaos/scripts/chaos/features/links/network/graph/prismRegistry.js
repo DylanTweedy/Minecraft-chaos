@@ -88,7 +88,7 @@ export function createPrismRegistry(deps) {
               break;
             }
           }
-        } catch {
+        } catch (e) {
           // if in doubt, still warn
           shouldWarn = true;
         }

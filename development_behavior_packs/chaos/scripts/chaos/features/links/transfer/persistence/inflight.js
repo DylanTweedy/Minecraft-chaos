@@ -42,7 +42,7 @@ function sanitizeInflightEntry(entry) {
     if (!entry.startPos || !Number.isFinite(entry.startPos.x)) entry.startPos = null;
     if (!Array.isArray(entry.countedPrisms)) entry.countedPrisms = [];
     return entry;
-  } catch {
+  } catch (e) {
     return null;
   }
 }

@@ -12,9 +12,7 @@ import { noteHybridActivity } from "../../../../../core/insight/transferStats.js
 export function createHybridTransfersPhase(deps) {
   const {
     cfg = {},
-    inflightProcessorManager,
     inflight,
-    fluxFxInflight,
     cacheManager,
     linkGraph,
     getPrismKeys,
@@ -22,11 +20,8 @@ export function createHybridTransfersPhase(deps) {
     getPrismTier,
     getFilterForBlock,
     getFilterSet,
-    getAllAdjacentInventories,
     getRandomItemFromInventories,
     decrementInputSlotSafe,
-    tryInsertAmount,
-    dropItemAt,
     pendingCooldowns,
     scheduler,
     setInflightDirty,
@@ -38,12 +33,14 @@ export function createHybridTransfersPhase(deps) {
   const driftAmountByTier = Array.isArray(cfg?.hybridDriftAmountByTier)
     ? cfg.hybridDriftAmountByTier
     : [1, 2, 4, 16, 64];
+
   const driftIntervalByTier = Array.isArray(cfg?.hybridDriftIntervalByTier)
     ? cfg.hybridDriftIntervalByTier
     : [20, 15, 10, 7, 5];
-  let prismCursor = 0;
 
+  let prismCursor = 0;
   const prismNextAllowedTick = new Map();
+
   const hybridInsightStats = {
     spawned: 0,
     cooldown: 0,
@@ -81,72 +78,74 @@ export function createHybridTransfersPhase(deps) {
     if (typeof setInflightStepDirty === "function") setInflightStepDirty(true);
   }
 
-  function restoreItemPrism(container, typeId, amount, location, dim) {
-    if (!container || amount <= 0) return false;
-    if (typeof tryInsertAmount === "function") {
-      const restored = tryInsertAmount(container, typeId, amount);
-      if (restored) return true;
-    }
-    if (dropItemAt && location && dim) {
-      dropItemAt(dim, location, typeId, amount);
-      return true;
-    }
-    return false;
-  }
-
-  function spawnJobFromPending(entry, nowTick) {
-    const job = entry?.job;
-    if (!job || !scheduler?.canSpawnNewTransfer?.(inflight.length)) return false;
-    if (job.amount <= 0) {
-      pendingCooldowns.delete(job.id);
-      return false;
-    }
-    const targetKey = pickDriftNeighbor(linkGraph, job.currentPrismKey, job.prevPrismKey);
-    if (!targetKey) {
-      dropItemAt?.(
-        resolveBlockInfo?.(job.currentPrismKey)?.dim || null,
-        resolveBlockInfo?.(job.currentPrismKey)?.block?.location || null,
-        job.itemTypeId,
-        job.amount
-      );
-      pendingCooldowns.delete(job.id);
-      return false;
-    }
-    if (!refreshHybridJobForNextHop(job, targetKey, Math.max(1, Number(cfg?.orbStepTicks) || 16))) {
-      pendingCooldowns.delete(job.id);
-      return false;
-    }
-    job.prevPrismKey = job.currentPrismKey;
-    job.currentPrismKey = targetKey;
-    job.destPrismKey = targetKey;
-    job.stepTicks = Math.max(1, Number(cfg?.orbStepTicks) || 16);
-    job.ticksUntilStep = 0;
-    job.stepIndex = 0;
-    childPushJob(job, nowTick);
-    pendingCooldowns.delete(job.id);
-    return true;
-  }
-
   function childPushJob(job, nowTick) {
     job.createdTick = nowTick;
     job.cooldownTicks = 0;
-    if (Array.isArray(inflight)) {
-      inflight.push(job);
-    }
+    if (Array.isArray(inflight)) inflight.push(job);
     recordHybridStat("spawned");
     scheduler?.useNewTransfer?.();
     markDirty();
   }
 
+  function spawnJobFromPending(entry, nowTick) {
+    const job = entry?.job;
+    if (!job || !scheduler?.canSpawnNewTransfer?.(inflight.length)) return false;
+
+    if (job.amount <= 0) {
+      pendingCooldowns.delete(job.id);
+      return false;
+    }
+
+    const targetKey = pickDriftNeighbor(linkGraph, job.currentPrismKey, job.prevPrismKey);
+    if (!targetKey) {
+      recordHybridStat("noPath");
+      entry.cooldownTicks = Math.max(1, Number(cfg?.hybridNoPathCooldownTicks) || 10);
+      return false;
+    }
+
+    const edge = linkGraph?.getEdgeBetweenKeys?.(job.currentPrismKey, targetKey);
+    if (!edge) {
+      recordHybridStat("noPath");
+      entry.cooldownTicks = Math.max(1, Number(cfg?.hybridNoPathCooldownTicks) || 10);
+      return false;
+    }
+
+    const stepTicks = Math.max(1, Number(cfg?.orbStepTicks) || 16);
+    const okRefresh = refreshHybridJobForNextHop(job, targetKey, stepTicks, {
+      segmentLength: edge.length | 0,
+      edgeEpoch: edge.epoch | 0,
+    });
+
+    if (!okRefresh) {
+      recordHybridStat("invalid");
+      entry.cooldownTicks = Math.max(1, Number(cfg?.hybridNoPathCooldownTicks) || 10);
+      return false;
+    }
+
+    job.prevPrismKey = job.currentPrismKey;
+    job.currentPrismKey = targetKey;
+    job.destPrismKey = targetKey;
+    job.stepTicks = stepTicks;
+    job.ticksUntilStep = 0;
+    job.stepIndex = 0;
+
+    childPushJob(job, nowTick);
+    pendingCooldowns.delete(job.id);
+    return true;
+  }
+
   function processCooldowns(nowTick) {
     if (!pendingCooldowns || pendingCooldowns.size === 0) return;
+
     for (const entry of Array.from(pendingCooldowns.values())) {
       entry.cooldownTicks = Math.max(0, (entry.cooldownTicks || 0) - 1);
       if (entry.cooldownTicks > 0) continue;
+
       if (scheduler && !scheduler.canSpawnNewTransfer(inflight.length)) {
         recordHybridStat("caps");
         break;
       }
+
       spawnJobFromPending(entry, nowTick);
     }
   }
@@ -160,6 +159,7 @@ export function createHybridTransfersPhase(deps) {
     const prismInfo = resolveBlockInfo?.(prismKey);
     const prismBlock = prismInfo?.block;
     const prismDim = prismInfo?.dim;
+
     if (!prismBlock || !prismDim) {
       recordHybridStat("invalid");
       return "invalid";
@@ -172,6 +172,7 @@ export function createHybridTransfersPhase(deps) {
 
     const tier = typeof getPrismTier === "function" ? getPrismTier(prismBlock) : 1;
     const interval = getDriftIntervalForTier(tier);
+
     const nextAllowed = prismNextAllowedTick.get(prismKey) || 0;
     if (nowTick < nextAllowed) {
       recordHybridStat("cooldown");
@@ -197,6 +198,7 @@ export function createHybridTransfersPhase(deps) {
       recordHybridStat("invalid");
       return "invalid";
     }
+
     const stack = itemSource.stack;
     if (!stack || stack.amount <= 0) {
       recordHybridStat("invalid");
@@ -204,11 +206,20 @@ export function createHybridTransfersPhase(deps) {
     }
 
     const amount = Math.min(getDriftAmountForTier(tier), stack.amount);
+
     const neighborKey = pickDriftNeighbor(linkGraph, prismKey, null);
     if (!neighborKey) {
       recordHybridStat("noPath");
       return "noPath";
     }
+
+    const edge = linkGraph?.getEdgeBetweenKeys?.(prismKey, neighborKey);
+    if (!edge) {
+      recordHybridStat("noPath");
+      return "noPath";
+    }
+
+    const stepTicks = Math.max(1, Number(cfg?.orbStepTicks) || 16);
 
     const job = createHybridJob({
       id: createHybridJobId(),
@@ -217,31 +228,32 @@ export function createHybridTransfersPhase(deps) {
       dimId: prismDim.id,
       sourcePrismKey: prismKey,
       destPrismKey: neighborKey,
-      stepTicks: Math.max(1, Number(cfg?.orbStepTicks) || 16),
+      segmentLength: edge.length | 0,
+      edgeEpoch: edge.epoch | 0,
+      stepTicks,
       startTick: nowTick,
     });
 
     if (!job) {
+      recordHybridStat("invalid");
       return "invalid";
     }
 
+    // ✅ CRITICAL FIX:
+    // decrementInputSlotSafe signature is (container, slot, amount)
+    // Passing the stack object here causes it to decrement only 1, duplicating items.
     const decremented = decrementInputSlotSafe
-      ? decrementInputSlotSafe(itemSource.container, itemSource.slot, stack, amount)
+      ? decrementInputSlotSafe(itemSource.container, itemSource.slot, amount)
       : false;
 
     if (!decremented) {
-      restoreItemPrism(
-        itemSource.container,
-        stack.typeId,
-        amount,
-        prismBlock.location,
-        prismDim
-      );
+      // Do NOT "restore" on failure: we don't know if anything was removed.
+      recordHybridStat("invalid");
       if (emitTrace) {
         emitTrace(prismKey, "transfer", {
-          text: `[HybridDrift] Failed to decrement for job=${job.id}`,
+          text: `[Drift] Failed to decrement for job=${job.id} (${stack.typeId} x${amount})`,
           category: "hybrid",
-          dedupeKey: `hybrid_decrement_${job.id}`,
+          dedupeKey: `drift_decrement_fail_${job.id}`,
         });
       }
       return "invalid";
@@ -250,6 +262,7 @@ export function createHybridTransfersPhase(deps) {
     job.prevPrismKey = prismKey;
     job.currentPrismKey = prismKey;
     job.destPrismKey = neighborKey;
+
     childPushJob(job, nowTick);
     prismNextAllowedTick.set(prismKey, nowTick + interval);
 
@@ -258,14 +271,15 @@ export function createHybridTransfersPhase(deps) {
 
   function emitHybridSummary(nowTick) {
     if (!emitTrace) return;
-    // One line per ~2s (40 ticks) to avoid chat spam.
     if ((nowTick % 40) !== 0) return;
+
     const total =
       hybridInsightStats.spawned +
       hybridInsightStats.cooldown +
       hybridInsightStats.caps +
       hybridInsightStats.noPath +
       hybridInsightStats.invalid;
+
     if (total <= 0) return;
 
     const parts = [];
@@ -276,10 +290,9 @@ export function createHybridTransfersPhase(deps) {
     if (hybridInsightStats.invalid) parts.push(`invalid ${hybridInsightStats.invalid}`);
 
     emitTrace(null, "hybrid", {
-      text: `[HybridDrift] ${parts.join(" | ")}`,
+      text: `[Drift] ${parts.join(" | ")}`,
       category: "hybrid",
-      // Dedupe per window so it updates instead of stacking.
-      dedupeKey: `hybrid_summary_${Math.floor(nowTick / 40)}`,
+      dedupeKey: `drift_summary_${Math.floor(nowTick / 40)}`,
     });
 
     resetHybridInsightStats();
@@ -298,25 +311,21 @@ export function createHybridTransfersPhase(deps) {
       const prismKey = prismKeys[idx];
       prismCursor = (prismCursor + 1) % prismKeys.length;
       attempts++;
+
       const result = spawnFromPrism(prismKey, nowTick);
-      if (result === "ok") {
-        continue;
-      }
-      if (result === "caps") {
-        break;
-      }
+      if (result === "caps") break;
     }
   }
 
   function run(ctx) {
     phaseStep(ctx, "hybridTransfers");
     const nowTick = typeof getNowTick === "function" ? getNowTick() : 0;
-    scheduler?.beginTick?.();
-    inflightProcessorManager?.tickInFlight?.(inflight, nowTick);
-    inflightProcessorManager?.tickFluxFxInFlight?.(fluxFxInflight, null);
-    markDirty();
+
+    // IMPORTANT: This phase only spawns drift jobs.
+    // Inflight simulation + FX ticking happens centrally elsewhere.
     processCooldowns(nowTick);
     spawnNewTransfers(nowTick);
+
     noteHybridActivity({
       inflight: Array.isArray(inflight) ? inflight.length : 0,
       spawned: hybridInsightStats.spawned,
@@ -324,12 +333,10 @@ export function createHybridTransfersPhase(deps) {
       caps: hybridInsightStats.caps,
       noPath: hybridInsightStats.noPath,
     });
+
     emitHybridSummary(nowTick);
     return ok();
   }
 
-  return {
-    name: "hybridTransfers",
-    run,
-  };
+  return { name: "hybridTransfers", run };
 }

@@ -19,8 +19,7 @@ export function computeSettleChance(cfg = {}, mode = "drift", hops = 0, reroutes
           rerouteGain: Number(cfg?.hybridDriftRerouteGain) || 0.05,
           max: Number(cfg?.hybridDriftMaxChance) || 0.95,
         };
-  const chance =
-    settings.base + hops * settings.hopGain + reroutes * settings.rerouteGain;
+  const chance = settings.base + hops * settings.hopGain + reroutes * settings.rerouteGain;
   return clamp(chance, 0, settings.max);
 }
 
@@ -65,7 +64,9 @@ function attemptInsertIntoInventories(inventories, typeId, amount, filterSet) {
       clone.amount = existing.amount + insert;
       container.setItem(slot, clone);
       remaining -= insert;
-    } catch {}
+    } catch (e) {
+      // Bedrock JS runtime requires catch binding.
+    }
   }
 
   for (const inv of inventories) {
@@ -85,7 +86,6 @@ export function createHybridArrivalHandler(deps = {}) {
     cfg = {},
     cacheManager,
     resolveBlockInfo,
-    dropItemAt,
     getFilterForBlock,
     getFilterSet,
     pendingCooldowns,
@@ -93,18 +93,9 @@ export function createHybridArrivalHandler(deps = {}) {
     emitTrace,
   } = deps;
 
-  // Hybrid drift can get chat-spammy when many jobs reroute.
-  // Aggregate reroutes per-destination prism and emit a short summary per window.
-  const rerouteCountsByPrism = new Map(); // prismKey -> count
+  const rerouteCountsByPrism = new Map();
   const rerouteLastLogTickByPrism = new Map();
   const rerouteWindowTicks = Math.max(20, Number(cfg?.hybridRerouteLogWindowTicks) || 40);
-
-  function dropRemaining(job, location, dim) {
-    if (!dropItemAt || !location || job.amount <= 0) return;
-    const dimObj = dim || (location?.dim ? location.dim : null);
-    dropItemAt(dimObj, location, job.itemTypeId, job.amount);
-    job.amount = 0;
-  }
 
   return function handleHybridArrival(job) {
     if (
@@ -136,13 +127,12 @@ export function createHybridArrivalHandler(deps = {}) {
         : getFilterSet(filterContainer)
       : null;
 
-    const dropThreshold = Math.max(1, Number(cfg?.hybridRerouteDropThreshold) || 12);
-    const hopThreshold = Math.max(1, Number(cfg?.hybridHopDropThreshold) || 40);
-    const forced =
-      (job.reroutes || 0) >= dropThreshold || (job.hops || 0) >= hopThreshold;
+    // IMPORTANT: Do NOT drop items here.
+    // Drops are only allowed when beams break / path invalidation.
+    // If we can't insert, we reroute and keep drifting.
+    const chance = computeSettleChance(cfg, "drift", job.hops, job.reroutes);
+    const shouldAttempt = Math.random() < chance;
 
-    const chance = forced ? 1 : computeSettleChance(cfg, "drift", job.hops, job.reroutes);
-    const shouldAttempt = forced || Math.random() < chance;
     const insertCandidate = shouldAttempt
       ? attemptInsertIntoInventories(inventories, job.itemTypeId, job.amount, filterSet)
       : { inserted: 0, remaining: job.amount };
@@ -158,11 +148,7 @@ export function createHybridArrivalHandler(deps = {}) {
       }
     }
 
-    if (forced && job.amount > 0) {
-      dropRemaining(job, destBlock?.location || destInfo?.pos || null, destDim);
-      return true;
-    }
-
+    // Continue drifting
     job.hops = (job.hops || 0) + 1;
     job.reroutes = (job.reroutes || 0) + 1;
     job.prevPrismKey = job.currentPrismKey;
@@ -172,23 +158,21 @@ export function createHybridArrivalHandler(deps = {}) {
     const cooldownTicks = computeCooldownTicks(cfg, job.reroutes);
     pendingCooldowns.set(job.id, { job, cooldownTicks });
 
-    // Aggregate reroutes instead of logging every single job.
     if (typeof emitTrace === "function") {
       const nowTick = Number.isFinite(system?.currentTick) ? system.currentTick : 0;
       const count = (rerouteCountsByPrism.get(destKey) || 0) + 1;
       rerouteCountsByPrism.set(destKey, count);
 
       const lastLog = rerouteLastLogTickByPrism.get(destKey) || -Infinity;
-      if ((nowTick - lastLog) >= rerouteWindowTicks) {
+      if (nowTick - lastLog >= rerouteWindowTicks) {
         rerouteLastLogTickByPrism.set(destKey, nowTick);
         const total = rerouteCountsByPrism.get(destKey) || count;
         rerouteCountsByPrism.set(destKey, 0);
 
-        // Keep it short; details belong in deeper debugging, not chat spam.
         emitTrace(destKey, "transfer", {
-          text: `[HybridDrift] ${total} reroute(s) (last cooldown=${cooldownTicks})`,
+          text: `[Drift] ${total} reroute(s) (cooldown=${cooldownTicks})`,
           category: "hybrid",
-          dedupeKey: `hybrid_reroute_${destKey}_${nowTick}`,
+          dedupeKey: `drift_reroute_${destKey}_${nowTick}`,
         });
       }
     }

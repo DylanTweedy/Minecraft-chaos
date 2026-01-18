@@ -18,7 +18,7 @@ export function validatePathStart(dim, path) {
     const firstBlock = dim.getBlock({ x: first.x, y: first.y, z: first.z });
     const lastBlock = dim.getBlock({ x: last.x, y: last.y, z: last.z });
     return !!(isPathBlock(firstBlock) && isNodeBlock(lastBlock));
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -49,7 +49,7 @@ export function findFirstPrismKeyInPath(dim, dimId, path) {
       if (b && isPrismBlock(b)) return key(dimId, p.x, p.y, p.z);
     }
     return null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -90,7 +90,7 @@ export function buildNodePathSegments(dim, path, startPos) {
       prev = idx;
     }
     return points.length > 1 ? { points, lengths, keys } : null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -120,7 +120,7 @@ export function buildFluxFxSegments(dim, path) {
       }
     }
     return { points, lengths };
-  } catch {
+  } catch (e) {
     return null;
   }
 }

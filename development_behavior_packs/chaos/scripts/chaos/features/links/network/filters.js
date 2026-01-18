@@ -12,7 +12,7 @@ function safeJsonParse(s) {
   try {
     if (typeof s !== "string" || !s) return null;
     return JSON.parse(s);
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -20,7 +20,7 @@ function safeJsonParse(s) {
 function safeJsonStringify(v) {
   try {
     return JSON.stringify(v);
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -43,7 +43,7 @@ function ensureLoaded(world) {
     const parsed = safeJsonParse(raw);
     _filtersCache = normalizeFilters(parsed);
     _setsCache.clear();
-  } catch {
+  } catch (e) {
     _filtersCache = {};
     _setsCache.clear();
   }
@@ -54,7 +54,7 @@ function persist(world) {
     const raw = safeJsonStringify(_filtersCache || {});
     if (typeof raw !== "string") return;
     world.setDynamicProperty(DP_NODE_FILTERS, raw);
-  } catch {
+  } catch (e) {
     // ignore
   }
 }
@@ -66,7 +66,7 @@ function keyFromBlock(block) {
     const dimId = block.dimension?.id;
     if (!dimId) return null;
     return makePrismKey(dimId, loc.x, loc.y, loc.z);
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -127,7 +127,7 @@ export function toggleFilterForBlock(world, block, typeId) {
 
     persist(world);
     return { added, removed, size: set.size };
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -142,7 +142,7 @@ export function clearFilterForBlock(world, block) {
     _setsCache.delete(key);
     persist(world);
     return true;
-  } catch {
+  } catch (e) {
     return false;
   }
 }

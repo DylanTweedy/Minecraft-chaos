@@ -14,7 +14,7 @@ function safeJsonParse(s) {
   try {
     if (typeof s !== "string" || !s) return null;
     return JSON.parse(s);
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -22,7 +22,7 @@ function safeJsonParse(s) {
 function safeJsonStringify(v) {
   try {
     return JSON.stringify(v);
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -111,7 +111,7 @@ function perfPing(world, message) {
         break;
       }
     }
-  } catch {
+  } catch (e) {
     // ignore
   }
 }
@@ -123,7 +123,7 @@ export function loadPrismRegistry(world) {
     if (!parsed || typeof parsed !== "object") return [];
     const list = Array.isArray(parsed) ? parsed : parsed.list;
     return Array.isArray(list) ? list : [];
-  } catch {
+  } catch (e) {
     return [];
   }
 }
@@ -133,7 +133,7 @@ export function savePrismRegistry(world, list) {
     const raw = safeJsonStringify(Array.isArray(list) ? list : []);
     if (typeof raw !== "string") return;
     world.setDynamicProperty(DP_PRISMS_V0_JSON, raw);
-  } catch {
+  } catch (e) {
     // ignore
   }
 }
@@ -145,7 +145,7 @@ export function loadLinkGraph(world) {
     if (!parsed || typeof parsed !== "object") return [];
     const list = Array.isArray(parsed) ? parsed : parsed.list;
     return Array.isArray(list) ? list : [];
-  } catch {
+  } catch (e) {
     return [];
   }
 }
@@ -155,7 +155,7 @@ export function saveLinkGraph(world, list) {
     const raw = safeJsonStringify(Array.isArray(list) ? list : []);
     if (typeof raw !== "string") return;
     world.setDynamicProperty(DP_LINKS_V0_JSON, raw);
-  } catch {
+  } catch (e) {
     // ignore
   }
 }
@@ -166,7 +166,7 @@ export function loadInflight(world) {
     const parsed = safeJsonParse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed;
-  } catch {
+  } catch (e) {
     return [];
   }
 }
@@ -240,7 +240,7 @@ export function loadInputLevels(world) {
     const parsed = safeJsonParse(raw);
     if (!parsed || typeof parsed !== "object") return {};
     return parsed;
-  } catch {
+  } catch (e) {
     return {};
   }
 }
@@ -282,7 +282,7 @@ export function loadOutputLevels(world) {
     const parsed = safeJsonParse(raw);
     if (!parsed || typeof parsed !== "object") return {};
     return parsed;
-  } catch {
+  } catch (e) {
     return {};
   }
 }
@@ -323,7 +323,7 @@ export function loadPrismLevels(world) {
     const parsed = safeJsonParse(raw);
     if (!parsed || typeof parsed !== "object") return {};
     return parsed;
-  } catch {
+  } catch (e) {
     return {};
   }
 }

@@ -5,7 +5,14 @@ export function mergeCfg(defaults, opts) {
   const cfg = {};
   for (const k in defaults) cfg[k] = defaults[k];
   if (opts) {
-    for (const k2 in opts) cfg[k2] = opts[k2];
+    // IMPORTANT: don't stomp defaults with `undefined`.
+    // Some call sites pass a large opts object with optional fields.
+    // Copying `undefined` through breaks runtime budgets (e.g. maxSearchesPerTick),
+    // which can silently disable pathfinding and transfers.
+    for (const k2 in opts) {
+      const v = opts[k2];
+      if (v !== undefined) cfg[k2] = v;
+    }
   }
   return cfg;
 }
@@ -31,7 +38,7 @@ export function resolveBlockInfoStatic(world, blockKey) {
     const block = dim.getBlock({ x: pos.x, y: pos.y, z: pos.z });
     if (!block) return null;
     return { dim, block, pos };
-  } catch {
+  } catch (e) {
     return null;
   }
 }

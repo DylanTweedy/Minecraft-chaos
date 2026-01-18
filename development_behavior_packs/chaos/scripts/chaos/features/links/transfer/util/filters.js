@@ -8,7 +8,7 @@ export function createGetFilterForBlock(deps) {
       const c = getFilterContainer(block);
       if (c) return c;
       return getFilterSetForBlock(world, block);
-    } catch {
+    } catch (e) {
       return null;
     }
   };

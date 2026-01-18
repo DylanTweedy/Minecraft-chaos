@@ -1,5 +1,5 @@
 // scripts/chaos/features/links/transfer/systems/fx.js
-import { MolangVariableMap } from "@minecraft/server";
+import { MolangVariableMap, system } from "@minecraft/server";
 import { isPrismBlock, getPrismTier } from "../config.js";
 import { buildFluxFxSegments } from "../routing/path.js";
 import { queueFxParticle } from "../../../../fx/fx.js";
@@ -14,6 +14,12 @@ export function createFxManager(cfg, deps) {
   const getOrbStepTicks = deps.getOrbStepTicks || (() => 60); // Fallback if not provided
   const orbFxBudgetUsed = deps.orbFxBudgetUsed || { value: 0 }; // Reference object { value: number } to controller's orbFxBudgetUsed
   const fluxFxInflight = deps.fluxFxInflight || []; // Reference to controller's fluxFxInflight array
+
+  // Orb particles are purely visual, but it's easy to accidentally spawn duplicates
+  // (e.g. hybrid + regular inflight, or double-processing during refactors).
+  // Dedupe within a tiny tick window to prevent "double orbs" and flicker.
+  const recentOrbSpawns = new Map(); // key -> lastTick
+  const ORB_DEDUPE_WINDOW_TICKS = 2;
 
   function normalizeDir(a, b) {
     const dx = b.x - a.x;
@@ -56,7 +62,7 @@ export function createFxManager(cfg, deps) {
           z: base.z + 0.5 + oz,
         });
       }
-    } catch {
+    } catch (e) {
       // ignore
     }
   }
@@ -85,6 +91,22 @@ export function createFxManager(cfg, deps) {
       const dir = normalizeDir(from, to);
       if (!dir) return false;
 
+      // Per-tick dedupe: same segment + same item type in same dimension.
+      // We keep the key short to avoid GC churn.
+      const nowTick = typeof system?.currentTick === "number" ? system.currentTick : 0;
+      const dedupeKey = `${dim?.id || ""}|${from.x},${from.y},${from.z}>${to.x},${to.y},${to.z}|${itemTypeId || ""}`;
+      const lastTick = recentOrbSpawns.get(dedupeKey);
+      if (typeof lastTick === "number" && nowTick - lastTick <= ORB_DEDUPE_WINDOW_TICKS) {
+        return false;
+      }
+      recentOrbSpawns.set(dedupeKey, nowTick);
+      if (recentOrbSpawns.size > 2048) {
+        // prune old keys lazily
+        for (const [k, t] of recentOrbSpawns) {
+          if (nowTick - (t | 0) > ORB_DEDUPE_WINDOW_TICKS * 4) recentOrbSpawns.delete(k);
+        }
+      }
+
       const molang = new MolangVariableMap();
       
       // Calculate distance for this segment
@@ -95,7 +117,8 @@ export function createFxManager(cfg, deps) {
       
       // Calculate visual lifetime from logical time to keep them in sync
       // logicalTicks is the time in ticks, convert to seconds (20 ticks = 1 second)
-      const lifetime = Math.max(0.05, logicalTicks / 20);
+      // Avoid ultra-short lifetimes (blinky "pop" look) if a job gets sped up aggressively.
+      const lifetime = Math.max(0.15, logicalTicks / 20);
       
       // Calculate visual speed from distance and lifetime
       // This ensures visual and logical are perfectly in sync
@@ -132,7 +155,7 @@ export function createFxManager(cfg, deps) {
       queueFxParticle(dim, fxId, pos, molang);
       if (debugEnabled && debugState) debugState.orbSpawns++;
       return true;
-    } catch {
+    } catch (e) {
       return false;
     }
   }
@@ -182,7 +205,7 @@ export function createFxManager(cfg, deps) {
         ticksUntilStep: 0,
         level: lvl,
       });
-    } catch {
+    } catch (e) {
       // ignore
     }
   }
@@ -230,7 +253,7 @@ export function createFxManager(cfg, deps) {
         ticksUntilStep: 0,
         level: lvl,
       });
-    } catch {
+    } catch (e) {
       // ignore
     }
   }

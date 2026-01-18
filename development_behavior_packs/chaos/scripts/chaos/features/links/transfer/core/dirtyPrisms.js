@@ -7,13 +7,12 @@ import { isPrismId } from "../config.js";
  * Keeps controller.js slimmer and makes the behaviour reusable for future event hooks.
  *
  * @param {Object} deps
- * @param {any} deps.virtualInventoryManager
+ * (VirtualInventory removed; reservations handled elsewhere.)
  * @param {(prismKey: string) => void=} deps.invalidateInput
  * @param {any=} deps.cacheManager
  * @returns {(dim: any, loc: {x:number,y:number,z:number}, reason?: string) => void}
  */
 export function createAdjacentPrismDirtyMarker(deps) {
-  const virtualInventoryManager = deps?.virtualInventoryManager;
   const invalidateInput = deps?.invalidateInput;
   const cacheManager = deps?.cacheManager;
 
@@ -38,7 +37,7 @@ export function createAdjacentPrismDirtyMarker(deps) {
         let block;
         try {
           block = dim.getBlock({ x, y, z });
-        } catch {
+        } catch (e) {
           continue;
         }
 
@@ -47,24 +46,18 @@ export function createAdjacentPrismDirtyMarker(deps) {
         const prismKey = key(dim.id, x, y, z);
 
         try {
-          if (virtualInventoryManager?.markPrismDirty) {
-            virtualInventoryManager.markPrismDirty(prismKey, reason);
-          }
-        } catch {}
-
-        try {
           if (typeof invalidateInput === "function") {
             invalidateInput(prismKey);
           }
-        } catch {}
+        } catch (e) {}
 
         try {
           if (cacheManager?.invalidatePrismInventories) {
             cacheManager.invalidatePrismInventories(prismKey);
           }
-        } catch {}
+        } catch (e) {}
       }
-    } catch {
+    } catch (e) {
       // never throw
     }
   };

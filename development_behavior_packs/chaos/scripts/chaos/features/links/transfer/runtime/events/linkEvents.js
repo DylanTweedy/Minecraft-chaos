@@ -99,7 +99,7 @@ export function subscribeLinkEvents(deps) {
       if (!signal || typeof signal.subscribe !== "function") return false;
       signal.subscribe(handler);
       return true;
-    } catch {
+    } catch (e) {
       return false;
     }
   }

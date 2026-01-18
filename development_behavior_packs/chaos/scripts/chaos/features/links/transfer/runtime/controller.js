@@ -22,7 +22,6 @@ import { createCacheManager } from "../core/cache.js";
 import { createFinalizeManager } from "../core/finalize.js";
 import { createQueuesManager } from "../core/queues.js";
 import { createInflightProcessorManager } from "../core/inflightProcessor.js";
-import { createVirtualInventoryManager } from "../core/virtualInventory.js";
 import { createInputQueuesManager } from "../core/inputQueues.js";
 
 // Systems
@@ -45,7 +44,6 @@ import {
   createPushTransfersPhase,
   createAttemptTransferForPrismPhase,
   createProcessQueuesPhase,
-  createUpdateVirtualStatePhase,
   createProcessInputQueuesPhase,
   createPersistAndReportPhase,
   createScanTransfersPhase,
@@ -241,7 +239,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       try {
         if (!world || typeof world.getAllPlayers !== "function") return;
         players = world.getAllPlayers();
-      } catch {
+      } catch (e) {
         return;
       }
 
@@ -257,7 +255,7 @@ export function createNetworkTransferController(deps = {}, opts) {
         } else {
           return;
         }
-      } catch {
+      } catch (e) {
         return;
       }
 
@@ -268,14 +266,14 @@ export function createNetworkTransferController(deps = {}, opts) {
             if (player && typeof player.sendMessage === "function") {
               player.sendMessage(msgStr);
             }
-          } catch {
+          } catch (e) {
             // ignore per-player failures
           }
         }
-      } catch {
+      } catch (e) {
         // ignore iteration failures
       }
-    } catch {
+    } catch (e) {
       // Ignore ALL errors - initialization logging should never break the system
     }
   }
@@ -299,7 +297,7 @@ export function createNetworkTransferController(deps = {}, opts) {
         ", pathfinder=" +
         hasPathfinder
     );
-  } catch {
+  } catch (e) {
     // Ignore - initialization messages are optional
   }
 
@@ -347,13 +345,13 @@ export function createNetworkTransferController(deps = {}, opts) {
     if (!prismKey) return;
     try {
       inputBackoff.delete(prismKey);
-    } catch {}
+    } catch (e) {}
     try {
       nextAllowed.delete(prismKey);
-    } catch {}
+    } catch (e) {}
     try {
       nextQueueTransferAllowed.delete(prismKey);
-    } catch {}
+    } catch (e) {}
   }
   function bumpBackoff(prismKey) {
     if (!prismKey) return 0;
@@ -458,7 +456,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       const errMsg = err ? ((err && err.message) ? String(err.message) : String(err)) : "";
       const full = errMsg ? (prefixStr + " " + msgStr + ": " + errMsg) : (prefixStr + " " + msgStr);
       sendInitMessage(full);
-    } catch {
+    } catch (e) {
       // ignore logging errors
     }
   }
@@ -541,7 +539,7 @@ export function createNetworkTransferController(deps = {}, opts) {
     getPrismTier,
   });
 
-  let virtualInventoryManager = null;
+  // VirtualInventory removed: reservations are handled in inventoryAdapter.js
   let cacheManager = null;
   let levelsManager = null;
   let queuesManager = null;
@@ -564,7 +562,7 @@ export function createNetworkTransferController(deps = {}, opts) {
   let attemptTransferForPrismPhase = null;
   let attemptTransferForPrismHandler = null;
   let processQueuesPhase = null;
-  let updateVirtualStatePhase = null;
+  // updateVirtualStatePhase removed
   let processInputQueuesPhase = null;
   let persistAndReportPhase = null;
   let scanTransfersPhase = null;
@@ -677,7 +675,6 @@ export function createNetworkTransferController(deps = {}, opts) {
       },
     },
     factories: {
-      createVirtualInventoryManager,
       createCacheManager,
       createLevelsManager,
       createFxManager,
@@ -697,7 +694,6 @@ export function createNetworkTransferController(deps = {}, opts) {
       createPushTransfersPhase,
       createAttemptTransferForPrismPhase,
       createProcessQueuesPhase,
-      createUpdateVirtualStatePhase,
       createProcessInputQueuesPhase,
       createPersistAndReportPhase,
       createScanTransfersPhase,
@@ -850,7 +846,6 @@ export function createNetworkTransferController(deps = {}, opts) {
 
   if (managers) {
     ({
-      virtualInventoryManager,
       cacheManager,
       levelsManager,
       queuesManager,
@@ -873,7 +868,6 @@ export function createNetworkTransferController(deps = {}, opts) {
       attemptTransferForPrismPhase,
       attemptTransferForPrismHandler,
       processQueuesPhase,
-      updateVirtualStatePhase,
       processInputQueuesPhase,
       persistAndReportPhase,
       scanTransfersPhase,
@@ -929,17 +923,18 @@ export function createNetworkTransferController(deps = {}, opts) {
     wrapPhase(scanDiscoveryPhase, debugState),
   ];
 
+  // Important: hybrid drift should be additive, not exclusive.
+  // We always run the core transfer phases, and (optionally) also run hybrid drift.
+  transferPhases.push(
+    wrapPhase(pushTransfersPhase, debugState),
+    wrapPhase(attemptTransferForPrismPhase, debugState),
+    wrapPhase(processQueuesPhase, debugState),
+    wrapPhase(processInputQueuesPhase, debugState),
+    wrapPhase(scanTransfersPhase, debugState)
+  );
+
   if (cfg?.useHybridDriftAttune) {
     transferPhases.push(wrapPhase(hybridTransfersPhase, debugState));
-  } else {
-    transferPhases.push(
-      wrapPhase(pushTransfersPhase, debugState),
-      wrapPhase(attemptTransferForPrismPhase, debugState),
-      wrapPhase(processQueuesPhase, debugState),
-      wrapPhase(updateVirtualStatePhase, debugState),
-      wrapPhase(processInputQueuesPhase, debugState),
-      wrapPhase(scanTransfersPhase, debugState)
-    );
   }
 
   transferPhases.push(wrapPhase(persistAndReportPhase, debugState));
@@ -999,7 +994,7 @@ export function createNetworkTransferController(deps = {}, opts) {
 
     try {
       system.clearRun(tickId);
-    } catch {}
+    } catch (e) {}
 
     tickId = null;
 
@@ -1007,7 +1002,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       if (typeof unsubscribeEvents === "function") {
         unsubscribeEvents();
       }
-    } catch {}
+    } catch (e) {}
 
     unsubscribeEvents = null;
   }
@@ -1017,7 +1012,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       // INIT DEBUG
       try {
         sendInitMessage("§b[Init] loadInflightState() called - before load");
-      } catch {}
+      } catch (e) {}
 
       // Clear any existing inflight state first to prevent stale jobs
       const oldInflightCount = inflight.length;
@@ -1028,7 +1023,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       // INIT DEBUG
       try {
         sendInitMessage("§b[Init] Calling loadInflightStateFromWorld...");
-      } catch {}
+      } catch (e) {}
 
       loadInflightStateFromWorld(world, inflight, cfg);
 
@@ -1036,7 +1031,7 @@ export function createNetworkTransferController(deps = {}, opts) {
       try {
         const inflightLen = inflight.length || 0;
         sendInitMessage("§b[Init] After loadInflightStateFromWorld: inflight.length=" + inflightLen);
-      } catch {}
+      } catch (e) {}
 
       // Validate loaded inflight jobs - remove any that are invalid or past the end of their path
       // (they would complete immediately and might create flux FX jobs incorrectly)
@@ -1057,7 +1052,7 @@ export function createNetworkTransferController(deps = {}, opts) {
           try {
             // finalizeManager should exist by the time start() calls loadInflightState()
             finalizeManager.finalizeJob(job);
-          } catch {
+          } catch (e) {
             // If finalization fails, just remove it silently
           }
 
@@ -1084,7 +1079,7 @@ export function createNetworkTransferController(deps = {}, opts) {
             removedCount +
             " stale)"
         );
-      } catch {}
+      } catch (e) {}
 
       rebuildReservationsFromInflight();
       dirty.clear(DIRTY.INF);
@@ -1094,13 +1089,13 @@ export function createNetworkTransferController(deps = {}, opts) {
       // INIT DEBUG
       try {
         sendInitMessage("§a[Init] loadInflightState() completed successfully");
-      } catch {}
+      } catch (e) {}
     } catch (err) {
       // INIT DEBUG
       try {
         const errMsg = (err && err.message) ? String(err.message) : String(err || "unknown error");
         sendInitMessage("§c[Init] loadInflightState() ERROR: " + errMsg);
-      } catch {}
+      } catch (e) {}
 
       // If loading fails, just start with empty state
       inflight.length = 0;
@@ -1213,12 +1208,11 @@ export function createNetworkTransferController(deps = {}, opts) {
       debugEnabled,
       debugState,
       services,
-      managers: {
-        cacheManager,
-        queuesManager,
-        inputQueuesManager,
-        virtualInventoryManager,
-      },
+        managers: {
+          cacheManager,
+          queuesManager,
+          inputQueuesManager,
+        },
     });
 
     activeTickContext = ctx;
@@ -1292,9 +1286,9 @@ export function createNetworkTransferController(deps = {}, opts) {
         const amt = Math.max(1, job.amount | 0);
         reserveContainerSlot(containerKey, itemTypeId, amt);
       }
-    } catch {
+    } catch (e) {
       // If rebuilding fails, just clear reservations and continue
-      try { clearReservations(); } catch {}
+      try { clearReservations(); } catch (e) {}
     }
   }
 

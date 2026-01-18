@@ -33,7 +33,7 @@ export function initManagers(runtime) {
       const drainFn = events?.getBeamBreaks;
       if (typeof drainFn !== "function") return [];
       return drainFn(beamBreakDrainLimit) || [];
-    } catch {
+    } catch (e) {
       return [];
     }
   };
@@ -113,7 +113,7 @@ export function initManagers(runtime) {
   const algorithmsTracing = algorithms?.tracing || {};
 
   const {
-    createVirtualInventoryManager,
+    // Virtual inventory manager removed (reservations now live in inventoryAdapter)
     createCacheManager,
     createLevelsManager,
     createFxManager,
@@ -134,7 +134,6 @@ export function initManagers(runtime) {
     createPushTransfersPhase,
     createAttemptTransferForPrismPhase,
     createProcessQueuesPhase,
-    createUpdateVirtualStatePhase,
     createProcessInputQueuesPhase,
     createPersistAndReportPhase,
     createScanTransfersPhase,
@@ -258,23 +257,14 @@ export function initManagers(runtime) {
   // PHASE: INIT (Managers)
   // ============================
   // INIT DEBUG: Creating managers
-  sendInitMessage("§b[Init] Step 1/8: Creating virtualInventoryManager...");
+  // Virtual inventory manager removed (reservations now live in inventoryAdapter).
+  // We keep a local slot-reservation book so parallel transfer planning doesn't overbook.
+  sendInitMessage("§b[Init] Step 1/8: VirtualInventory removed (using reservations)...");
 
-    // Create virtual inventory manager first (needed by cache manager for capacity calculations)
-  let virtualInventoryManager;
-  try {
-    virtualInventoryManager = createVirtualInventoryManager(cfg, { getContainerKey });
-    if (!virtualInventoryManager) {
-      throw new Error("createVirtualInventoryManager returned null - check cfg and deps parameters");
-    }
-    // INIT DEBUG: Success
-    sendInitMessage("§a[Init] ? virtualInventoryManager created");
-  } catch (err) {
-    handleManagerCreationError("virtualInventoryManager", err);
-  }
+  const virtualInventoryManager = null;
 
   // Define getContainerCapacityWithReservations before creating cache manager (it needs this function)
-  // This function now uses virtual inventory manager to account for pending items
+  // Reservations are maintained in-memory via inventoryAdapter.js (reserveContainerSlot / releaseContainerSlot).
   function getContainerCapacityWithReservations(containerKey, container, containerBlock) {
     try {
       if (!containerKey || !container) return 0;
@@ -309,17 +299,6 @@ export function initManagers(runtime) {
       const currentCapacity = stackRoom + (emptySlots * 64);
       const capacityAfterReservations = Math.max(0, currentCapacity - reservedTotal);
 
-      // Account for virtual inventory (pending items) if manager available
-      if (virtualInventoryManager && typeof virtualInventoryManager.getVirtualCapacity === "function") {
-        return virtualInventoryManager.getVirtualCapacity(
-          containerKey,
-          capacityAfterReservations,
-          reservedTotal,
-          null, // no type-specific, use total
-          reservedTotal
-        );
-      }
-
       return capacityAfterReservations;
     } catch (_) {
       return 0;
@@ -340,7 +319,7 @@ export function initManagers(runtime) {
         invalidateInput,
         debugEnabled,
         debugState,
-        virtualInventoryManager, // Pass virtual inventory manager to cache
+        // virtualInventoryManager removed
       },
       cfg
     );
@@ -386,7 +365,6 @@ export function initManagers(runtime) {
   const markAdjacentPrismsDirty =
     (typeof makeMarkAdjacentPrismsDirty === "function")
       ? makeMarkAdjacentPrismsDirty({
-          virtualInventoryManager,
           invalidateInput,
           cacheManager,
         })
@@ -527,7 +505,7 @@ export function initManagers(runtime) {
           }
         }
       }
-    } catch {
+    } catch (e) {
       // ignore
     }
   }
@@ -695,13 +673,15 @@ export function initManagers(runtime) {
     cacheManager,
     queuesManager,
     inputQueuesManager,
-    virtualInventoryManager,
+    // virtualInventoryManager removed
     levelsManager,
     prismRegistry,
     linkGraph,
     fxManager,
     refinementManager,
     inflightProcessorManager,
+    hybridScheduler,
+    hybridScheduler,
     resolveBlockInfo,
     traceNotePathfind,
     traceNoteNeighborInventories,
@@ -780,7 +760,7 @@ export function initManagers(runtime) {
     levelsManager,
     queuesManager,
     inputQueuesManager,
-    virtualInventoryManager,
+    // virtualInventoryManager removed
     getFilterForBlock,
     getFilterSet,
     getContainerKey,
@@ -888,6 +868,7 @@ export function initManagers(runtime) {
   const processQueuesPhase = createProcessQueuesPhase({
     queuesManager,
     inflightProcessorManager,
+    hybridScheduler,
     inflight,
     fluxFxInflight,
     debugEnabled,
@@ -906,19 +887,6 @@ export function initManagers(runtime) {
     },
   });
 
-  const updateVirtualStatePhase = createUpdateVirtualStatePhase({
-    virtualInventoryManager,
-    inputQueuesManager,
-    getPrismKeys,
-    getQueueState,
-    inflight,
-    debugEnabled,
-    debugState,
-    getNowTick,
-    noteWatchdog,
-    sendInitMessage,
-  });
-
   const processInputQueuesPhase = createProcessInputQueuesPhase({
     cfg,
     cacheManager,
@@ -933,6 +901,9 @@ export function initManagers(runtime) {
     attemptPushTransferWithDestination,
     attemptPushTransfer,
     findPathForInput,
+    pickWeightedRandomWithBias,
+    isFluxTypeId,
+    CRYSTAL_FLUX_WEIGHT,
     debugEnabled,
     debugState,
     nextQueueTransferAllowed,
@@ -947,6 +918,7 @@ export function initManagers(runtime) {
 
   const hybridTransfersPhase = createHybridTransfersPhase({
     inflightProcessorManager,
+    hybridScheduler,
     inflight,
     fluxFxInflight,
     cfg,
@@ -1043,7 +1015,7 @@ export function initManagers(runtime) {
   const scanTransfersPhase = createScanTransfersPhase({
     cfg,
     inputQueuesManager,
-    virtualInventoryManager,
+    // virtualInventoryManager removed
     getPrismKeys,
     resolveBlockInfo,
     getSpeed,
@@ -1077,7 +1049,7 @@ export function initManagers(runtime) {
   // INIT DEBUG: All managers created
   sendInitMessage("§a[Init] ? All managers created! Controller ready.");
   return {
-    virtualInventoryManager,
+    // virtualInventoryManager removed
     cacheManager,
     levelsManager,
     prismRegistry,
@@ -1088,6 +1060,7 @@ export function initManagers(runtime) {
     refinementManager,
     finalizeManager,
     inflightProcessorManager,
+    hybridScheduler,
     resolveBlockInfo,
     dropItemAt,
     resolvePrismKeysFromWorld,
@@ -1105,7 +1078,6 @@ export function initManagers(runtime) {
     attemptTransferForPrismPhase,
     attemptTransferForPrismHandler,
     processQueuesPhase,
-    updateVirtualStatePhase,
     processInputQueuesPhase,
     hybridTransfersPhase,
     persistAndReportPhase,

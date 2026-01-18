@@ -51,9 +51,9 @@ export function subscribeTransferDirtyEvents(deps) {
           if (player && typeof player.sendMessage === "function") {
             player.sendMessage("§f" + text);
           }
-        } catch {}
+        } catch (e) {}
       }
-    } catch {}
+    } catch (e) {}
   }
 
   function hasInsightGear(player) {
@@ -106,7 +106,7 @@ export function subscribeTransferDirtyEvents(deps) {
         }
       }
       sendPlacementChat(messageParts.join(" | "), player);
-    } catch {}
+    } catch (e) {}
   }
 
   function invalidateBlockSafe(dim, loc) {
@@ -114,7 +114,7 @@ export function subscribeTransferDirtyEvents(deps) {
       if (cacheManager && typeof cacheManager.invalidateBlock === "function") {
         cacheManager.invalidateBlock(dim.id, loc);
       }
-    } catch {}
+    } catch (e) {}
   }
 
   function isContainerish(block) {
@@ -128,7 +128,7 @@ export function subscribeTransferDirtyEvents(deps) {
         if (c) return true;
       }
       return false;
-    } catch {
+    } catch (e) {
       return false;
     }
   }
@@ -150,7 +150,7 @@ export function subscribeTransferDirtyEvents(deps) {
 
           markAdjacentPrismsDirty?.(block.dimension, block.location, "player_placed_container");
           invalidateBlockSafe(block.dimension, block.location);
-        } catch {}
+        } catch (e) {}
       };
       evt.subscribe(cb);
       subs.push({ evt, cb, name: "playerPlaceBlock" });
@@ -172,7 +172,7 @@ export function subscribeTransferDirtyEvents(deps) {
           // We can't reliably test "was container" from permutation; be conservative.
           markAdjacentPrismsDirty?.(dim, loc, "player_broke_block");
           invalidateBlockSafe(dim, loc);
-        } catch {}
+        } catch (e) {}
       };
       evt.subscribe(cb);
       subs.push({ evt, cb, name: "playerBreakBlock" });
@@ -198,7 +198,7 @@ export function subscribeTransferDirtyEvents(deps) {
 
           markAdjacentPrismsDirty?.(block.dimension, block.location, "entity_placed_container");
           invalidateBlockSafe(block.dimension, block.location);
-        } catch {}
+        } catch (e) {}
       };
       evt.subscribe(cb);
       subs.push({ evt, cb, name: "entityPlaceBlock" });
@@ -217,9 +217,9 @@ export function subscribeTransferDirtyEvents(deps) {
           if (s?.evt && typeof s.evt.unsubscribe === "function") {
             s.evt.unsubscribe(s.cb);
           }
-        } catch {}
+        } catch (e) {}
       }
       if (deps?.state) deps.state.eventsSubscribed = false;
-    } catch {}
+    } catch (e) {}
   };
 }

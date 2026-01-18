@@ -4,7 +4,6 @@ import { isFluxTypeId } from "../../../../flux.js";
 import { isPathBlock } from "../routing/path.js";
 import { releaseContainerSlot } from "../util/inventoryAdapter.js";
 import { key } from "../keys.js";
-import { buildHybridPath } from "../runtime/hybrid/jobFactory.js";
 
 /**
  * Creates an inflight processor manager for processing in-flight transfer jobs
@@ -29,25 +28,9 @@ export function createInflightProcessorManager(cfg, deps) {
     return !!block && isPrismId(block.typeId);
   }
 
-  function isHybridJob(job) {
-    return !!job && typeof job.mode === "string" && job.mode.startsWith("hybrid");
-  }
 
-  function ensureHybridPath(job) {
-    if (!job) return false;
-    if (Array.isArray(job.path) && job.path.length > 0) return true;
-    if (!isHybridJob(job)) return false;
-    const sourceKey = job.currentPrismKey || job.sourcePrismKey;
-    const destKey = job.destPrismKey;
-    if (!sourceKey || !destKey) return false;
-    const path = buildHybridPath(sourceKey, destKey);
-    if (!Array.isArray(path) || path.length === 0) return false;
-    job.path = path;
-    let stepIndex = job.stepIndex | 0;
-    if (stepIndex < 0) stepIndex = 0;
-    if (stepIndex >= path.length) stepIndex = path.length - 1;
-    job.stepIndex = stepIndex;
-    return true;
+  function hasValidPath(job) {
+    return !!job && Array.isArray(job.path) && job.path.length >= 2;
   }
 
   /**
@@ -61,7 +44,7 @@ export function createInflightProcessorManager(cfg, deps) {
 
     for (let i = inflight.length - 1; i >= 0; i--) {
       const job = inflight[i];
-      if (!ensureHybridPath(job)) {
+      if (!hasValidPath(job)) {
         inflight.splice(i, 1);
         inflightDirty = true;
         continue;

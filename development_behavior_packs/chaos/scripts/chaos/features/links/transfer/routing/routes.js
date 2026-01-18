@@ -62,7 +62,7 @@ export function findPrismRouteFromNode(startBlock, dimId, getPrismInventoriesCac
       }
     }
     return null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -85,7 +85,7 @@ function buildPrismRoute(startKey, targetKey, parent, linkGraph) {
       outputKey: targetKey,
       outputPos: { x: outputPos.x, y: outputPos.y, z: outputPos.z },
     };
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -133,7 +133,7 @@ export function findCrystallizerRouteFromPrism(prismBlock, dimId, linkGraph = nu
       }
     }
     return null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -150,7 +150,7 @@ function buildCrystallizerRoute(startKey, targetKey, parent, linkGraph) {
       targetIndex: 0,
       crystalPos: { x: crystalPos.x, y: crystalPos.y, z: crystalPos.z },
     };
-  } catch {
+  } catch (e) {
     return null;
   }
 }

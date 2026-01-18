@@ -9,8 +9,8 @@ export function createAttemptTransferForPrismPhase(deps) {
     name: "attemptTransferForPrism",
     handler,
     run(ctx) {
-      phaseStep(ctx, "attemptTransferForPrism ready");
-      return ok();
+      phaseStep(ctx, "attemptTransferForPrism");
+      return handler(ctx);
     },
   };
 }
@@ -22,7 +22,6 @@ function createAttemptTransferForPrismHandler(deps) {
     levelsManager,
     queuesManager,
     inputQueuesManager,
-    virtualInventoryManager,
     getFilterForBlock,
     getFilterSet,
     getContainerKey,
@@ -284,7 +283,7 @@ function createAttemptTransferForPrismHandler(deps) {
           previewStack
         );
         total += Math.max(0, Number(capacity) || 0);
-      } catch {
+      } catch (e) {
         continue;
       }
     }
@@ -438,6 +437,7 @@ function createAttemptTransferForPrismHandler(deps) {
             inventoryIndex: invIndex,
             entity: inv.entity,
             block: inv.block,
+            dim: inv.dim,
           });
         }
       }
@@ -472,7 +472,7 @@ function createAttemptTransferForPrismHandler(deps) {
           if (pathfindTime > 100) {
             notePathfind(pathfindTime, "timeout");
             noteResult("pathfind_timeout");
-            try { if (typeof invalidateInput === "function") invalidateInput(prismKey); } catch {}
+            try { if (typeof invalidateInput === "function") invalidateInput(prismKey); } catch (e) {}
             return { ok: false, reason: "pathfind_timeout", searchesUsed: searchesUsed };
           }
         } catch (err) {
@@ -481,7 +481,7 @@ function createAttemptTransferForPrismHandler(deps) {
           notePathfind(pathfindTime, "error");
           if (typeof traceNoteError === "function") traceNoteError(prismKey, errMsg, nowTick);
           noteResult("pathfind_error");
-          try { if (typeof invalidateInput === "function") invalidateInput(prismKey); } catch {}
+          try { if (typeof invalidateInput === "function") invalidateInput(prismKey); } catch (e) {}
           return { ok: false, reason: "pathfind_error", searchesUsed: searchesUsed };
         }
 

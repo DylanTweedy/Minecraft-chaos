@@ -14,13 +14,20 @@ export function key(dimId, x, y, z) {
   return makePrismKey(dimId, x, y, z);
 }
 
-export function getContainerKey(blockOrEntity) {
+// NOTE: Block objects are not guaranteed to expose a .dimension in all Script API builds.
+// Many call sites only have the Dimension object separately (e.g. from cacheManager).
+// Accept an optional dimension hint so container keys are stable.
+export function getContainerKey(blockOrEntity, dimOrDimId = null) {
   try {
     if (!blockOrEntity) return null;
+    const dimIdHint =
+      (typeof dimOrDimId === "string" ? dimOrDimId : null) ||
+      (dimOrDimId && typeof dimOrDimId.id === "string" ? dimOrDimId.id : null) ||
+      null;
     // Handle blocks
     if (blockOrEntity.location && typeof blockOrEntity.location.x === "number") {
       const loc = blockOrEntity.location;
-      const dimId = blockOrEntity.dimension?.id || blockOrEntity.location?.dimension?.id;
+      const dimId = blockOrEntity.dimension?.id || dimIdHint || null;
       if (!dimId) return null;
       return key(dimId, Math.floor(loc.x), Math.floor(loc.y), Math.floor(loc.z));
     }
@@ -37,7 +44,7 @@ export function getContainerKey(blockOrEntity) {
       return key(dimId, blockX, blockY, blockZ) + `|${entityHash}`;
     }
     return null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -47,8 +54,10 @@ export function getContainerKeyFromInfo(info) {
     if (!info) return null;
     // Use entity if available, otherwise use block
     const ref = info.entity || info.block;
-    return ref ? getContainerKey(ref) : null;
-  } catch {
+    // Allow callers to pass the Dimension or dimId explicitly.
+    const dimHint = info.dim || info.dimension || info.dimId || null;
+    return ref ? getContainerKey(ref, dimHint) : null;
+  } catch (e) {
     return null;
   }
 }

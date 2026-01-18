@@ -29,6 +29,9 @@ function createProcessInputQueuesHandler(deps) {
     attemptPushTransferWithDestination,
     attemptPushTransfer,
     findPathForInput,
+    pickWeightedRandomWithBias,
+    isFluxTypeId,
+    CRYSTAL_FLUX_WEIGHT,
     debugEnabled,
     debugState,
     nextQueueTransferAllowed,
@@ -159,7 +162,9 @@ function createProcessInputQueuesHandler(deps) {
               for (const inv of inventories) {
                 if (!inv.container) continue;
 
-                const containerKey = getContainerKey(inv.entity || inv.block);
+                // Blocks may not expose a .dimension in all Script API builds.
+                // Use the wrapper's dimension hint so container keys match what enqueue used.
+                const containerKey = getContainerKey(inv.entity || inv.block, inv.dim);
                 if (containerKey !== queueEntry.containerKey) continue;
 
                 // Found the container - get the item from the slot
@@ -325,7 +330,7 @@ function createProcessInputQueuesHandler(deps) {
                 if (typeof traceNoteError === "function") {
                   traceNoteError(prismKey, errorMsg, nowTick);
                 }
-                transferResult = { ...makeResult(false, "transfer_error"), amount: 0, searchesUsed: 0 };
+                transferResult = { ok: false, reason: "transfer_error", amount: 0, searchesUsed: 0 };
               }
 
               const transferTime = Date.now() - transferStart;

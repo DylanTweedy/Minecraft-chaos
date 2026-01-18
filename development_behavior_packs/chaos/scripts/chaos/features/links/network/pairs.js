@@ -16,7 +16,7 @@ let persistenceEnabled = true;
 function safeJsonParse(str, fallback) {
   try {
     return JSON.parse(str);
-  } catch {
+  } catch (e) {
     return fallback;
   }
 }
@@ -114,7 +114,7 @@ export function loadPairsFromWorldSafe() {
       }
       if (set.size) pairs.set(inputKey, set);
     }
-  } catch {
+  } catch (e) {
     // DP read failed -> disable persistence, keep wand alive
     persistenceEnabled = false;
     pairs.clear();
@@ -161,7 +161,7 @@ export function savePairsToWorldSafe() {
 
     // Write count last (commit marker)
     world.setDynamicProperty(DP_PAIRS_COUNT, chunks.length);
-  } catch {
+  } catch (e) {
     // DP write failed -> disable persistence, keep wand alive
     persistenceEnabled = false;
   }
@@ -174,7 +174,7 @@ export function wipePairsInWorldSafe() {
     for (let i = 0; i < DP_PAIRS_MAX_CHUNKS; i++) {
       world.setDynamicProperty(`${DP_PAIRS_CHUNK_PREFIX}${i}`, "");
     }
-  } catch {
+  } catch (e) {
     // ignore
   }
 }

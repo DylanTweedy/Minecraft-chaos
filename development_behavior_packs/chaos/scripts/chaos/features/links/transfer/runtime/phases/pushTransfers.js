@@ -23,7 +23,7 @@ function createPushTransferHandlers(deps) {
   const {
     cacheManager,
     levelsManager,
-    virtualInventoryManager,
+    getReservedForContainer,
     getFilterForBlock,
     getFilterSet,
     getContainerKey,
@@ -232,13 +232,12 @@ function createPushTransferHandlers(deps) {
       if (!sourceCount || sourceCount <= 0) {
         return finalizeAmount(getLevelAmount());
       }
+      // Adjust counts using adapter-backed reservations (replaces legacy virtual inventory pending counts).
       let adjustedSourceCount = sourceCount;
       let adjustedDestCount = destCount;
-      if (virtualInventoryManager?.getPendingForContainer) {
-        const sourcePending =
-          virtualInventoryManager.getPendingForContainer(sourceContainerKey, typeId) || 0;
-        const destPending =
-          virtualInventoryManager.getPendingForContainer(targetContainerKey, typeId) || 0;
+      if (typeof getReservedForContainer === "function") {
+        const sourcePending = getReservedForContainer(sourceContainerKey, typeId) || 0;
+        const destPending = getReservedForContainer(targetContainerKey, typeId) || 0;
         adjustedSourceCount = Math.max(0, sourceCount - sourcePending);
         adjustedDestCount = destCount + destPending;
       }
@@ -359,7 +358,7 @@ function createPushTransferHandlers(deps) {
         container.setItem(slot, null);
       }
       return true;
-    } catch {
+    } catch (e) {
       return false;
     }
   }
@@ -592,6 +591,12 @@ function createPushTransferHandlers(deps) {
       if (typeof invalidateInput === "function") invalidateInput(prismKey);
       return { ...makeResult(false, "no_options"), searchesUsed };
     }
+    // If the network has prisms but none of them have adjacent inventories (or the adapter
+    // can’t see them yet), the old logic produces *zero outputs*, so nothing ever moves.
+    // For debugging we allow “drop destinations” (deliver to a prism and drop at arrival)
+    // when debug is enabled. This restores visible motion without redesigning routing.
+    const allowDropToEmptyPrismOutputs = !!debugEnabled;
+
     const filteredOptions = [];
     const itemTypeId = sourceStack.typeId;
     for (const opt of options) {
@@ -606,7 +611,14 @@ function createPushTransferHandlers(deps) {
       }
       if (!isPrismBlock(targetBlock)) continue;
       const targetInventories = cacheManager.getPrismInventoriesCached(outputKey, targetBlock, targetInfo.dim);
-      if (!targetInventories || targetInventories.length === 0) continue;
+      if (!targetInventories || targetInventories.length === 0) {
+        if (allowDropToEmptyPrismOutputs) {
+          // Mark as “drop-only” output: path is valid, but there’s nowhere to insert.
+          // Finalize will drop at the prism.
+          filteredOptions.push({ ...opt, __dropOnly: true });
+        }
+        continue;
+      }
       const targetFilter = getFilterForBlock(targetBlock);
       const targetFilterSet = targetFilter
         ? targetFilter instanceof Set
@@ -705,6 +717,25 @@ function createPushTransferHandlers(deps) {
         continue;
       }
       const targetInventories = cacheManager.getPrismInventoriesCached(pick.outputKey, info.block, info.dim);
+      if ((!targetInventories || targetInventories.length === 0) && pick.__dropOnly) {
+        // Debug-only “drop at prism” output.
+        const desiredAmount =
+          (levelsManager && typeof levelsManager.getTransferAmount === "function")
+            ? levelsManager.getTransferAmount(previewLevel, sourceStack)
+            : 1;
+        const amount = Math.min(desiredAmount, available);
+        if (amount <= 0) {
+          candidates.splice(candidates.indexOf(pick), 1);
+          continue;
+        }
+        selectedPath = pick.path;
+        selectedOutputKey = pick.outputKey;
+        transferAmount = amount;
+        outputType = "prism";
+        containerKey = null; // finalize => dropFallback at output
+        foundTarget = true;
+        break;
+      }
       if (!targetInventories || targetInventories.length === 0) {
         candidates.splice(candidates.indexOf(pick), 1);
         continue;
