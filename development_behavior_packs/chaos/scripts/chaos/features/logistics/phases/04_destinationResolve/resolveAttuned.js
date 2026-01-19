@@ -1,6 +1,7 @@
 // scripts/chaos/features/logistics/phases/04_destinationResolve/resolveAttuned.js
 import { findPathBetweenKeys, pickRandom } from "../../util/routing.js";
 import { getContainerKey } from "../../keys.js";
+import { emitPrismReason } from "../../util/insightReasons.js";
 
 export function resolveAttuned(ctx, intent) {
   const filterIndex = ctx.indexes?.filterIndex;
@@ -11,10 +12,21 @@ export function resolveAttuned(ctx, intent) {
   if (!filterIndex || !linkGraph || !cacheManager || !resolveBlockInfo) return null;
 
   const candidates = filterIndex.getCandidates(intent.itemTypeId) || [];
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    emitPrismReason(
+      ctx,
+      intent.sourcePrismKey,
+      "RESOLVE_NO_ATTUNED",
+      `Resolve: none (no attuned prisms for ${intent.itemTypeId})`,
+      { itemTypeId: intent.itemTypeId }
+    );
+    return null;
+  }
 
   const maxAttempts = Math.min(candidates.length, Math.max(1, Number(ctx.cfg.maxResolveCandidates) || 6));
   const shuffled = candidates.slice();
+  let hasCapacityCandidate = false;
+  let hasPathAttempt = false;
 
   for (let i = 0; i < maxAttempts; i++) {
     const candidate = pickRandom(shuffled);
@@ -45,11 +57,33 @@ export function resolveAttuned(ctx, intent) {
       }
     }
     if (!hasCapacity) continue;
+    hasCapacityCandidate = true;
 
     const path = findPathBetweenKeys(linkGraph, intent.sourcePrismKey, candidate, ctx.cfg.maxVisitedPerSearch || 120);
+    hasPathAttempt = true;
     if (!path || path.length < 2) continue;
 
     return { destPrismKey: candidate, path };
+  }
+
+  if (!hasCapacityCandidate) {
+    emitPrismReason(
+      ctx,
+      intent.sourcePrismKey,
+      "RESOLVE_ALL_FULL",
+      `Resolve: none (all attuned destinations full for ${intent.itemTypeId})`,
+      { itemTypeId: intent.itemTypeId }
+    );
+    return null;
+  }
+
+  if (hasPathAttempt) {
+    emitPrismReason(
+      ctx,
+      intent.sourcePrismKey,
+      "RESOLVE_NO_PATH",
+      "Resolve: none (no path to attuned destination)"
+    );
   }
 
   return null;

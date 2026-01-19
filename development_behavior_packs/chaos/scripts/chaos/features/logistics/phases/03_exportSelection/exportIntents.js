@@ -1,6 +1,7 @@
 // scripts/chaos/features/logistics/phases/03_exportSelection/exportIntents.js
 import { getContainerKey } from "../../keys.js";
 import { bumpCounter } from "../../util/insightCounters.js";
+import { emitPrismReason } from "../../util/insightReasons.js";
 
 export function buildExportIntents(ctx) {
   const cfg = ctx.cfg || {};
@@ -21,10 +22,22 @@ export function buildExportIntents(ctx) {
   for (const prismKey of prismKeys) {
     const inflightCount = Array.isArray(ctx.state?.orbs) ? ctx.state.orbs.length : 0;
     if (inflightCount >= (ctx.cfg.maxInflightOrbs | 0)) {
+      emitPrismReason(
+        ctx,
+        prismKey,
+        "EXPORT_THROTTLED",
+        "Export: throttled (caps/budget)"
+      );
       bumpCounter(ctx, "throttles");
       break;
     }
     if (!ctx.budgets.take("exports", 1)) {
+      emitPrismReason(
+        ctx,
+        prismKey,
+        "EXPORT_THROTTLED",
+        "Export: throttled (caps/budget)"
+      );
       bumpCounter(ctx, "throttles");
       break;
     }
@@ -35,7 +48,15 @@ export function buildExportIntents(ctx) {
     if (!prismBlock || !isPrismBlock(prismBlock)) continue;
 
     const inventories = cacheManager.getPrismInventoriesCached(prismKey, prismBlock, dim);
-    if (!Array.isArray(inventories) || inventories.length === 0) continue;
+    if (!Array.isArray(inventories) || inventories.length === 0) {
+      emitPrismReason(
+        ctx,
+        prismKey,
+        "EXPORT_NO_INVENTORIES",
+        "Export: none (no adjacent inventories)"
+      );
+      continue;
+    }
 
     let addedTypes = 0;
     for (let invIndex = 0; invIndex < inventories.length; invIndex++) {
@@ -67,6 +88,14 @@ export function buildExportIntents(ctx) {
         addedTypes++;
       }
       if (addedTypes >= maxTypes) break;
+    }
+    if (addedTypes === 0) {
+      emitPrismReason(
+        ctx,
+        prismKey,
+        "EXPORT_NO_ITEMS",
+        "Export: none (no items in scanned slots)"
+      );
     }
   }
 

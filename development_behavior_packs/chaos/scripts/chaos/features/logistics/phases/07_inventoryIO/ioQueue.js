@@ -3,6 +3,8 @@ import { createOrb } from "../../state/orbs.js";
 import { OrbModes, OrbStates } from "../../state/enums.js";
 import { decrementInputSlotSafe, tryInsertAmountForContainer } from "../../util/inventoryAdapter.js";
 import { bumpCounter } from "../../util/insightCounters.js";
+import { getContainerKey } from "../../keys.js";
+import { emitPrismReason } from "../../util/insightReasons.js";
 
 function removeOrb(ctx, orbId) {
   const orbs = ctx.state?.orbs || [];
@@ -92,13 +94,29 @@ export function processIoQueue(ctx) {
 
     const inventories = cacheManager.getPrismInventoriesCached(entry.prismKey, block, dim);
     if (!Array.isArray(inventories) || inventories.length === 0) {
+      emitPrismReason(
+        ctx,
+        entry.prismKey,
+        "IO_NO_INVENTORIES",
+        "Insert: blocked (no inventories at destination prism)"
+      );
       bumpCounter(ctx, "io_fail");
       continue;
     }
 
     let inserted = false;
+    let hasAnyCapacity = false;
     for (const inv of inventories) {
       if (!inv?.container) continue;
+      const containerKey = getContainerKey(inv.entity || inv.block, inv.dim || dim);
+      if (!containerKey) continue;
+      const capacity = cacheManager.getInsertCapacityCached(
+        containerKey,
+        inv.container,
+        entry.itemTypeId,
+        { typeId: entry.itemTypeId, amount: entry.count }
+      );
+      if (capacity > 0) hasAnyCapacity = true;
       if (tryInsertAmountForContainer(inv, entry.itemTypeId, entry.count)) {
         inserted = true;
         break;
@@ -109,6 +127,17 @@ export function processIoQueue(ctx) {
       removeOrb(ctx, orbId);
       bumpCounter(ctx, "io_success");
     } else {
+      const reasonCode = hasAnyCapacity ? "IO_INSERT_REJECTED" : "IO_DEST_FULL";
+      const reasonText = hasAnyCapacity
+        ? `Insert: rejected (container rules for ${entry.itemTypeId})`
+        : `Insert: blocked (destination full for ${entry.itemTypeId})`;
+      emitPrismReason(
+        ctx,
+        entry.prismKey,
+        reasonCode,
+        reasonText,
+        { itemTypeId: entry.itemTypeId }
+      );
       orb.settlePending = false;
       bumpCounter(ctx, "io_fail");
     }
