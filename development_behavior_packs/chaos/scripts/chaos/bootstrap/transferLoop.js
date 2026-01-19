@@ -1,6 +1,6 @@
 // scripts/chaos/bootstrap/transferLoop.js
 // Controller import enabled for testing
-import { createNetworkTransferController } from "../features/links/transfer/runtime/controller.js";
+import { createNetworkTransferController } from "../features/logistics/runtime/controller.js";
 
 let TRANSFER_LOOP_STARTED = false;
 
@@ -170,3 +170,5 @@ export function startTransferLoop(ctx) {
     }
   }, 5); // Small delay to ensure world is ready
 }
+
+

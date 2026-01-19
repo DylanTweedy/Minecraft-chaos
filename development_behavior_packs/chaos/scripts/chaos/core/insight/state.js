@@ -9,8 +9,8 @@ function createState(playerId) {
     enhanced: false,
     lastInsightActive: false,
     lastEnhanced: false,
-    focus: null,
     held: null,
+    target: null,
     lastActionbarText: "",
     lastChatHash: "",
     chatQueue: [],
@@ -19,7 +19,9 @@ function createState(playerId) {
       contextKey: null,
       contextLabel: "",
       chatLines: [],
+      includeNetworkSummary: false,
     },
+    lastProviderContextKey: null,
     enhancedLastDumpTickByKey: new Map(),
   };
 }

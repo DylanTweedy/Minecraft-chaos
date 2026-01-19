@@ -2,8 +2,8 @@
 // Right-click prism filters using dynamic properties (no block inventory required).
 
 import { world } from "@minecraft/server";
-import { toggleFilterForBlock, clearFilterForBlock } from "../features/links/network/filters.js";
-import { isPrismId } from "../features/links/transfer/config.js";
+import { toggleFilterForBlock, clearFilterForBlock } from "../features/logistics/network/filters.js";
+import { isPrismId } from "../features/logistics/config.js";
 
 const WAND_ID = "chaos:wand";
 
@@ -98,3 +98,5 @@ export function startFilterInteract() {
     }
   });
 }
+
+

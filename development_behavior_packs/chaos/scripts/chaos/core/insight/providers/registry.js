@@ -17,21 +17,27 @@ export function setFallbackProvider(provider) {
 }
 
 export function resolveProvider(ctx) {
-  if (ctx?.held) {
-    for (const p of _heldProviders) {
-      try {
-        if (p?.match?.(ctx)) return p;
-      } catch {}
-    }
+  const target = ctx?.target;
+  if (!target) return null;
+
+  const providers =
+    target.type === "item" ? _heldProviders : _focusProviders;
+
+  for (const provider of providers) {
+    try {
+      if (provider?.match?.(ctx)) return provider;
+    } catch {}
   }
 
-  if (ctx?.focus) {
-    for (const p of _focusProviders) {
-      try {
-        if (p?.match?.(ctx)) return p;
-      } catch {}
-    }
+  if (_fallbackProvider) {
+    try {
+      if (typeof _fallbackProvider.match === "function") {
+        if (_fallbackProvider.match(ctx)) return _fallbackProvider;
+      } else {
+        return _fallbackProvider;
+      }
+    } catch {}
   }
 
-  return _fallbackProvider;
+  return null;
 }

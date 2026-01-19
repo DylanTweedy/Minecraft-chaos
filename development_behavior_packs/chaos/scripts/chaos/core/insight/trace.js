@@ -96,6 +96,9 @@ function assignPrismState(prismKey, updates) {
 function upsertMessage(store, msg, limit) {
   const key = msg.dedupeKey || msg.text || "";
   if (!key) return;
+  if (store.has(key)) {
+    store.delete(key);
+  }
   store.set(key, msg);
   if (store.size > limit) {
     const firstKey = store.keys().next().value;
@@ -151,15 +154,23 @@ export function emitTrace(player, channel, payload = {}) {
   upsertMessage(_globalMessages, msg, MAX_GLOBAL_MESSAGES);
 }
 
-export function getContextMessages(contextKey) {
+export function getContextMessages(contextKey, limit = MAX_CONTEXT_MESSAGES) {
   if (!contextKey) return [];
   const store = _contextMessages.get(contextKey);
   if (!store) return [];
-  return Array.from(store.values());
+  const values = Array.from(store.values());
+  if (!Number.isFinite(limit) || limit <= 0) return values;
+  if (values.length <= limit) return values;
+  return values.slice(-limit);
 }
 
 export function getGlobalMessages() {
   return Array.from(_globalMessages.values());
+}
+
+export function clearContextMessages(contextKey) {
+  if (!contextKey) return;
+  _contextMessages.delete(contextKey);
 }
 
 function getOrCreatePrismState(prismKey) {

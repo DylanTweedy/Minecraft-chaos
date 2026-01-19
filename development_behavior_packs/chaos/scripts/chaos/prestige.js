@@ -1,7 +1,7 @@
 // scripts/chaos/prestige.js
 import { world, system, ItemStack } from "@minecraft/server";
-import { makeKey } from "./features/links/network/keys.js";
-import { MAX_BEAM_LEN } from "./features/links/network/beams/beamConfig.js";
+import { makeKey } from "./features/logistics/network/keys.js";
+import { MAX_BEAM_LEN } from "./features/logistics/network/beams/beamConfig.js";
 import { queueFxParticle } from "./fx/fx.js";
 import { FX } from "./fx/fxConfig.js";
 import {
@@ -12,14 +12,14 @@ import {
   parseKey,
   resolveBlockForKey,
 } from "./crystallizer.js";
-import { isPrismBlock, getPrismTier, getPrismTypeIdForTier } from "./features/links/transfer/config.js";
+import { isPrismBlock, getPrismTier, getPrismTypeIdForTier } from "./features/logistics/config.js";
 
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const BEAM_ID = "chaos:beam";
 
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
-const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
+const DP_PRISM_LEVELS = "chaos:logistics_prism_levels_v1";
 
 const MAX_NETWORK_NODES = 512;
 const REWARD_RATIO = 0.25;
@@ -358,3 +358,6 @@ export function startPrestigeSystem() {
     // ignore
   }
 }
+
+
+

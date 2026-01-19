@@ -4,33 +4,14 @@ import { getPrismTrace } from "../trace.js";
 import { system } from "@minecraft/server";
 
 const PRISM_PREFIX = "chaos:prism_";
-const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
-
-let _lastCountsTick = -9999;
-let _countsCache = {};
+const PRISM_DIAGNOSTIC_CACHE_LIMIT = 64;
+const prismDiagnosticCache = new Map();
 
 function parsePrismTier(typeId) {
   if (!typeId || !typeId.startsWith(PRISM_PREFIX)) return 1;
   const part = typeId.slice(PRISM_PREFIX.length);
   const tier = Number(part);
   return Number.isFinite(tier) ? tier : 1;
-}
-
-function refreshCounts(world, nowTick) {
-  if ((nowTick - _lastCountsTick) < 20) return;
-  _lastCountsTick = nowTick;
-  try {
-    const raw = world?.getDynamicProperty?.(DP_PRISM_LEVELS);
-    _countsCache = raw && typeof raw === "string" ? JSON.parse(raw) : {};
-  } catch {
-    _countsCache = {};
-  }
-}
-
-function getPrismCount(world, prismKey, nowTick) {
-  refreshCounts(world, nowTick);
-  const v = _countsCache?.[prismKey];
-  return Number.isFinite(Number(v)) ? Number(v) : 0;
 }
 
 function safeParseEvidence(value) {
@@ -44,9 +25,6 @@ function safeParseEvidence(value) {
   }
   return value;
 }
-
-const PRISM_DIAGNOSTIC_CACHE_LIMIT = 64;
-const prismDiagnosticCache = new Map();
 
 function cachePrismDiagnostic(prismKey, snapshot) {
   if (!prismKey || !snapshot) return;
@@ -87,11 +65,11 @@ function getPrismDiagnosticSnapshot(prismKey, trace) {
   return snapshot;
 }
 
-function formatStatusWithReason(status, reason, fallbackReason) {
+function formatStatusWithReason(status, reason, fallback) {
   if (!status) return "-";
   let finalReason = reason;
-  if (!finalReason && status === "no_transfer" && fallbackReason) {
-    finalReason = fallbackReason;
+  if (!finalReason && status === "no_transfer" && fallback) {
+    finalReason = fallback;
   }
   if (!finalReason) return status;
   const reasonText = String(finalReason);
@@ -99,10 +77,6 @@ function formatStatusWithReason(status, reason, fallbackReason) {
     return status;
   }
   return `${status}(${reasonText})`;
-}
-
-function boolFlag(value) {
-  return value ? "Y" : "N";
 }
 
 function hasAdjacentInventory(world, dimId, pos) {
@@ -123,7 +97,6 @@ function hasAdjacentInventory(world, dimId, pos) {
     for (const d of dirs) {
       const adj = dim.getBlock({ x: pos.x + d.x, y: pos.y + d.y, z: pos.z + d.z });
       if (!adj) continue;
-      // Most containers expose the inventory component.
       try {
         const inv = adj.getComponent?.("minecraft:inventory");
         if (inv && inv.container) return true;
@@ -138,38 +111,49 @@ function hasAdjacentInventory(world, dimId, pos) {
 export const PrismProvider = {
   id: "prism",
   match(ctx) {
-    const focus = ctx?.focus;
-    return !!focus && focus.kind === "block" && focus.typeId?.startsWith(PRISM_PREFIX);
+    const target = ctx?.target;
+    return !!target && target.type === "block" && target.id?.startsWith(PRISM_PREFIX);
   },
   build(ctx) {
-    const focus = ctx?.focus;
+    const target = ctx?.target;
+    if (!target) return null;
     const world = ctx?.services?.world;
-    const tier = parsePrismTier(focus?.typeId);
-    const prismKey = focus?.key || "";
+    const prismKey = target?.prismKey || "";
+    const tier = parsePrismTier(target?.id);
     const trace = getPrismTrace(prismKey);
     const diag = getPrismDiagnosticSnapshot(prismKey, trace || {});
     const nowTick = Number.isFinite(system?.currentTick) ? system.currentTick : 0;
-    const queueSize = trace?.queueSize != null ? trace.queueSize : 0;
-    const cooldownUntil = trace?.cooldownUntil != null ? (trace.cooldownUntil | 0) : 0;
+    const queueSize = Number.isFinite(trace?.queueSize) ? trace.queueSize : 0;
+    const cooldownUntil = Number.isFinite(trace?.cooldownUntil) ? trace.cooldownUntil : 0;
     const cooldownLeft = Math.max(0, cooldownUntil - nowTick);
 
-    // IMPORTANT: don't trust trace.hasNeighborInventory for player-facing state.
-    // It can be stale if scan phases are budgeted off or if a prism was never scanned yet.
-    const liveHasInv = hasAdjacentInventory(world, focus?.dimId, focus?.pos);
+    const liveHasInv = hasAdjacentInventory(world, target?.dimId, target?.pos);
 
     let state = "Idle";
-    if (!liveHasInv) state = "Blocked (NoInv)";
+    if (!liveHasInv) state = "Blocked";
     if (queueSize > 0) state = "Busy";
     if (cooldownLeft > 0) state = `Cooling (${cooldownLeft})`;
 
-    // Keep actionbar short + player-facing.
-    const actionbarLine = `Prism T${tier} • Q${queueSize} • ${state}`;
+    const hudLine = `Prism T${tier} | Q${queueSize} | ${state}`;
+
+    const chatLines = [];
+    chatLines.push(`Scan ${formatStatusWithReason(diag.scanStatus, diag.scanReason, diag.scanStatus)}`);
+    chatLines.push(`Transfer ${formatStatusWithReason(diag.transferStatus, diag.transferReason)}`);
+    chatLines.push(`VirtCap ${diag.virtCapacity} ${diag.targetFull ? "full" : "ok"}`);
+    if (cooldownLeft > 0) {
+      chatLines.push(`Cooldown ${cooldownLeft}`);
+    }
+    if (diag.neighborInventory) {
+      chatLines.push("Neighbor inventory detected");
+    }
 
     return {
-      actionbarLine,
-      chatLines: [],
-      contextKey: prismKey,
+      contextKey: target?.contextKey || null,
+      hudLine,
+      chatLines,
       contextLabel: "Prism",
+      severity: state,
+      includeNetworkSummary: true,
     };
   },
 };

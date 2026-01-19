@@ -1,41 +1,99 @@
 {
-  "format_version": "1.19.30",
-  "texture_name": "atlas.terrain",
-  "texture_data": {
-    "input_node":   { "textures": "textures/blocks/input_node_side" },
-    "input_node2":  { "textures": "textures/blocks/input_node_side2" },
-    "input_node3":  { "textures": "textures/blocks/input_node_side3" },
-    "input_node4":  { "textures": "textures/blocks/input_node_side4" },
-    "input_node5":  { "textures": "textures/blocks/input_node_side5" },
-
-    "output_node":   { "textures": "textures/blocks/output_node_side" },
-    "output_node2":  { "textures": "textures/blocks/output_node_side2" },
-    "output_node3":  { "textures": "textures/blocks/output_node_side3" },
-    "output_node4":  { "textures": "textures/blocks/output_node_side4" },
-    "output_node5":  { "textures": "textures/blocks/output_node_side5" },
-
-    "crucible_top":    { "textures": "textures/blocks/crucible_top" },
-    "crucible_bottom": { "textures": "textures/blocks/crucible_bottom" },
-    "crucible_side":   { "textures": "textures/blocks/crucible_side" },
-
-    "foundry_top":    { "textures": "textures/blocks/foundry-top" },
-    "foundry_bottom": { "textures": "textures/blocks/foundry-bottom" },
-    "foundry_side":   { "textures": "textures/blocks/foundry-side" },
-
-    "crystalizer_top":    { "textures": "textures/blocks/crystalizer_top" },
-    "crystalizer_bottom": { "textures": "textures/blocks/crystalizer_bottom" },
-    "crystalizer_side":   { "textures": "textures/blocks/crystalizer_side" },
-
-    "prism":   { "textures": "textures/blocks/prism_side" },
-    "prism2":  { "textures": "textures/blocks/prism_side2" },
-    "prism3":  { "textures": "textures/blocks/prism_side3" },
-    "prism4":  { "textures": "textures/blocks/prism_side4" },
-    "prism5":  { "textures": "textures/blocks/prism_side5" },
-
-    "chaos_beam": { "textures": "textures/blocks/chaos_beam" },
-    "chaos_beam2": { "textures": "textures/blocks/chaos_beam2" },
-    "chaos_beam3": { "textures": "textures/blocks/chaos_beam3" },
-    "chaos_beam4": { "textures": "textures/blocks/chaos_beam4" },
-    "chaos_beam5": { "textures": "textures/blocks/chaos_beam5" }
-  }
+	"resource_pack_name": "vanilla",
+	"texture_name": "atlas.terrain",
+	"padding": 8,
+	"num_mip_levels": 4,
+	"texture_data": {
+		"iron_ore": {
+			"textures": "textures/blocks/iron_ore"
+		},
+		"input_node": {
+			"textures": "textures/blocks/input_node_side"
+		},
+		"input_node2": {
+			"textures": "textures/blocks/input_node_side2"
+		},
+		"input_node3": {
+			"textures": "textures/blocks/input_node_side3"
+		},
+		"input_node4": {
+			"textures": "textures/blocks/input_node_side4"
+		},
+		"input_node5": {
+			"textures": "textures/blocks/input_node_side5"
+		},
+		"output_node": {
+			"textures": "textures/blocks/output_node_side"
+		},
+		"output_node2": {
+			"textures": "textures/blocks/output_node_side2"
+		},
+		"output_node3": {
+			"textures": "textures/blocks/output_node_side3"
+		},
+		"output_node4": {
+			"textures": "textures/blocks/output_node_side4"
+		},
+		"output_node5": {
+			"textures": "textures/blocks/output_node_side5"
+		},
+		"crucible_top": {
+			"textures": "textures/blocks/crucible_top"
+		},
+		"crucible_bottom": {
+			"textures": "textures/blocks/crucible_bottom"
+		},
+		"crucible_side": {
+			"textures": "textures/blocks/crucible_side"
+		},
+		"foundry_top": {
+			"textures": "textures/blocks/foundry-top"
+		},
+		"foundry_bottom": {
+			"textures": "textures/blocks/foundry-bottom"
+		},
+		"foundry_side": {
+			"textures": "textures/blocks/foundry-side"
+		},
+		"crystalizer_top": {
+			"textures": "textures/blocks/crystalizer_top"
+		},
+		"crystalizer_bottom": {
+			"textures": "textures/blocks/crystalizer_bottom"
+		},
+		"crystalizer_side": {
+			"textures": "textures/blocks/crystalizer_side"
+		},
+		"prism": {
+			"textures": "textures/blocks/prism_side"
+		},
+		"prism2": {
+			"textures": "textures/blocks/prism_side2"
+		},
+		"prism3": {
+			"textures": "textures/blocks/prism_side3"
+		},
+		"prism4": {
+			"textures": "textures/blocks/prism_side4"
+		},
+		"prism5": {
+			"textures": "textures/blocks/prism_side5"
+		},
+		"chaos_beam": {
+			"textures": "textures/blocks/chaos_beam"
+		},
+		"chaos_beam2": {
+			"textures": "textures/blocks/chaos_beam2"
+		},
+		"chaos_beam3": {
+			"textures": "textures/blocks/chaos_beam3"
+		},
+		"chaos_beam4": {
+			"textures": "textures/blocks/chaos_beam4"
+		},
+		"chaos_beam5": {
+			"textures": "textures/blocks/chaos_beam5"
+		}
+	},
+	"format_version": "1.19.30"
 }

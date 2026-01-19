@@ -1,15 +1,15 @@
 // scripts/chaos/cleanupOnBreak.js
 import { world, system } from "@minecraft/server";
-import { PRISM_IDS } from "../features/links/transfer/config.js";
+import { PRISM_IDS } from "../features/logistics/config.js";
 import {
   canonicalizePrismKey,
   key as makePrismKey,
   parseKey as parsePrismKey,
-} from "../features/links/transfer/keys.js";
+} from "../features/logistics/keys.js";
 
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
-const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
+const DP_PRISM_LEVELS = "chaos:logistics_prism_levels_v1";
 
 const LEVEL_STEP = 100;
 const MAX_LEVEL = 5;
@@ -474,3 +474,6 @@ export function startCleanupOnBreak() {
   // Optional explosions etc. left out here on purpose:
   // those events vary by version and aren’t critical for your milestone.
 }
+
+
+

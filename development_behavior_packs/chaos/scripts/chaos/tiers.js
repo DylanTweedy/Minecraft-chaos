@@ -1,5 +1,5 @@
 // scripts/chaos/tiers.js
-import { getPrismTier, isPrismBlock } from "./features/links/transfer/config.js";
+import { getPrismTier, isPrismBlock } from "./features/logistics/config.js";
 
 function getTierFromBlock(block) {
   try {
@@ -24,4 +24,6 @@ export function getOutputTier(block) {
 }
 
 // Re-export getPrismTier from config.js for convenience
-export { getPrismTier } from "./features/links/transfer/config.js";
+export { getPrismTier } from "./features/logistics/config.js";
+
+

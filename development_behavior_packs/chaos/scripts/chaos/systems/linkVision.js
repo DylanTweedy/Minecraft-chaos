@@ -1,24 +1,24 @@
 // scripts/chaos/linkVision.js
 import { world, system, MolangVariableMap } from "@minecraft/server";
 
-import { getPairsMap } from "../features/links/shared/pairs.js";
+import { getPairsMap } from "../features/logistics/network/pairs.js";
 import { fxPairSuccess } from "../fx/fx.js";
 import { FX } from "../fx/fxConfig.js";
 import { makeVisionFx } from "../fx/presets.js";
 import { getCrystalState } from "../crystallizer.js";
 import { isInsightActive, isInsightEnhanced } from "../core/insight/state.js";
-import { isPrismId } from "../features/links/transfer/config.js";
+import { isPrismId } from "../features/logistics/config.js";
 import {
   canonicalizePrismKey,
   key as makePrismKey,
   parseKey as parsePrismKey,
-} from "../features/links/transfer/keys.js";
+} from "../features/logistics/keys.js";
 
 const WAND_ID = "chaos:wand";
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
-const DP_PRISM_LEVELS = "chaos:prism_levels_v0_json";
+const DP_PRISM_LEVELS = "chaos:logistics_prism_levels_v1";
 
 const LEVEL_STEP = 100;
 const MAX_LEVEL = 5;
@@ -362,3 +362,5 @@ export function startLinkVision() {
     }
   }, TICK_INTERVAL);
 }
+
+

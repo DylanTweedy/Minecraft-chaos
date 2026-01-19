@@ -93,3 +93,6 @@ entity.myname:purple_nether_toad.name=Purple Nether Toad
 item.spawn_egg.entity.myname:purple_nether_toad.name=Spawn Purple Nether Toad
 entity.myname:green_nether_toad.name=Green Nether Toad
 item.spawn_egg.entity.myname:green_nether_toad.name=Spawn Green Nether Toad
+
+tile.chaos:iron_ore.name=Iron Ore
+tile.chaos:iron_ore.name=Iron Ore

@@ -5,14 +5,20 @@ import { InsightConfig } from "./config.js";
 import { getInsightState, getAllInsightStates, removeInsightState } from "./state.js";
 import { dedupeMessages, buildChatHash, formatBatch } from "./format.js";
 import { getContextMessages, getGlobalMessages, drainInsightErrors, requeueInsightErrors } from "./trace.js";
-import { getGlobalSummaryMessages, getGlobalSummaryLabel } from "./transferStats.js";
+import { getGlobalSummaryMessages } from "./transferStats.js";
 import { registerHeldProvider, registerFocusProvider, resolveProvider, setFallbackProvider } from "./providers/registry.js";
 import { ClockProvider } from "./providers/clock.js";
 import { PrismProvider } from "./providers/prism.js";
 import { FallbackProvider } from "./providers/fallback.js";
+import { VanillaContainerProvider } from "./providers/vanillaContainer.js";
 import { isHoldingLens } from "../../items/insightLens.js";
 import { isWearingGoggles } from "../../items/insightGoggles.js";
-import { makePrismKey } from "../../features/links/network/graph/prismKeys.js";
+import { makePrismKey } from "../../features/logistics/network/graph/prismKeys.js";
+import {
+  makeBlockContextKey,
+  makeEntityContextKey,
+  makeItemContextKey,
+} from "./context.js";
 
 let _started = false;
 const MAX_ERROR_MESSAGES_PER_TICK = 3;
@@ -28,6 +34,7 @@ function formatInsightError(entry) {
 const MAX_CHAT_HISTORY = 32;
 const MAX_CHAT_LINES = 10;
 const CHAT_DUMP_COOLDOWN = 20;
+const MAX_TRACE_LINES = 12;
 
 function enforceMapLimit(map, limit) {
   if (!map || typeof map.size !== "number") return;
@@ -81,39 +88,70 @@ function computeInsightActive(player, held) {
   return false;
 }
 
-function focusScan(player, maxDistance) {
+function buildBlockTarget(player, maxDistance) {
   try {
     const blockHit = player.getBlockFromViewDirection({ maxDistance });
     const block = blockHit?.block;
-    if (block) {
-      const loc = block.location;
-      return {
-        kind: "block",
-        typeId: block.typeId,
-        key: makePrismKey(block.dimension?.id, loc.x, loc.y, loc.z) ||
-          `${block.dimension.id}|${loc.x},${loc.y},${loc.z}`,
-        pos: { x: loc.x, y: loc.y, z: loc.z },
-        dimId: block.dimension.id,
-      };
-    }
-  } catch {}
+    if (!block) return null;
+    const loc = block.location;
+    if (!loc || !block.dimension?.id) return null;
+    const dimId = block.dimension.id;
+    const contextKey = makeBlockContextKey(dimId, loc.x, loc.y, loc.z);
+    const prismKey = makePrismKey(dimId, loc.x, loc.y, loc.z);
+    return {
+      type: "block",
+      id: block.typeId,
+      typeId: block.typeId,
+      contextKey,
+      prismKey: prismKey || null,
+      dimId,
+      pos: { x: loc.x, y: loc.y, z: loc.z },
+    };
+  } catch {
+    return null;
+  }
+}
 
+function buildEntityTarget(player, maxDistance) {
   try {
     const entityHit = player.getEntitiesFromViewDirection?.({ maxDistance });
     const entity = entityHit?.[0]?.entity;
-    if (entity) {
-      const loc = entity.location;
-      return {
-        kind: "entity",
-        typeId: entity.typeId,
-        key: entity.id,
-        pos: { x: loc.x, y: loc.y, z: loc.z },
-        dimId: entity.dimension?.id || "",
-      };
-    }
-  } catch {}
+    if (!entity) return null;
+    const loc = entity.location;
+    if (!loc) return null;
+    const dimId = entity.dimension?.id || "";
+    const contextKey = makeEntityContextKey(dimId, entity.id);
+    return {
+      type: "entity",
+      id: entity.typeId,
+      typeId: entity.typeId,
+      contextKey,
+      entityId: entity.id,
+      dimId,
+      pos: { x: loc.x, y: loc.y, z: loc.z },
+    };
+  } catch {
+    return null;
+  }
+}
 
-  return null;
+function buildItemTarget(held) {
+  if (!held?.typeId) return null;
+  return {
+    type: "item",
+    id: held.typeId,
+    typeId: held.typeId,
+    contextKey: makeItemContextKey(held.typeId),
+    held,
+  };
+}
+
+function resolveTarget(player, maxDistance, held) {
+  return (
+    buildBlockTarget(player, maxDistance) ||
+    buildEntityTarget(player, maxDistance) ||
+    buildItemTarget(held)
+  );
 }
 
 function showTitle(player, enabled) {
@@ -139,6 +177,7 @@ export function startInsightRouter(config = {}) {
   const focusEvery = toIntervalTicks(cfg.focusHz);
 
   registerHeldProvider(ClockProvider);
+  registerFocusProvider(VanillaContainerProvider);
   registerFocusProvider(PrismProvider);
   setFallbackProvider(FallbackProvider);
 
@@ -193,7 +232,7 @@ export function startInsightRouter(config = {}) {
       if (!state.insightActive) continue;
 
       if (nowTick % focusEvery === 0) {
-        state.focus = focusScan(player, cfg.focusMaxDistance);
+        state.target = resolveTarget(player, cfg.focusMaxDistance, state.held);
       }
 
       if (nowTick % actionbarEvery === 0) {
@@ -203,47 +242,59 @@ export function startInsightRouter(config = {}) {
           insightActive: state.insightActive,
           enhanced: state.enhanced,
           held: state.held,
-          focus: state.focus,
+          target: state.target,
           services: { world },
         };
-        const provider = resolveProvider(ctx);
-        const result = provider?.build?.(ctx);
-        const line = result?.actionbarLine || "";
-        if (line && line !== state.lastActionbarText) {
+        let provider = null;
+        let result = null;
+        if (state.target) {
+          provider = resolveProvider(ctx);
+          result = provider?.build?.(ctx) || null;
+        }
+        const hudLine = result?.hudLine ?? "";
+        if (hudLine !== state.lastActionbarText) {
           try {
-            player.onScreenDisplay?.setActionBar?.(line);
+            player.onScreenDisplay?.setActionBar?.(hudLine);
           } catch {}
-          state.lastActionbarText = line;
+          state.lastActionbarText = hudLine;
+        }
+        const contextKey = result?.contextKey || state.target?.contextKey || null;
+        if (state.lastProviderContextKey !== contextKey) {
+          state.lastChatHash = "";
+          state.lastProviderContextKey = contextKey;
         }
         state.provider = {
           id: provider?.id || null,
-          contextKey: result?.contextKey || ctx.focus?.key || null,
+          contextKey,
           contextLabel: result?.contextLabel || provider?.id || "Insight",
           chatLines: Array.isArray(result?.chatLines) ? result.chatLines : [],
+          includeNetworkSummary: !!result?.includeNetworkSummary,
         };
       }
 
       if (nowTick % chatEvery === 0 && state.enhanced) {
         const contextKey = state.provider?.contextKey;
-        const focus = state.focus;
-        const hasInsightGear = isHoldingLens(player) || isWearingGoggles(player);
-        const focusIsPrismBlock =
-          focus &&
-          focus.kind === "block" &&
-          typeof focus.typeId === "string" &&
-          focus.typeId.startsWith("chaos:prism_");
-        const allowChatDump =
-          state.provider?.id === "prism" &&
-          !!contextKey &&
-          hasInsightGear &&
-          focusIsPrismBlock;
-
-        if (allowChatDump) {
-          const summary = getGlobalSummaryMessages();
+        if (contextKey) {
+          const providerLines = Array.isArray(state.provider?.chatLines)
+            ? state.provider.chatLines
+            : [];
+          const providerMessages = providerLines.map((line) => ({
+            text: line ? String(line) : "",
+            contextKey,
+            category: state.provider?.contextLabel || "Insight",
+          }));
+          const traceMessages = getContextMessages(contextKey, MAX_TRACE_LINES);
+          const summaryMessages = state.provider?.includeNetworkSummary
+            ? getGlobalSummaryMessages()
+            : [];
+          const globalMessages = getGlobalMessages();
+          const queuedMessages = Array.isArray(state.chatQueue) ? state.chatQueue : [];
           const messages = [
-            ...summary,
-            ...getGlobalMessages(),
-            ...state.chatQueue,
+            ...queuedMessages,
+            ...providerMessages,
+            ...traceMessages,
+            ...summaryMessages,
+            ...globalMessages,
           ];
           const deduped = dedupeMessages(messages);
           if (deduped.length > 0) {
@@ -257,7 +308,7 @@ export function startInsightRouter(config = {}) {
             }
             const cooldownSatisfied = (nowTick - lastDumpTick) >= CHAT_DUMP_COOLDOWN;
             if (hash !== state.lastChatHash && cooldownSatisfied) {
-              const formatted = formatBatch(getGlobalSummaryLabel(), limited);
+              const formatted = formatBatch(state.provider?.contextLabel || "Insight", limited);
               try {
                 player.sendMessage(formatted);
               } catch {}
@@ -283,3 +334,4 @@ export function startInsightRouter(config = {}) {
     }
   }, 1);
 }
+

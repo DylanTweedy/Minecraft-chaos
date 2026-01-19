@@ -23,7 +23,8 @@
 	"metadata": {
 		"generated_with": {
 			"blockbench_item_wizard": ["1.2.4"],
-			"blockbench_entity_wizard": ["1.8.2"]
+			"blockbench_entity_wizard": ["1.8.2"],
+			"blockbench_block_wizard": ["1.6.1"]
 		}
 	}
 }
