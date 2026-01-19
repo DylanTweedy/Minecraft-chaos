@@ -252,12 +252,10 @@ export function startInsightRouter(config = {}) {
           result = provider?.build?.(ctx) || null;
         }
         const hudLine = result?.hudLine ?? "";
-        if (hudLine !== state.lastActionbarText) {
-          try {
-            player.onScreenDisplay?.setActionBar?.(hudLine);
-          } catch {}
-          state.lastActionbarText = hudLine;
-        }
+        try {
+          player.onScreenDisplay?.setActionBar?.(hudLine);
+        } catch {}
+        state.lastActionbarText = hudLine;
         const contextKey = result?.contextKey || state.target?.contextKey || null;
         if (state.lastProviderContextKey !== contextKey) {
           state.lastChatHash = "";

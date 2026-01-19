@@ -92,6 +92,7 @@ export function processIoQueue(ctx) {
       continue;
     }
 
+    const itemTypeId = entry.itemTypeId || orb?.itemTypeId || "";
     const inventories = cacheManager.getPrismInventoriesCached(entry.prismKey, block, dim);
     if (!Array.isArray(inventories) || inventories.length === 0) {
       emitPrismReason(
@@ -113,11 +114,11 @@ export function processIoQueue(ctx) {
       const capacity = cacheManager.getInsertCapacityCached(
         containerKey,
         inv.container,
-        entry.itemTypeId,
-        { typeId: entry.itemTypeId, amount: entry.count }
+        itemTypeId,
+        { typeId: itemTypeId, amount: entry.count }
       );
       if (capacity > 0) hasAnyCapacity = true;
-      if (tryInsertAmountForContainer(inv, entry.itemTypeId, entry.count)) {
+      if (tryInsertAmountForContainer(inv, itemTypeId, entry.count)) {
         inserted = true;
         break;
       }
@@ -128,15 +129,16 @@ export function processIoQueue(ctx) {
       bumpCounter(ctx, "io_success");
     } else {
       const reasonCode = hasAnyCapacity ? "IO_INSERT_REJECTED" : "IO_DEST_FULL";
+      const safeItemId = itemTypeId || "item";
       const reasonText = hasAnyCapacity
-        ? `Insert: rejected (container rules for ${entry.itemTypeId})`
-        : `Insert: blocked (destination full for ${entry.itemTypeId})`;
+        ? `Insert: rejected (container rules for ${safeItemId})`
+        : `Insert: blocked (destination full for ${safeItemId})`;
       emitPrismReason(
         ctx,
         entry.prismKey,
         reasonCode,
         reasonText,
-        { itemTypeId: entry.itemTypeId }
+        { itemTypeId }
       );
       orb.settlePending = false;
       bumpCounter(ctx, "io_fail");

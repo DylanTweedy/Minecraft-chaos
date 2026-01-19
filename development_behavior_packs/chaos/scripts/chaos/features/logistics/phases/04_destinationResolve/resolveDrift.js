@@ -108,7 +108,8 @@ export function resolveDrift(ctx, intent) {
       ctx,
       intent.sourcePrismKey,
       "RESOLVE_DRIFT_NO_PATH",
-      "Drift: none (no path to any drift sink)"
+      "Drift: none (no path to any drift sink)",
+      { itemTypeId: intent.itemTypeId }
     );
   }
 

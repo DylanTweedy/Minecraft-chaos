@@ -82,7 +82,8 @@ export function resolveAttuned(ctx, intent) {
       ctx,
       intent.sourcePrismKey,
       "RESOLVE_NO_PATH",
-      "Resolve: none (no path to attuned destination)"
+      "Resolve: none (no path to attuned destination)",
+      { itemTypeId: intent.itemTypeId }
     );
   }
 
