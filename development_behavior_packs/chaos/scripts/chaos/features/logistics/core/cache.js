@@ -11,7 +11,7 @@ export function createCacheManager(deps, cfg) {
   const invalidateInput = deps.invalidateInput || null; // Optional callback for pathfinder invalidation
   const debugEnabled = deps.debugEnabled || false;
   const debugState = deps.debugState || null;
-  // VirtualInventory removed: capacity reservations are handled in inventoryAdapter.js
+  // Capacity reservations are handled in inventoryAdapter.js
 
   let nowTick = 0;
 
@@ -37,6 +37,7 @@ export function createCacheManager(deps, cfg) {
   // Cache for crystallizer route lookups (expensive pathfinding operation)
   const crystallizerRouteCache = new Map(); // prismKey -> { route: object | null, tick: number }
   const CRYSTALLIZER_ROUTE_CACHE_TTL = 50; // Routes to crystallizers don't change often, cache for 50 ticks
+  let inventoryDiagCollector = null;
 
   // Cache TTL values (in ticks)
   const BLOCK_CACHE_TTL = 5; // Block lookups are expensive, cache for 5 ticks
@@ -369,7 +370,10 @@ export function createCacheManager(deps, cfg) {
     }
     
     // Not cached or expired - scan and cache
-    const inventories = getAllAdjacentInventories(prismBlock, dim);
+    const inventories = getAllAdjacentInventories(prismBlock, dim, {
+      prismKey,
+      report: inventoryDiagCollector,
+    });
     prismInventoryListCache.set(prismKey, inventories);
     prismInventoryListCacheTimestamps.set(prismKey, nowTick);
     
@@ -395,6 +399,9 @@ export function createCacheManager(deps, cfg) {
     updateTick,
     getPrismInventoriesCached,
     getPrismHasInventories,
+    setInventoryDiagnosticsCollector(fn) {
+      inventoryDiagCollector = typeof fn === "function" ? fn : null;
+    },
     resolveBlockInfoCached,
     resolveBlockInfoDirect,
     getBlockCached,

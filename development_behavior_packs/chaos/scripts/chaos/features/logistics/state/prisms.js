@@ -3,6 +3,9 @@
 export function createPrismState() {
   return {
     driftCursorByPrism: new Map(),
+    exportCooldownByPrism: new Map(),
+    exportScanCursor: 0,
+    graphRebuildCursor: 0,
   };
 }
 

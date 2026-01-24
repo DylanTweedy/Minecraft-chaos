@@ -2,6 +2,8 @@
 import { findPathBetweenKeys, pickRandom } from "../../util/routing.js";
 import { getContainerKey } from "../../keys.js";
 import { emitPrismReason } from "../../util/insightReasons.js";
+import { bumpCounter } from "../../util/insightCounters.js";
+import { ReasonCodes } from "../../util/insightReasonCodes.js";
 
 export function resolveDrift(ctx, intent) {
   const linkGraph = ctx.services?.linkGraph;
@@ -16,6 +18,7 @@ export function resolveDrift(ctx, intent) {
   let filteredSkipped = 0;
   let noInventorySkipped = 0;
   let noCapacitySkipped = 0;
+  let sameContainerSkipped = 0;
   const candidates = [];
   for (const prismKey of prismKeys) {
     if (!prismKey || prismKey === intent.sourcePrismKey) continue;
@@ -37,10 +40,15 @@ export function resolveDrift(ctx, intent) {
     }
 
     let hasCapacity = false;
+    let selectedContainerKey = null;
+    let hasNonSourceContainer = false;
     for (const inv of inventories) {
       if (!inv?.container) continue;
       const containerKey = getContainerKey(inv.entity || inv.block, inv.dim || dim);
       if (!containerKey) continue;
+      if (containerKey !== intent.containerKey) {
+        hasNonSourceContainer = true;
+      }
       const capacity = cacheManager.getInsertCapacityCached(
         containerKey,
         inv.container,
@@ -49,14 +57,19 @@ export function resolveDrift(ctx, intent) {
       );
       if (capacity > 0) {
         hasCapacity = true;
+        selectedContainerKey = containerKey;
         break;
       }
+    }
+    if (!hasNonSourceContainer) {
+      sameContainerSkipped++;
+      continue;
     }
     if (!hasCapacity) {
       noCapacitySkipped++;
       continue;
     }
-    candidates.push(prismKey);
+    candidates.push({ prismKey, destContainerKey: selectedContainerKey });
   }
 
   if (candidates.length === 0) {
@@ -65,18 +78,20 @@ export function resolveDrift(ctx, intent) {
       emitPrismReason(
         ctx,
         intent.sourcePrismKey,
-        "RESOLVE_DRIFT_ALL_FILTERED",
+        ReasonCodes.RESOLVE_DRIFT_ALL_FILTERED,
         "Drift: none (all other prisms are filtered/attuned)"
       );
+      bumpCounter(ctx, "resolve_none_drift_all_filtered");
       return null;
     }
     if (noInventorySkipped >= remaining) {
       emitPrismReason(
         ctx,
         intent.sourcePrismKey,
-        "RESOLVE_DRIFT_NO_INVENTORIES",
+        ReasonCodes.RESOLVE_DRIFT_NO_INVENTORIES,
         "Drift: none (no destination inventories found)"
       );
+      bumpCounter(ctx, "resolve_none_drift_no_inventories");
       return null;
     }
     const fullSuffix =
@@ -86,31 +101,47 @@ export function resolveDrift(ctx, intent) {
     emitPrismReason(
       ctx,
       intent.sourcePrismKey,
-      "RESOLVE_DRIFT_ALL_FULL",
+      ReasonCodes.RESOLVE_DRIFT_ALL_FULL,
       `Drift: none (all destinations full for ${intent.itemTypeId})${fullSuffix}`,
       { itemTypeId: intent.itemTypeId }
     );
+    bumpCounter(ctx, "resolve_none_drift_full");
     return null;
   }
 
   let pathAttempted = false;
-  for (let i = 0; i < candidates.length; i++) {
-    const candidate = pickRandom(candidates);
+  const pool = candidates.slice();
+  for (let i = 0; i < candidates.length && pool.length > 0; i++) {
+    const candidate = pickRandom(pool);
     if (!candidate) continue;
-    const path = findPathBetweenKeys(linkGraph, intent.sourcePrismKey, candidate, ctx.cfg.maxVisitedPerSearch || 120);
+    const idx = pool.indexOf(candidate);
+    if (idx >= 0) pool.splice(idx, 1);
+    const path = findPathBetweenKeys(linkGraph, intent.sourcePrismKey, candidate.prismKey, ctx.cfg.maxVisitedPerSearch || 120);
     pathAttempted = true;
     if (!path || path.length < 2) continue;
-    return { destPrismKey: candidate, path };
+    return { destPrismKey: candidate.prismKey, path, destContainerKey: candidate.destContainerKey };
   }
 
   if (pathAttempted) {
     emitPrismReason(
       ctx,
       intent.sourcePrismKey,
-      "RESOLVE_DRIFT_NO_PATH",
+      ReasonCodes.RESOLVE_DRIFT_NO_PATH,
       "Drift: none (no path to any drift sink)",
       { itemTypeId: intent.itemTypeId }
     );
+    bumpCounter(ctx, "resolve_none_drift_no_path");
+  }
+
+  if (sameContainerSkipped > 0 && candidates.length === 0) {
+    emitPrismReason(
+      ctx,
+      intent.sourcePrismKey,
+      ReasonCodes.RESOLVE_SAME_CONTAINER,
+      "Drift: none (destination shares source container)",
+      { itemTypeId: intent.itemTypeId }
+    );
+    bumpCounter(ctx, "resolve_none_same_container");
   }
 
   return null;

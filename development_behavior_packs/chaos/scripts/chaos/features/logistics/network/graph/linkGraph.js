@@ -1,5 +1,6 @@
 // scripts/chaos/features/logistics/runtime/registry/linkGraph.js
 import { BEAM_ID, MAX_BEAM_LEN, isPrismBlock, isEndpointId, getPrismTier } from "../../config.js";
+import { beamAxisMatchesDir } from "../../network/beams/axis.js";
 import { key, parseKey } from "../../keys.js";
 import { loadLinkGraph, saveLinkGraph } from "../../persistence/storage.js";
 import { enqueueBuildJob, enqueueCollapseJob } from "../../network/beams/jobs.js";
@@ -12,6 +13,16 @@ function clampInt(n, min, max) {
 
 function edgeIdFor(aKey, bKey) {
   return (String(aKey) <= String(bKey)) ? `${aKey}->${bKey}` : `${bKey}->${aKey}`;
+}
+
+function deriveDirFromKeys(aKey, bKey) {
+  const a = parseKey(aKey);
+  const b = parseKey(bKey);
+  if (!a || !b) return { dx: 0, dy: 0, dz: 0 };
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dz = b.z - a.z;
+  return { dx: Math.sign(dx), dy: Math.sign(dy), dz: Math.sign(dz) };
 }
 
 function normalizeEdgeEndpoints(aKey, bKey, dir) {
@@ -40,6 +51,7 @@ export function createLinkGraph(deps) {
   const adjacency = new Map();
   const dirtyPrisms = new Set();
   const segmentToEdges = new Map();
+  let diagCollector = null;
 
   let graphStamp = 0;
   let dirty = false;
@@ -214,18 +226,41 @@ export function createLinkGraph(deps) {
   }
 
   function scanEdgeFromNode(dim, nodePos, dir) {
+    let sawBeam = false;
     for (let i = 1; i <= MAX_BEAM_LEN; i++) {
       const x = nodePos.x + dir.dx * i;
       const y = nodePos.y + dir.dy * i;
       const z = nodePos.z + dir.dz * i;
       const b = dim.getBlock({ x, y, z });
-      if (!b) break;
+      if (!b) {
+        if (diagCollector && sawBeam) {
+          diagCollector({ code: "Other", blockId: "none", at: i });
+        }
+        break;
+      }
       const id = b.typeId;
-      if (id === "minecraft:air" || id === BEAM_ID) continue;
+      if (id === "minecraft:air") continue;
+      if (id === BEAM_ID) {
+        sawBeam = true;
+        if (!beamAxisMatchesDir(b, dir.dx, dir.dy, dir.dz)) {
+          if (diagCollector) {
+            diagCollector({ code: "NotStraight", blockId: id, at: i });
+          }
+          return null;
+        }
+        continue;
+      }
       if (isNodeBlock(b)) {
         return { len: i, nodeType: getNodeType(b) };
       }
+      if (diagCollector) {
+        const code = sawBeam ? "Obstructed" : "WrongBlock";
+        diagCollector({ code, blockId: id, at: i });
+      }
       break;
+    }
+    if (diagCollector && sawBeam) {
+      diagCollector({ code: "NoEndpoint", blockId: "none", at: MAX_BEAM_LEN });
     }
     return null;
   }
@@ -443,17 +478,11 @@ export function createLinkGraph(deps) {
     const list = [];
     for (const edge of edges.values()) {
       list.push({
-        edgeId: edge.edgeId,
         aKey: edge.aKey,
         bKey: edge.bKey,
         dimId: edge.dimId,
-        dir: edge.dir,
         length: edge.length,
-        tier: edge.tier,
-        state: edge.state,
-        epoch: edge.epoch,
-        pendingUntilTick: edge.pendingUntilTick,
-        lastValidatedTick: edge.lastValidatedTick,
+        meta: { tier: edge.tier | 0 },
       });
     }
     saveLinkGraph(world, list);
@@ -468,18 +497,19 @@ export function createLinkGraph(deps) {
       if (!entry || typeof entry !== "object") continue;
       const id = entry.edgeId || edgeIdFor(entry.aKey, entry.bKey);
       if (!entry.aKey || !entry.bKey || !entry.dimId) continue;
+      const metaTier = entry.meta?.tier ?? entry.tier;
       const edge = {
         edgeId: id,
         aKey: entry.aKey,
         bKey: entry.bKey,
         dimId: entry.dimId,
-        dir: entry.dir || { dx: 0, dy: 0, dz: 0 },
+        dir: entry.dir || deriveDirFromKeys(entry.aKey, entry.bKey),
         length: entry.length | 0,
-        tier: entry.tier | 0,
-        state: entry.state || "pending",
-        epoch: entry.epoch | 0,
-        pendingUntilTick: entry.pendingUntilTick | 0,
-        lastValidatedTick: entry.lastValidatedTick | 0,
+        tier: metaTier | 0,
+        state: "pending",
+        epoch: 1,
+        pendingUntilTick: 0,
+        lastValidatedTick: 0,
       };
       edges.set(edge.edgeId, edge);
       addAdjacency(edge.aKey, edge.edgeId);
@@ -508,6 +538,9 @@ export function createLinkGraph(deps) {
       return keys.slice(0, Math.max(0, Math.min(count, keys.length)));
     },
     hasNode,
+    setDiagnosticsCollector(fn) {
+      diagCollector = typeof fn === "function" ? fn : null;
+    },
   };
 }
 

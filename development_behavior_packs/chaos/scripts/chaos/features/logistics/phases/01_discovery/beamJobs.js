@@ -6,6 +6,6 @@ export function runBeamJobs(ctx) {
   const world = ctx.world;
   const buildBudget = Math.max(0, Number(cfg.beamBuildBlocksPerTick || 8) | 0);
   const collapseBudget = Math.max(0, Number(cfg.beamCollapseBlocksPerTick || 8) | 0);
-  tickBeamJobs(world, { buildBudget, collapseBudget });
+  return tickBeamJobs(world, { buildBudget, collapseBudget });
 }
 

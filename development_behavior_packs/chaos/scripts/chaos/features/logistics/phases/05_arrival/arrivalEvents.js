@@ -20,7 +20,6 @@ export function handleArrivals(ctx) {
       orbs.push(orb);
       orbsById.set(orb.id, orb);
     }
-    arrivals.push({ orbId: orb.id, prismKey: orb.currentPrismKey, spawn: true });
   }
   if (Array.isArray(ctx.spawnQueue)) ctx.spawnQueue.length = 0;
 
@@ -43,6 +42,8 @@ export function handleArrivals(ctx) {
 
     orb.state = OrbStates.AT_PRISM;
     orb.currentPrismKey = prismKey;
+    orb.edgeFromKey = prismKey;
+    orb.edgeToKey = null;
     orb.hops = (orb.hops | 0) + (event.spawn ? 0 : 1);
     orb.settlePending = false;
 
@@ -63,7 +64,23 @@ export function handleArrivals(ctx) {
       });
       orb.settlePending = true;
       queuedForInsert.add(orb.id);
-    } else if (orb.mode === OrbModes.DRIFT || orb.mode === OrbModes.WALKING) {
+    } else if (orb.mode === OrbModes.DRIFT) {
+      const sinkKey = orb.driftSinkKey || orb.destPrismKey;
+      if (sinkKey && sinkKey === prismKey) {
+        const filterSet = getFilterSetForBlock ? getFilterSetForBlock(ctx.world, prismBlock) : null;
+        if (!filterSet || filterSet.size === 0) {
+          ctx.ioQueue.inserts.push({
+            orbId: orb.id,
+            prismKey,
+            itemTypeId: orb.itemTypeId,
+            count: orb.count,
+            mode: orb.mode,
+          });
+          orb.settlePending = true;
+          queuedForInsert.add(orb.id);
+        }
+      }
+    } else if (orb.mode === OrbModes.WALKING) {
       const filterSet = getFilterSetForBlock ? getFilterSetForBlock(ctx.world, prismBlock) : null;
       if (!filterSet || filterSet.size === 0) {
         ctx.ioQueue.inserts.push({
@@ -101,7 +118,23 @@ export function handleArrivals(ctx) {
       });
       orb.settlePending = true;
       queuedForInsert.add(orb.id);
-    } else if (orb.mode === OrbModes.DRIFT || orb.mode === OrbModes.WALKING) {
+    } else if (orb.mode === OrbModes.DRIFT) {
+      const sinkKey = orb.driftSinkKey || orb.destPrismKey;
+      if (sinkKey && sinkKey === prismKey) {
+        const filterSet = getFilterSetForBlock ? getFilterSetForBlock(ctx.world, prismBlock) : null;
+        if (!filterSet || filterSet.size === 0) {
+          ctx.ioQueue.inserts.push({
+            orbId: orb.id,
+            prismKey,
+            itemTypeId: orb.itemTypeId,
+            count: orb.count,
+            mode: orb.mode,
+          });
+          orb.settlePending = true;
+          queuedForInsert.add(orb.id);
+        }
+      }
+    } else if (orb.mode === OrbModes.WALKING) {
       const filterSet = getFilterSetForBlock ? getFilterSetForBlock(ctx.world, prismBlock) : null;
       if (!filterSet || filterSet.size === 0) {
         ctx.ioQueue.inserts.push({

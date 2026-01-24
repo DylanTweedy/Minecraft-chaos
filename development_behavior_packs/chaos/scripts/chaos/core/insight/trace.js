@@ -4,7 +4,7 @@ import { getInsightState } from "./state.js";
 import { system } from "@minecraft/server";
 
 const MAX_CONTEXT_MESSAGES = 32;
-const MAX_GLOBAL_MESSAGES = 32;
+const MAX_GLOBAL_MESSAGES = 64;
 
 const _contextMessages = new Map(); // contextKey -> Map(dedupeKey -> msg)
 const _globalMessages = new Map(); // dedupeKey -> msg

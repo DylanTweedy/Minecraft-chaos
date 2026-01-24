@@ -80,6 +80,12 @@ export function createLevelsManager(cfg, state, deps = {}) {
     return Math.max(1, Math.floor(stepTicks)); // Ensure at least 1 tick
   }
 
+  function getExportCooldownTicks(level) {
+    const lvl = Math.max(1, Math.min(5, level | 0));
+    const table = [20, 15, 10, 7, 5];
+    return table[lvl - 1] || 20;
+  }
+
   function notePrismPassage(prismKey, block) {
     // Ensure we have a valid canonical prism key
     // If we have a block but the key might be wrong, regenerate it from the block
@@ -149,6 +155,7 @@ export function createLevelsManager(cfg, state, deps = {}) {
     getNextInputLevel,
     getTransferAmount,
     getOrbStepTicks,
+    getExportCooldownTicks,
     notePrismPassage,
     updatePrismBlockLevel,
   };

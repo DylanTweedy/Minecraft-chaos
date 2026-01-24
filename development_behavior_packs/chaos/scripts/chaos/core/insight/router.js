@@ -32,7 +32,7 @@ function formatInsightError(entry) {
   return `${ERROR_PREFIX} ${codeSegment}${text}${contextLabel}`.trim();
 }
 const MAX_CHAT_HISTORY = 32;
-const MAX_CHAT_LINES = 10;
+const MAX_CHAT_LINES = 16;
 const CHAT_DUMP_COOLDOWN = 20;
 const MAX_TRACE_LINES = 12;
 

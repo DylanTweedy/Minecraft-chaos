@@ -58,6 +58,7 @@ export function createTransferPipeline(opts = {}) {
       const name = String(phase.name || "phase");
       const t0 = safeNow();
       phaseMetric(ctx, name, { calls: 1 });
+      if (ctx) ctx.phaseName = name;
 
       let result;
       try {
@@ -107,6 +108,8 @@ export function createTransferPipeline(opts = {}) {
         break;
       }
     }
+
+    if (ctx) ctx.phaseName = null;
 
     return { ok: !stopped, stop: stopped, reason: stopReason };
   }
