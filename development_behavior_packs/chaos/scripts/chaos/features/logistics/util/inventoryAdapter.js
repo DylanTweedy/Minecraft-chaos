@@ -1,5 +1,7 @@
 // scripts/chaos/features/logistics/util/inventoryAdapter.js
 import { ItemStack } from "@minecraft/server";
+import { FURNACE_BLOCK_IDS, FURNACE_FUEL_FALLBACK_IDS, FURNACE_SLOTS } from "../config.js";
+import { getInventoryMutationGuard } from "./inventoryMutationGuard.js";
 
 // -----------------------------------------------------------------------------
 // Inventory Adapter
@@ -13,11 +15,49 @@ import { ItemStack } from "@minecraft/server";
 // - Extensible: furnace/filtered/sided rules can be upgraded later without touching phases
 // -----------------------------------------------------------------------------
 
-function _tryGetBlockContainer(block) {
+function _tryGetBlockContainer(block, debug = null) {
   try {
-    const inv = block?.getComponent?.("minecraft:inventory");
-    return inv?.container || null;
+    if (!block) {
+      if (debug) debug.reason = "invalid_block";
+      return null;
+    }
+    if (!block.getComponent) {
+      if (debug) debug.reason = "no_getComponent";
+      return null;
+    }
+    if (debug) debug.reason = "no_container";
+    const candidates = ["minecraft:inventory", "inventory", "minecraft:container"];
+    for (const id of candidates) {
+      let comp = null;
+      try {
+        comp = block.getComponent(id);
+      } catch (err) {
+        if (debug) {
+          debug.reason = "component_error";
+          debug.detail = String(err?.message || err);
+        }
+        continue;
+      }
+      if (!comp) {
+        if (debug && !debug.reason) debug.reason = "component_missing";
+        continue;
+      }
+      if (comp.container) return comp.container;
+      if (typeof comp.getContainer === "function") {
+        const c = comp.getContainer();
+        if (c) return c;
+      }
+      if (comp.getItem && typeof comp.size === "number") return comp;
+      if (comp.inventory && comp.inventory.getItem && typeof comp.inventory.size === "number") {
+        return comp.inventory;
+      }
+    }
+    return null;
   } catch (e) {
+    if (debug) {
+      debug.reason = "exception";
+      debug.detail = String(e?.message || e);
+    }
     return null;
   }
 }
@@ -28,12 +68,25 @@ export function getInventoryContainer(block) {
 
 export function isFurnaceBlock(block) {
   const id = block?.typeId;
-  return id === "minecraft:furnace" || id === "minecraft:blast_furnace" || id === "minecraft:smoker";
+  return !!id && FURNACE_BLOCK_IDS.has(id);
 }
 
 // Minimal furnace slot map (convention: 0=input, 1=fuel, 2=output)
 export function getFurnaceSlots(_block) {
-  return { input: 0, fuel: 1, output: 2 };
+  return { input: FURNACE_SLOTS.input, fuel: FURNACE_SLOTS.fuel, output: FURNACE_SLOTS.output };
+}
+
+export function isFurnaceFuelItem(itemTypeId) {
+  if (!itemTypeId) return false;
+  return FURNACE_FUEL_FALLBACK_IDS.has(itemTypeId);
+}
+
+export function getFurnaceInsertSlot(itemTypeId) {
+  return isFurnaceFuelItem(itemTypeId) ? FURNACE_SLOTS.fuel : FURNACE_SLOTS.input;
+}
+
+export function getFurnaceOutputSlot() {
+  return FURNACE_SLOTS.output;
 }
 
 export function getAttachedInventoryInfo(block, dim) {
@@ -42,11 +95,14 @@ export function getAttachedInventoryInfo(block, dim) {
   return { container, block, entity: null, dim };
 }
 
-export function getAllAdjacentInventories(block, dim) {
+export function getAllAdjacentInventories(block, dim, opts = null) {
   const out = [];
+  const report = opts?.report;
+  const prismKey = opts?.prismKey || null;
   try {
     const loc = block?.location;
     if (!loc || !dim) return out;
+    const base = { x: Math.floor(loc.x), y: Math.floor(loc.y), z: Math.floor(loc.z) };
     const dirs = [
       { x: 1, y: 0, z: 0 },
       { x: -1, y: 0, z: 0 },
@@ -56,9 +112,20 @@ export function getAllAdjacentInventories(block, dim) {
       { x: 0, y: 0, z: -1 },
     ];
     for (const d of dirs) {
-      const b = dim.getBlock({ x: loc.x + d.x, y: loc.y + d.y, z: loc.z + d.z });
-      const c = _tryGetBlockContainer(b);
-      if (!c) continue;
+      const b = dim.getBlock({ x: base.x + d.x, y: base.y + d.y, z: base.z + d.z });
+      const debug = report ? {} : null;
+      const c = _tryGetBlockContainer(b, debug);
+      if (!c) {
+        if (report) {
+          report({
+            prismKey,
+            reason: debug?.reason || "no_container",
+            blockId: b?.typeId || "none",
+            detail: debug?.detail || null,
+          });
+        }
+        continue;
+      }
       out.push({ block: b, container: c, dim, pos: b.location });
     }
   } catch (e) {
@@ -75,7 +142,7 @@ function _safeCreateStack(typeId, amount) {
   }
 }
 
-function _tryInsertIntoContainer(container, typeId, amount) {
+function _tryInsertIntoContainer(container, typeId, amount, meta) {
   try {
     if (!container) return { ok: false, inserted: 0 };
     let remaining = Math.max(0, amount | 0);
@@ -87,6 +154,10 @@ function _tryInsertIntoContainer(container, typeId, amount) {
     const size = container.size || 0;
 
     let inserted = 0;
+    const guard = getInventoryMutationGuard();
+    if (!guard.assertMutationAllowed(meta?.ctx, { ...meta, opName: "insert_container", itemTypeId: typeId, count: amount })) {
+      return { ok: false, inserted: 0 };
+    }
 
     // merge existing
     for (let i = 0; i < size && remaining > 0; i++) {
@@ -120,12 +191,59 @@ function _tryInsertIntoContainer(container, typeId, amount) {
   }
 }
 
-export function tryInsertAmountForContainer(containerInfo, itemTypeId, amount) {
-  const container = containerInfo?.container || containerInfo;
-  return _tryInsertIntoContainer(container, itemTypeId, amount).ok;
+export function getInsertCapacityForSlot(containerInfo, slot, itemTypeId) {
+  try {
+    const container = containerInfo?.container || containerInfo;
+    if (!container || slot == null || slot < 0) return 0;
+    const probe = _safeCreateStack(itemTypeId, 1);
+    const max = probe?.maxAmount || 64;
+    const current = container.getItem(slot);
+    if (!current) return max;
+    if (current.typeId !== itemTypeId) return 0;
+    return Math.max(0, max - (current.amount | 0));
+  } catch (e) {
+    return 0;
+  }
 }
 
-export function tryInsertIntoInventories(inventories, itemTypeId, amount) {
+export function tryInsertIntoContainerSlot(containerInfo, slot, itemTypeId, amount, meta) {
+  try {
+    const container = containerInfo?.container || containerInfo;
+    if (!container || slot == null || slot < 0) return false;
+    const needed = Math.max(0, amount | 0);
+    if (needed === 0) return true;
+    const guard = getInventoryMutationGuard();
+    if (!guard.assertMutationAllowed(meta?.ctx, { ...meta, opName: "insert_slot", itemTypeId, count: amount })) {
+      return false;
+    }
+    const probe = _safeCreateStack(itemTypeId, 1);
+    if (!probe) return false;
+    const max = probe.maxAmount || 64;
+    const current = container.getItem(slot);
+    if (!current) {
+      if (needed > max) return false;
+      const stack = _safeCreateStack(itemTypeId, needed);
+      if (!stack) return false;
+      container.setItem(slot, stack);
+      return true;
+    }
+    if (current.typeId !== itemTypeId) return false;
+    const curAmt = current.amount | 0;
+    if (curAmt + needed > max) return false;
+    current.amount = curAmt + needed;
+    container.setItem(slot, current);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export function tryInsertAmountForContainer(containerInfo, itemTypeId, amount, meta) {
+  const container = containerInfo?.container || containerInfo;
+  return _tryInsertIntoContainer(container, itemTypeId, amount, meta).ok;
+}
+
+export function tryInsertIntoInventories(inventories, itemTypeId, amount, meta) {
   try {
     if (!Array.isArray(inventories) || inventories.length === 0) return false;
     let remaining = Math.max(0, amount | 0);
@@ -133,7 +251,7 @@ export function tryInsertIntoInventories(inventories, itemTypeId, amount) {
 
     for (const inv of inventories) {
       const container = inv?.container || inv;
-      const res = _tryInsertIntoContainer(container, itemTypeId, remaining);
+      const res = _tryInsertIntoContainer(container, itemTypeId, remaining, meta);
       remaining -= res.inserted;
       if (remaining <= 0) return true;
     }
@@ -165,22 +283,38 @@ export function getTotalCountForType(inventories, itemTypeId) {
 // { container, slot, stack, inventoryIndex, entity?, block?, dim? }
 // The previous adapter returned { item, slot, container } which caused ALL transfers to silently fail
 // at "if (!sourceStack)" (no_item) gates.
-export function getRandomItemFromInventories(inventories, filterSet) {
+export function getRandomItemFromInventories(inventories, filterSet, opts = null) {
   try {
     if (!Array.isArray(inventories) || inventories.length === 0) return null;
 
     const hasFilter = !!(filterSet && filterSet.size > 0);
+    const maxSlotsPerInventory = Math.max(
+      1,
+      Number(opts?.maxSlotsPerInventory) || Number.POSITIVE_INFINITY
+    );
+    const slotListProvider = typeof opts?.slotListProvider === "function" ? opts.slotListProvider : null;
+    const slotFilter = typeof opts?.slotFilter === "function" ? opts.slotFilter : null;
     let chosen = null;
     let seen = 0;
+    let scannedSlots = 0;
 
     for (let invIndex = 0; invIndex < inventories.length; invIndex++) {
       const inv = inventories[invIndex];
       const c = inv?.container || inv;
       const size = c?.size || 0;
-      for (let slot = 0; slot < size; slot++) {
+      const limit = Math.min(size, maxSlotsPerInventory);
+      let slotList = null;
+      if (slotListProvider) {
+        const provided = slotListProvider(inv, limit, size);
+        slotList = Array.isArray(provided) ? provided : null;
+      }
+      const slotIter = slotList || Array.from({ length: limit }, (_, i) => i);
+      for (const slot of slotIter) {
         const it = c.getItem(slot);
+        scannedSlots++;
         if (!it || (it.amount | 0) <= 0) continue;
         if (hasFilter && filterSet.has(it.typeId)) continue;
+        if (slotFilter && !slotFilter(inv, slot, it)) continue;
 
         seen++;
         if ((Math.random() * seen) < 1) {
@@ -192,6 +326,7 @@ export function getRandomItemFromInventories(inventories, filterSet) {
             entity: inv?.entity || null,
             block: inv?.block || null,
             dim: inv?.dim || null,
+            scannedSlots,
           };
         }
       }
@@ -217,12 +352,16 @@ export function findInputSlotForContainer(container, itemTypeId) {
   return -1;
 }
 
-export function decrementInputSlotSafe(container, slot, amount) {
+export function decrementInputSlotSafe(container, slot, amount, meta) {
   try {
     const c = container?.container || container;
     const it = c?.getItem?.(slot);
     if (!it) return false;
     const dec = Math.max(1, amount | 0);
+    const guard = getInventoryMutationGuard();
+    if (!guard.assertMutationAllowed(meta?.ctx, { ...meta, opName: "extract_slot", itemTypeId: it.typeId, count: dec })) {
+      return false;
+    }
     const next = (it.amount | 0) - dec;
     if (next > 0) {
       it.amount = next;
@@ -236,12 +375,16 @@ export function decrementInputSlotSafe(container, slot, amount) {
   }
 }
 
-export function decrementInputSlotsForType(container, itemTypeId, amount) {
+export function decrementInputSlotsForType(container, itemTypeId, amount, meta) {
   try {
     const c = container?.container || container;
     let remaining = Math.max(0, amount | 0);
     if (remaining === 0) return true;
     const size = c?.size || 0;
+    const guard = getInventoryMutationGuard();
+    if (!guard.assertMutationAllowed(meta?.ctx, { ...meta, opName: "extract_type", itemTypeId, count: amount })) {
+      return false;
+    }
     for (let i = 0; i < size && remaining > 0; i++) {
       const it = c.getItem(i);
       if (!it || it.typeId !== itemTypeId) continue;
@@ -268,10 +411,10 @@ export function getFilterContainer() { return null; }
 export function getFilterSet() { return null; }
 
 // -----------------------------------------------------------------------------
-// Reservations (replacement for legacy virtualInventory.js)
+// Reservations
 //
 // Goal: keep InputQueues + PushTransfers behaviour intact WITHOUT any separate
-// "virtual inventory manager". We only need one thing: a lightweight, in-memory
+// reservation subsystem. We only need one thing: a lightweight, in-memory
 // reservation book so multiple prisms don't overbook the same destination.
 //
 // This is *not persisted*. It's rebuilt best-effort from inflight jobs on load
@@ -367,9 +510,22 @@ export function getInsertCapacityWithReservations(
     const typeId = isInfoShape ? containerMaybe : typeIdMaybe;
     const stack = isInfoShape ? null : stackMaybe;
 
+    if (!container || typeof container.size !== "number") return 0;
     const maxStack = Math.max(1, stack?.maxAmount || 64);
-    const baseCapacity =
-      container && typeof container.size === "number" ? (container.size * maxStack) : 0;
+    const targetAmount = Math.max(1, stack?.amount || 1);
+    let capacity = 0;
+    const size = container.size | 0;
+
+    for (let i = 0; i < size; i++) {
+      const it = container.getItem(i);
+      if (!it) {
+        capacity += maxStack;
+      } else if (it.typeId === typeId) {
+        const room = maxStack - (it.amount | 0);
+        if (room > 0) capacity += room;
+      }
+      if (capacity >= targetAmount) break;
+    }
 
     // Apply reservations (total + per-type).
     if (containerKey) {
@@ -381,10 +537,10 @@ export function getInsertCapacityWithReservations(
       // If a type is specified, subtract type-specific reservations first.
       // Otherwise fall back to total reservations.
       const reserved = typeId ? reservedForType : reservedTotal;
-      return Math.max(0, (baseCapacity | 0) - (reserved | 0));
+      return Math.max(0, (capacity | 0) - (reserved | 0));
     }
 
-    return baseCapacity | 0;
+    return capacity | 0;
   } catch (e) {
     return 0;
   }

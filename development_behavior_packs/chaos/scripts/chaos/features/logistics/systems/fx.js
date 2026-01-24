@@ -33,11 +33,11 @@ export function createFxManager(cfg, deps) {
   function getOrbColor(level) {
     const lvl = Math.min(cfg.maxLevel | 0, Math.max(1, level | 0));
     const palette = [
-      { r: 0.78, g: 0.8, b: 0.84, a: 1.0 }, // L1 iron
-      { r: 1.0, g: 0.78, b: 0.2, a: 1.0 },  // L2 gold
-      { r: 0.2, g: 0.9, b: 0.9, a: 1.0 },   // L3 diamond
-      { r: 0.2, g: 0.2, b: 0.24, a: 1.0 },  // L4 netherite
-      { r: 0.85, g: 0.65, b: 1.0, a: 1.0 }, // L5 masterwork
+      { r: 0.2, g: 0.55, b: 1.0, a: 1.0 },  // L1 blue
+      { r: 0.2, g: 0.9, b: 0.35, a: 1.0 },  // L2 green
+      { r: 1.0, g: 0.9, b: 0.2, a: 1.0 },   // L3 yellow
+      { r: 1.0, g: 0.2, b: 0.2, a: 1.0 },   // L4 red
+      { r: 0.75, g: 0.4, b: 0.95, a: 1.0 }, // L5 purple
     ];
     return palette[lvl - 1] || palette[0];
   }
@@ -71,6 +71,9 @@ export function createFxManager(cfg, deps) {
     try {
       if (!FX || !FX.particleTransferItem) return false;
       let fxId = FX.particleTransferItem;
+      if (FX.particleTransferItemByMode?.attuned) {
+        fxId = FX.particleTransferItemByMode.attuned;
+      }
       if (itemTypeId && FX?.particleExoticOrbById && FX.particleExoticOrbById[itemTypeId]) {
         fxId = FX.particleExoticOrbById[itemTypeId] || fxId;
       } else if (itemTypeId && FX?.particleFluxOrbByTier && Array.isArray(FX.particleFluxOrbByTier)) {

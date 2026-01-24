@@ -4,7 +4,7 @@
 // Stub functions to replace flux imports during debugging
 function isFluxTypeId(typeId) { return false; }
 function tryRefineFluxInTransfer(ctx) { return null; }
-import { SPEED_SCALE_MAX, PRISM_SPEED_BOOST_BASE, PRISM_SPEED_BOOST_PER_TIER, isPrismBlock, CRYSTALLIZER_ID } from "../config.js";
+import { SPEED_SCALE_MAX, PRISM_SPEED_BOOST_BASE, PRISM_SPEED_BOOST_PER_TIER, isPrismBlock, getPrismTier, CRYSTALLIZER_ID } from "../config.js";
 import { findOutputRouteFromNode } from "../routing/routes.js";
 import { getAttachedInventoryInfo } from "../util/inventoryAdapter.js";
 import { getContainerKeyFromInfo } from "../keys.js";
@@ -154,10 +154,10 @@ export function createRefinementManager(cfg, deps) {
    */
   function applyPrismSpeedBoost(job, prismBlock) {
     try {
-      const level = (prismBlock?.permutation?.getState("chaos:level") | 0) || 1;
-      const boost = PRISM_SPEED_BOOST_BASE + ((Math.max(1, level) - 1) * PRISM_SPEED_BOOST_PER_TIER);
+      const level = prismBlock && isPrismBlock(prismBlock) ? getPrismTier(prismBlock) : 1;
+      const boost = 1 + PRISM_SPEED_BOOST_BASE + ((Math.max(1, level) - 1) * PRISM_SPEED_BOOST_PER_TIER);
       const current = Math.max(0.1, Number(job.speedScale) || 1.0);
-      job.speedScale = Math.min(SPEED_SCALE_MAX, current * boost);
+      job.speedScale = Math.min(SPEED_SCALE_MAX, current * Math.max(1, boost));
     } catch (e) {
       // ignore
     }

@@ -36,6 +36,8 @@ import { DP_LOGISTICS_ORBS, DP_LOGISTICS_PRISM_LEVELS, DP_LOGISTICS_DRIFT_CURSOR
 import { loadMapFromWorld } from "../phases/10_persistInsight/persist.js";
 
 import { emitTrace } from "../../../core/insight/trace.js";
+import { setLogisticsDebugServices } from "./debugContext.js";
+import { getInventoryMutationGuard } from "../util/inventoryMutationGuard.js";
 
 export function createNetworkTransferController(deps = {}, opts = {}) {
   const { world, system, FX } = deps;
@@ -71,6 +73,9 @@ export function createNetworkTransferController(deps = {}, opts = {}) {
     prismState,
     arrivalQueue: [],
     spawnQueue: [],
+    insightReasons: { byPrism: new Map() },
+    inventoryDiag: { byPrism: new Map() },
+    mutationGuard: { lastViolationTick: 0 },
   };
 
   function loadState() {
@@ -104,10 +109,10 @@ export function createNetworkTransferController(deps = {}, opts = {}) {
     createIndexingPhase(),
     createExportSelectionPhase(),
     createDestinationResolvePhase(),
+    createMovementPhase(),
     createArrivalPhase(),
     createDeparturePhase(),
     createInventoryIOPhase(),
-    createMovementPhase(),
     createFluxConversionPhase(),
     createPersistInsightPhase(),
   ];
@@ -122,6 +127,19 @@ export function createNetworkTransferController(deps = {}, opts = {}) {
     budgets.reset();
     cacheManager.updateTick(nowTick);
     cacheManager.resetTickCaches();
+    getInventoryMutationGuard().configure(cfg);
+    state.inventoryDiag.byPrism.clear();
+    cacheManager.setInventoryDiagnosticsCollector((entry) => {
+      if (!entry?.prismKey) return;
+      const byPrism = state.inventoryDiag.byPrism;
+      let prismEntry = byPrism.get(entry.prismKey);
+      if (!prismEntry) {
+        prismEntry = new Map();
+        byPrism.set(entry.prismKey, prismEntry);
+      }
+      const key = entry.reason || "no_container";
+      prismEntry.set(key, (prismEntry.get(key) || 0) + 1);
+    });
 
     const ctx = {
       nowTick,
@@ -130,7 +148,9 @@ export function createNetworkTransferController(deps = {}, opts = {}) {
       system,
       FX,
       budgets,
+      emitTrace,
       insightCounts: Object.create(null),
+      metrics: { phases: {}, counters: {}, notes: [] },
       state,
       prismKeys: prismRegistry.resolvePrismKeys(),
       indexes: {},
@@ -155,6 +175,7 @@ export function createNetworkTransferController(deps = {}, opts = {}) {
       },
     };
 
+    setLogisticsDebugServices({ ...ctx.services, cfg, world, system });
     pipeline.runTick(ctx);
   }
 

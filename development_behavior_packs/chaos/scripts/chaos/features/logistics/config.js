@@ -160,6 +160,7 @@ const DEFAULTS = {
   orbVisualMaxSpeedScale: 1.0,
 
   maxOrbFxPerTick: 160,
+  orbFxIntervalTicks: 1,
 
   maxQueuedInsertsPerTick: 4,
   maxFullChecksPerTick: 4,
@@ -171,7 +172,7 @@ const DEFAULTS = {
 
   maxPrismsScannedPerTick: 8,
   transferStrategy: "hybrid",
-  scanCandidateSlotsPerInventory: 18,
+  scanCandidateSlotsPerInventory: 54,
   scanMaxItemTypesPerPrism: 6,
   scanLockTtlTicks: 80,
   scanDriftStickyDestTtlTicks: 40,
@@ -240,6 +241,12 @@ const DEFAULTS = {
   fluxRefineHopInterval: 6,
   maxPersistOrbs: 200,
   insightReportIntervalTicks: 20,
+  debugPrismInspect: true,
+  strictOrbsOnly: true,
+  mutationGuardCooldownTicks: 40,
+  debugOrbLifecycleTrace: false,
+  minTravelTicks: 5,
+  debugEdgeLenTrace: false,
 };
 
 export {

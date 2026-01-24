@@ -703,6 +703,9 @@ export function fxTransferItem(fromBlock, toBlock, itemTypeId, fx) {
     });
 
     let orb = fx && fx.particleTransferItem;
+    if (fx?.particleTransferItemByMode?.attuned) {
+      orb = fx.particleTransferItemByMode.attuned;
+    }
     let isExoticOrb = false;
     if (itemTypeId && fx?.particleExoticOrbById && fx.particleExoticOrbById[itemTypeId]) {
       orb = fx.particleExoticOrbById[itemTypeId] || orb;

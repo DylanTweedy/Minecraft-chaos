@@ -65,11 +65,11 @@ function getBlockLevel(block) {
 function getOrbColor(level) {
   const lvl = Math.min(5, Math.max(1, level | 0));
   const palette = [
-    { r: 0.95, g: 0.95, b: 0.92, a: 1.0 }, // L1 off-white
-    { r: 0.2, g: 0.7, b: 1.0, a: 1.0 },    // L2 blue/cyan
-    { r: 1.0, g: 0.75, b: 0.2, a: 1.0 },   // L3 amber/gold
-    { r: 0.2, g: 0.9, b: 0.4, a: 1.0 },    // L4 emerald
-    { r: 0.75, g: 0.4, b: 0.95, a: 1.0 },  // L5 purple/violet
+    { r: 0.2, g: 0.55, b: 1.0, a: 1.0 },   // L1 blue
+    { r: 0.2, g: 0.9, b: 0.35, a: 1.0 },   // L2 green
+    { r: 1.0, g: 0.9, b: 0.2, a: 1.0 },    // L3 yellow
+    { r: 1.0, g: 0.2, b: 0.2, a: 1.0 },    // L4 red
+    { r: 0.75, g: 0.4, b: 0.95, a: 1.0 },  // L5 purple
   ];
   return palette[lvl - 1] || palette[0];
 }
@@ -123,6 +123,11 @@ export const FX = {
 
   particleTransferBeam: "chaos:transfer_beam",
   particleTransferItem: "chaos:transfer_orb",
+  particleTransferItemByMode: {
+    attuned: "chaos:transfer_orb_attuned",
+    drift: "chaos:transfer_orb_drift",
+    walking: "chaos:transfer_orb_walking",
+  },
   particleFluxOrb: "chaos:flux_orb_1",
   particleFluxOrbByTier: [
     "chaos:flux_orb_1",

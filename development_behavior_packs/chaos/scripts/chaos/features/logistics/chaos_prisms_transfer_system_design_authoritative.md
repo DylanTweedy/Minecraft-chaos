@@ -26,6 +26,21 @@ Inventories are **dumb storage** (chests, barrels, furnaces, etc.).
 * Inventories do not decide routing
 * All access is mediated by a prism
 
+### Inventory Adapters (Special Blocks)
+
+Some inventories have slot rules. Adapters are used to enforce them while still
+obeying the phase constraints (read-only in Phases 3-4, mutations only in Phase 8).
+
+**Furnace family (furnace, blast furnace, smoker):**
+
+* Input slot: 0 (smeltables)
+* Fuel slot: 1 (fuel items)
+* Output slot: 2 (extract only)
+
+Attuned/filter mechanics still apply. If a prism is attached to a furnace-style
+block, exports only read from the output slot. Inserts choose the fuel slot for
+known fuel items, otherwise the input slot. The output slot is never an insert target.
+
 ---
 
 ## 2. Beams and Network Graph
@@ -59,6 +74,7 @@ Beams are physical: if an edge is broken, motion must respond.
 * **Orbs currently travelling on the broken edge**
 
   * drop as **item entities** at a defined drop location.
+  * the orb visual should **despawn immediately** (no lingering travel FX).
   * the drop reason must be observable (Insight + FX).
 
 * **Orbs that have not yet entered the edge (still at a prism)**
@@ -117,6 +133,8 @@ The system runs as a **budgeted controller loop**. Each tick (or scheduled inter
 * This phase may perform **bounded read-only inspection**.
 * Output: **export intents** (itemType, plannedCount, source prism/inventory).
 * Anti-churn: may consult lightweight destination availability signals, but **Destination Resolve is the final authority**.
+* Export intents may be queued ahead of time, but **actual extraction is gated by per-prism cooldown** and budgets.
+* Planned export **count is based on the prism block tier** (T1..T5), not XP history.
 * Enhanced Insight: candidates scanned, selected, throttled, top reasons.
 
 ### Phase 4 — Destination Resolve (Exclusive)
@@ -132,7 +150,14 @@ Output: **departure intent** (mode + destination/path intent) or no-op.
 
 Enhanced Insight: attuned hits/misses, crucible usage, drift sink selection, viability failure reasons, none/no-op counts.
 
-### Phase 5 — Arrival (Resolution)
+### Phase 5 — Movement / Simulation
+
+* Advance orbs along edges using edge length + speed.
+* Emit Arrival events when endpoints are reached.
+
+Enhanced Insight: inflight count, avg speed, blocked/walking count, stuck flags.
+
+### Phase 6 — Arrival (Resolution)
 
 Runs when an orb is considered to be *at* a prism:
 
@@ -146,6 +171,7 @@ Responsibilities:
 * drift reroute checks
 * settlement viability checks (may enqueue Inventory Mutations)
 * award prism XP **if not already awarded for this prism visit** (guarded)
+* Drift items only settle when they reach their **chosen drift sink** (destination prism).
 
 Guard:
 
@@ -153,7 +179,7 @@ Guard:
 
 Enhanced Insight: arrivals, spawn-arrivals, hop totals, reroutes, settle attempts/fails.
 
-### Phase 6 — Departure (Resolution)
+### Phase 7 — Departure (Resolution)
 
 * Choose next hop:
 
@@ -166,21 +192,16 @@ Enhanced Insight: arrivals, spawn-arrivals, hop totals, reroutes, settle attempt
 
 Enhanced Insight: departures, reroutes, missing-edge events, cursor position.
 
-### Phase 7 — Inventory Mutations (Budgeted, authoritative truth)
+### Phase 8 — Inventory Mutations (Budgeted, authoritative truth)
 
 The **only phase** allowed to mutate containers.
 
 * Execute queued extracts/inserts under budgets.
+* **Extraction happens here (spawn moment).** Items are removed from the source inventory when an orb is created.
+* **Insertion only happens after Arrival** when the orb reaches its destination prism.
 * All “pre-checks” can be wrong; this phase is the final authority.
 
 Enhanced Insight: queue depth, ops/sec, failures by type (full/invalid/locked), budget usage, precheck-failed rate.
-
-### Phase 8 — Movement / Simulation
-
-* Advance orbs along edges using edge length + speed.
-* Emit Arrival events when endpoints are reached.
-
-Enhanced Insight: inflight count, avg speed, blocked/walking count, stuck flags.
 
 ### Phase 9 — Flux + Conversion
 
@@ -393,7 +414,7 @@ Particles must be readable and state-linked:
   * observable
   * non-deterministic but non-arbitrary
 * Export routing is exclusive: **Attuned OR Crucible OR Drift OR None** per export intent.
-* Only Phase 7 mutates inventories.
+* Only Phase 8 mutates inventories.
 * Orbs never vanish silently: broken edges drop orbs; failures reroute or convert.
 * Drift/walking never settle on filtered prisms.
 
