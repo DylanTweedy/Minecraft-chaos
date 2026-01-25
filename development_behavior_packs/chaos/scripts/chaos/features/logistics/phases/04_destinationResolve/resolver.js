@@ -4,13 +4,17 @@ import { emitPrismReason } from "../../util/insightReasons.js";
 import { ReasonCodes } from "../../util/insightReasonCodes.js";
 import { emitTrace } from "../../../../core/insight/trace.js";
 import { resolveAttuned } from "./resolveAttuned.js";
+import { resolveCrystallizer } from "./resolveCrystallizer.js";
 import { resolveCrucible } from "./resolveCrucible.js";
 import { resolveDrift } from "./resolveDrift.js";
 import { ResolveKinds, makeResolveResult } from "./resolveResult.js";
+import { isFluxTypeId } from "../../../flux.js";
 
 function buildDeparture(intent, resolved, tick) {
   const path = Array.isArray(resolved?.path) ? resolved.path.slice() : null;
-  const mode = resolved.kind === ResolveKinds.DRIFT ? "drift" : "attuned";
+  const mode = isFluxTypeId(intent.itemTypeId)
+    ? "flux"
+    : (resolved.kind === ResolveKinds.DRIFT ? "drift" : "attuned");
   return {
     id: `depart_${intent.id}`,
     exportId: intent.id,
@@ -42,7 +46,25 @@ export function resolveDepartureIntents(ctx) {
       bumpCounter(ctx, "throttles");
       break;
     }
-    let resolved = resolveAttuned(ctx, intent);
+    let resolved = null;
+    if (isFluxTypeId(intent.itemTypeId)) {
+      resolved = resolveCrystallizer(ctx, intent);
+      if (resolved) {
+        const result = makeResolveResult(ResolveKinds.CRYSTALLIZER, resolved);
+        departures.push(buildDeparture(intent, result, nowTick));
+        bumpCounter(ctx, "resolved_crystallizer");
+        if (ctx.cfg?.debugOrbLifecycleTrace && typeof emitTrace === "function") {
+          emitTrace(null, "transfer", {
+            text: `[Transfer] Resolve crystallizer ${intent.sourcePrismKey} item=${intent.itemTypeId} src=${intent.containerKey} dest=${result.destPrismKey}`,
+            category: "transfer",
+            dedupeKey: `transfer_resolve_crystal_${intent.sourcePrismKey}_${intent.itemTypeId}`,
+          });
+        }
+        continue;
+      }
+    }
+
+    resolved = resolveAttuned(ctx, intent);
     if (resolved) {
       const result = makeResolveResult(ResolveKinds.ATTUNED, resolved);
       departures.push(buildDeparture(intent, result, nowTick));

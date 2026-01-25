@@ -9,6 +9,7 @@ import { getGlobalSummaryMessages } from "./transferStats.js";
 import { registerHeldProvider, registerFocusProvider, resolveProvider, setFallbackProvider } from "./providers/registry.js";
 import { ClockProvider } from "./providers/clock.js";
 import { PrismProvider } from "./providers/prism.js";
+import { CrystallizerProvider } from "./providers/crystallizer.js";
 import { FallbackProvider } from "./providers/fallback.js";
 import { VanillaContainerProvider } from "./providers/vanillaContainer.js";
 import { isHoldingLens } from "../../items/insightLens.js";
@@ -178,6 +179,7 @@ export function startInsightRouter(config = {}) {
 
   registerHeldProvider(ClockProvider);
   registerFocusProvider(VanillaContainerProvider);
+  registerFocusProvider(CrystallizerProvider);
   registerFocusProvider(PrismProvider);
   setFallbackProvider(FallbackProvider);
 

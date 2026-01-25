@@ -22,17 +22,25 @@ export function runGraphMaintenance(ctx) {
 
   const prismKeys = registry?.resolvePrismKeys?.() || [];
   const graphStats = linkGraph?.getGraphStats?.() || { prisms: 0, edges: 0 };
-  if (graphStats.edges === 0 && prismKeys.length > 0 && linkGraph?.markNodeDirty) {
+  if (prismKeys.length > 0 && linkGraph?.markNodeDirty) {
     const state = ctx.state?.prismState;
     const cursor = state?.graphRebuildCursor | 0;
     const budget = Math.max(1, Number(cfg.linkRebuildBudgetPerTick || 8) | 0);
     const count = Math.min(prismKeys.length, budget);
-    for (let i = 0; i < count; i++) {
-      const key = prismKeys[(cursor + i) % prismKeys.length];
-      linkGraph.markNodeDirty(key);
+    const sweepInterval = Math.max(1, Number(cfg.linkRebuildSweepIntervalTicks || 20) | 0);
+    const lastSweep = state?.graphSweepTick | 0;
+    const shouldSweep = graphStats.edges === 0 || ((nowTick | 0) - lastSweep) >= sweepInterval;
+    if (shouldSweep) {
+      for (let i = 0; i < count; i++) {
+        const key = prismKeys[(cursor + i) % prismKeys.length];
+        linkGraph.markNodeDirty(key);
+      }
+      if (state) {
+        state.graphRebuildCursor = (cursor + count) % prismKeys.length;
+        state.graphSweepTick = nowTick | 0;
+      }
+      bumpCounter(ctx, "graph_sweep_marked");
     }
-    if (state) state.graphRebuildCursor = (cursor + count) % prismKeys.length;
-    bumpCounter(ctx, "graph_sweep_marked");
   }
 
   let rebuildStats = null;

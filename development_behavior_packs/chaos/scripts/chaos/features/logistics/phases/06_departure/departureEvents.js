@@ -142,7 +142,7 @@ function startWalking(ctx, orb, opts = {}) {
     );
   }
   bumpCounter(ctx, "walking_started");
-  if (prevMode === OrbModes.DRIFT) {
+  if (prevMode === OrbModes.DRIFT || prevMode === OrbModes.FLUX) {
     bumpCounter(ctx, "walking_from_drift");
     bumpCounter(ctx, "drift_walkers");
   } else {
@@ -234,10 +234,10 @@ export function handleDepartures(ctx) {
     const baseStepTicks = levelsManager?.getOrbStepTicks
       ? levelsManager.getOrbStepTicks(tier)
       : Math.max(1, Number(ctx.cfg.orbStepTicks) || 16);
-    const minTravel = Math.max(1, Number(ctx.cfg.minTravelTicks) || 5);
-    const minStepTicks = Math.max(1, Number(ctx.cfg.minOrbStepTicks) || 1);
+    const minTravel = Math.max(0.1, Number(ctx.cfg.minTravelTicks) || 0.5);
+    const minStepTicks = Math.max(0.1, Number(ctx.cfg.minOrbStepTicks) || 0.35);
     const stepTicks = Math.max(baseStepTicks, minTravel, minStepTicks);
-    const speed = 1 / Math.max(1, stepTicks);
+    const speed = 1 / Math.max(0.1, stepTicks);
     const edgeLen = Math.max(1, edge.length | 0);
 
     ctx.ioQueue.extracts.push({
@@ -283,6 +283,16 @@ export function handleDepartures(ctx) {
           prismKey,
           reasonCode: ReasonCodes.WALK_NO_ATTUNED,
           text: `Walking fallback (attuned intent blocked)`,
+        });
+      }
+    } else if (orb.mode === OrbModes.FLUX) {
+      hopMeta = peekNextHopFromPath(ctx, orb, prismKey);
+      if (!hopMeta) {
+        hopMeta = null;
+        startWalking(ctx, orb, {
+          prismKey,
+          reasonCode: ReasonCodes.WALK_NO_ATTUNED,
+          text: `Walking fallback (flux route missing)`,
         });
       }
     } else if (orb.mode === OrbModes.DRIFT) {
@@ -339,6 +349,17 @@ export function handleDepartures(ctx) {
             text: "Walking fallback (attuned edge missing)",
           });
         }
+      } else if (orb.mode === OrbModes.FLUX) {
+        recomputePathForOrb(ctx, orb, prismKey);
+        hopMeta = peekNextHopFromPath(ctx, orb, prismKey);
+        rerouteHop = hopMeta?.nextKey || null;
+        if (!rerouteHop) {
+          startWalking(ctx, orb, {
+            prismKey,
+            reasonCode: ReasonCodes.WALK_EDGE_FAIL,
+            text: "Walking fallback (flux edge missing)",
+          });
+        }
       } else if (orb.mode === OrbModes.DRIFT) {
         if (orb.driftSinkKey) {
           recomputePathForOrb(ctx, orb, prismKey);
@@ -382,13 +403,13 @@ export function handleDepartures(ctx) {
       const baseStepTicks = levelsManager?.getOrbStepTicks
         ? levelsManager.getOrbStepTicks(tier)
         : Math.max(1, Number(ctx.cfg.orbStepTicks) || 16);
-      const minTravel = Math.max(1, Number(ctx.cfg.minTravelTicks) || 5);
-      const minStepTicks = Math.max(1, Number(ctx.cfg.minOrbStepTicks) || 1);
+      const minTravel = Math.max(0.1, Number(ctx.cfg.minTravelTicks) || 0.5);
+      const minStepTicks = Math.max(0.1, Number(ctx.cfg.minOrbStepTicks) || 0.35);
       const stepTicks = Math.max(baseStepTicks, minTravel, minStepTicks);
-      const baseSpeed = 1 / Math.max(1, stepTicks);
+      const baseSpeed = 1 / Math.max(0.1, stepTicks);
       const currentSpeed = Number.isFinite(orb.speed) ? orb.speed : 0;
       const boost = 1 + PRISM_SPEED_BOOST_BASE + ((Math.max(1, tier) - 1) * PRISM_SPEED_BOOST_PER_TIER);
-      const maxSpeed = 1 / Math.max(1, minStepTicks);
+      const maxSpeed = 1 / Math.max(0.1, minStepTicks);
       // Always boost multiplicatively when passing through prisms, capped to max speed.
       const boosted = Math.max(currentSpeed, baseSpeed) * Math.max(1, boost);
       orb.speed = Math.min(maxSpeed, boosted);

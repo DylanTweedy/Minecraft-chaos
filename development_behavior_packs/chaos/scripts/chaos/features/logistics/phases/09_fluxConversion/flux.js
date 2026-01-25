@@ -1,5 +1,6 @@
 // scripts/chaos/features/logistics/phases/09_fluxConversion/flux.js
 import { getFluxTier, getFluxTypeForTier, isFluxTypeId } from "../../../flux.js";
+import { fxFluxGenerate, fxFluxRefine } from "../../../../fx/fx.js";
 import { OrbModes } from "../../state/enums.js";
 import { bumpCounter } from "../../util/insightCounters.js";
 
@@ -14,6 +15,13 @@ export function applyFluxConversion(ctx) {
   let processed = 0;
   const max = ctx.budgets.state.flux | 0;
 
+  function resolvePrismBlockForOrb(orb) {
+    const prismKey = orb?.currentPrismKey || orb?.edgeFromKey || orb?.edgeToKey || orb?.destPrismKey || orb?.sourcePrismKey;
+    if (!prismKey) return null;
+    const info = ctx.services?.resolveBlockInfo?.(prismKey);
+    return info?.block || null;
+  }
+
   for (const orb of orbs) {
     if (processed >= max) break;
     if (!orb) continue;
@@ -23,12 +31,16 @@ export function applyFluxConversion(ctx) {
         orb.itemTypeId = getFluxTypeForTier(1);
         orb.mode = OrbModes.FLUX;
         bumpCounter(ctx, "flux_converted");
+        const prismBlock = resolvePrismBlockForOrb(orb);
+        if (prismBlock) fxFluxGenerate(prismBlock, ctx?.FX);
       }
     } else if (isFluxTypeId(orb.itemTypeId)) {
       const tier = getFluxTier(orb.itemTypeId);
       if (tier > 0 && tier < 5 && orb.hops > 0 && (orb.hops % refineHopInterval) === 0 && (orb.speed || 0) >= refineSpeed) {
         orb.itemTypeId = getFluxTypeForTier(tier + 1);
         bumpCounter(ctx, "flux_refined");
+        const prismBlock = resolvePrismBlockForOrb(orb);
+        if (prismBlock) fxFluxRefine(prismBlock, ctx?.FX, orb.itemTypeId);
       }
     }
 

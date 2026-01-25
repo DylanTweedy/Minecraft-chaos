@@ -6,6 +6,7 @@ export function createPrismState() {
     exportCooldownByPrism: new Map(),
     exportScanCursor: 0,
     graphRebuildCursor: 0,
+    graphSweepTick: 0,
   };
 }
 

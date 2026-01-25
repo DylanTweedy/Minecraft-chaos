@@ -73,11 +73,11 @@ export function createLevelsManager(cfg, state, deps = {}) {
 
   function getOrbStepTicks(level) {
     const safeLevel = Math.max(1, level | 0);
-    // Direct tier-based speed: Tier 1 = 16 ticks, Tier 5 = 1 tick
-    // Formula: 16 / (2^(tier-1)) = 2^(5-tier)
-    // This gives: T1=16, T2=8, T3=4, T4=2, T5=1
-    const stepTicks = Math.pow(2, 5 - safeLevel);
-    return Math.max(1, Math.floor(stepTicks)); // Ensure at least 1 tick
+    // Tier speed spacing (smoother T1->T2, stable T5).
+    // T1=16, T2=12, T3=8, T4=4, T5=1
+    const table = [16, 12, 8, 4, 1];
+    const stepTicks = table[safeLevel - 1] ?? 16;
+    return Math.max(0.1, Number(stepTicks) || 1);
   }
 
   function getExportCooldownTicks(level) {
@@ -156,6 +156,25 @@ export function createLevelsManager(cfg, state, deps = {}) {
     getTransferAmount,
     getOrbStepTicks,
     getExportCooldownTicks,
+    getPrismXp(prismKey) {
+      if (!prismKey) return 0;
+      return prismCounts.has(prismKey) ? (prismCounts.get(prismKey) | 0) : 0;
+    },
+    getPrismXpProgress(prismKey, block) {
+      const current = prismKey && prismCounts.has(prismKey) ? (prismCounts.get(prismKey) | 0) : 0;
+      const prismStep = Number.isFinite(cfg.prismLevelStep) ? cfg.prismLevelStep : (cfg.levelStep * 2);
+      const blockLevel = isPrismBlock(block) ? getPrismTier(block) : 1;
+      const maxLevel = Math.max(1, cfg.maxLevel | 0);
+      const nextLevel = Math.min(maxLevel, blockLevel + 1);
+      const nextRequired = getMinCountForLevel(nextLevel, prismStep);
+      return {
+        current,
+        nextRequired,
+        level: blockLevel,
+        maxLevel,
+        maxed: blockLevel >= maxLevel,
+      };
+    },
     notePrismPassage,
     updatePrismBlockLevel,
   };

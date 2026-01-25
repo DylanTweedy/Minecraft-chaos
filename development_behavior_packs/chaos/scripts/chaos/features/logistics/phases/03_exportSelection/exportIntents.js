@@ -10,6 +10,7 @@ export function buildExportIntents(ctx) {
   const cacheManager = ctx.services?.cacheManager;
   const levelsManager = ctx.services?.levelsManager;
   const getPrismTier = ctx.services?.getPrismTier;
+  const getFilterSetForBlock = ctx.services?.getFilterSetForBlock;
   const resolveBlockInfo = ctx.services?.resolveBlockInfo;
   const isPrismBlock = ctx.services?.isPrismBlock;
   const prismKeys = Array.isArray(ctx.prismKeys) ? ctx.prismKeys : [];
@@ -112,6 +113,8 @@ export function buildExportIntents(ctx) {
     const dim = info?.dim;
     if (!prismBlock || !isPrismBlock(prismBlock)) continue;
 
+    const prismFilterSet = getFilterSetForBlock ? getFilterSetForBlock(ctx.world, prismBlock) : null;
+
     const inventories = cacheManager.getPrismInventoriesCached(prismKey, prismBlock, dim);
     if (!Array.isArray(inventories) || inventories.length === 0) {
       bumpCounter(ctx, "export_no_inventories");
@@ -167,9 +170,10 @@ export function buildExportIntents(ctx) {
       return slots.slice(0, cap);
     };
     while (addedTypes < maxTypes) {
-      const picked = getRandomItemFromInventories(inventories, seenTypes, {
+      const picked = getRandomItemFromInventories(inventories, prismFilterSet, {
         maxSlotsPerInventory: maxSlots,
         slotListProvider,
+        slotFilter: (_inv, _slot, item) => !seenTypes.has(item?.typeId),
       });
       if (!picked || !picked.stack) break;
       bumpCounter(ctx, "export_inventories_found");

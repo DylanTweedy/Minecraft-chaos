@@ -18,6 +18,7 @@ import { getInventoryMutationGuard } from "../../util/inventoryMutationGuard.js"
 import { emitTrace } from "../../../../core/insight/trace.js";
 import { noteCooldown } from "../../../../core/insight/trace.js";
 import { getPrismTier } from "../../config.js";
+import { isFluxTypeId } from "../../../flux.js";
 
 function removeOrb(ctx, orbId) {
   const orbs = ctx.state?.orbs || [];
@@ -164,10 +165,11 @@ export function processIoQueue(ctx) {
 
     const resolveKind = intent.resolveKind || intent.mode;
     const edgeLen = Math.max(1, intent.edgeLength | 0);
+    const isFluxItem = isFluxTypeId(intent.itemTypeId);
     const orb = createOrb({
       itemTypeId: intent.itemTypeId,
       count: intent.count,
-      mode: resolveKind === "drift" ? OrbModes.DRIFT : OrbModes.ATTUNED,
+      mode: isFluxItem ? OrbModes.FLUX : (resolveKind === "drift" ? OrbModes.DRIFT : OrbModes.ATTUNED),
       state: OrbStates.IN_FLIGHT,
       currentPrismKey: intent.sourcePrismKey,
       sourcePrismKey: intent.sourcePrismKey,

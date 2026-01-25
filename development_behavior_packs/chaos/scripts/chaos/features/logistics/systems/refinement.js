@@ -1,9 +1,5 @@
 // scripts/chaos/features/logistics/systems/refinement.js
-// TEMPORARILY COMMENTED OUT FOR DEBUGGING
-// import { isFluxTypeId, tryRefineFluxInTransfer } from "../../../flux.js";
-// Stub functions to replace flux imports during debugging
-function isFluxTypeId(typeId) { return false; }
-function tryRefineFluxInTransfer(ctx) { return null; }
+import { isFluxTypeId, tryRefineFluxInTransfer } from "../../../flux.js";
 import { SPEED_SCALE_MAX, PRISM_SPEED_BOOST_BASE, PRISM_SPEED_BOOST_PER_TIER, isPrismBlock, getPrismTier, CRYSTALLIZER_ID } from "../config.js";
 import { findOutputRouteFromNode } from "../routing/routes.js";
 import { getAttachedInventoryInfo } from "../util/inventoryAdapter.js";

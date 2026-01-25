@@ -2,6 +2,20 @@
 import { OrbStates, OrbModes } from "../../state/enums.js";
 import { notePrismXp } from "../../state/prisms.js";
 import { bumpCounter } from "../../util/insightCounters.js";
+import { createOrb } from "../../state/orbs.js";
+import { isFluxTypeId, tryRefineFluxInTransfer } from "../../../flux.js";
+import { CRYSTALLIZER_ID, isPrismBlock } from "../../config.js";
+import { addFluxForItem } from "../../../../crystallizer.js";
+
+function removeOrb(ctx, orbId) {
+  const orbs = ctx.state?.orbs || [];
+  const orbsById = ctx.state?.orbsById;
+  if (!orbsById || !orbsById.has(orbId)) return;
+  const orb = orbsById.get(orbId);
+  orbsById.delete(orbId);
+  const idx = orbs.indexOf(orb);
+  if (idx >= 0) orbs.splice(idx, 1);
+}
 
 export function handleArrivals(ctx) {
   const cacheManager = ctx.services?.cacheManager;
@@ -47,7 +61,63 @@ export function handleArrivals(ctx) {
     orb.hops = (orb.hops | 0) + (event.spawn ? 0 : 1);
     orb.settlePending = false;
 
-    notePrismXp(levelsManager, prismKey, prismBlock, orb.lastHandledPrismKey, orb);
+    if (isPrismBlock(prismBlock)) {
+      notePrismXp(levelsManager, prismKey, prismBlock, orb.lastHandledPrismKey, orb);
+    }
+
+    if (prismBlock.typeId === CRYSTALLIZER_ID && isFluxTypeId(orb.itemTypeId)) {
+      addFluxForItem(prismKey, orb.itemTypeId, orb.count);
+      removeOrb(ctx, orb.id);
+      bumpCounter(ctx, "flux_absorbed");
+      processed++;
+      continue;
+    }
+
+    if (isFluxTypeId(orb.itemTypeId)) {
+      const speedScale = Math.max(0.1, (Number(orb.speed) || 0) * 20);
+      const refined = tryRefineFluxInTransfer({
+        prismBlock,
+        itemTypeId: orb.itemTypeId,
+        amount: orb.count,
+        FX: ctx?.FX,
+        speedScale,
+      });
+      if (refined?.items?.length) {
+        const [primary, ...extras] = refined.items;
+        if (primary?.typeId && primary?.amount > 0) {
+          orb.itemTypeId = primary.typeId;
+          orb.count = primary.amount | 0;
+        }
+        for (const entry of extras) {
+          if (!entry?.typeId || (entry.amount | 0) <= 0) continue;
+          const extraOrb = createOrb({
+            itemTypeId: entry.typeId,
+            count: entry.amount,
+            mode: orb.mode,
+            state: OrbStates.AT_PRISM,
+            currentPrismKey: prismKey,
+            sourcePrismKey: orb.sourcePrismKey,
+            destPrismKey: orb.destPrismKey,
+            destContainerKey: orb.destContainerKey,
+            driftSinkKey: orb.driftSinkKey,
+            path: Array.isArray(orb.path) ? orb.path.slice() : null,
+            pathIndex: orb.pathIndex | 0,
+            edgeFromKey: prismKey,
+            edgeToKey: null,
+            edgeEpoch: orb.edgeEpoch | 0,
+            edgeLength: orb.edgeLength | 0,
+            speed: Number.isFinite(orb.speed) ? orb.speed : 1,
+            hops: orb.hops | 0,
+            lastHandledPrismKey: orb.lastHandledPrismKey,
+            createdAtTick: orb.createdAtTick | 0,
+          });
+          if (extraOrb?.id) {
+            orbs.push(extraOrb);
+            orbsById?.set(extraOrb.id, extraOrb);
+          }
+        }
+      }
+    }
 
     if (event.spawn) bumpCounter(ctx, "spawn_arrivals");
     bumpCounter(ctx, "arrivals");

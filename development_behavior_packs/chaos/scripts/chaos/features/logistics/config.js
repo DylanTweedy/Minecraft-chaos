@@ -229,6 +229,7 @@ const DEFAULTS = {
   linkBuildTicks: 8,
   linkRebuildBudgetPerTick: 8,
   linkValidateBudgetPerTick: 16,
+  linkRebuildSweepIntervalTicks: 20,
 
   // Beam visuals + invalidation
   beamBuildBlocksPerTick: 8,
@@ -245,7 +246,7 @@ const DEFAULTS = {
   strictOrbsOnly: true,
   mutationGuardCooldownTicks: 40,
   debugOrbLifecycleTrace: false,
-  minTravelTicks: 5,
+  minTravelTicks: 1,
   debugEdgeLenTrace: false,
 };
 

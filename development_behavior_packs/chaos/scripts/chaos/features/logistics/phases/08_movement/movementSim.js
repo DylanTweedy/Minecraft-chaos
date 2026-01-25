@@ -142,7 +142,9 @@ export function advanceMovement(ctx) {
           const dir = { x: to.x - from.x, y: to.y - from.y, z: to.z - from.z };
           const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
           const ndir = len > 0.0001 ? { x: dir.x / len, y: dir.y / len, z: dir.z / len } : { x: 0, y: 0, z: 0 };
-          const lifetime = Math.max(0.1, Math.min(5.0, (edgeLen / Math.max(0.01, speed)) / 20));
+          const remaining = Math.max(0.01, edgeLen - (orb.progress || 0));
+          const speedPerSec = Math.max(0.6, Math.min(12.0, Number(speed) * 20));
+          const lifetime = Math.max(0.1, Math.min(5.0, remaining / speedPerSec));
           const colorSourceKey = orb.sourcePrismKey || orb.edgeFromKey;
           const fromBlock = resolvePrismBlock(ctx, colorSourceKey);
           const tier = fromBlock ? getPrismTier(fromBlock) : 1;

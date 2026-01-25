@@ -186,13 +186,14 @@ export const PrismProvider = {
     const prismKey = target?.prismKey || "";
     const tier = parsePrismTier(target?.id);
     const trace = getPrismTrace(prismKey);
+    const prismBlock = getBlockAt(world, target?.dimId, target?.pos);
     const diag = getPrismDiagnosticSnapshot(prismKey, trace || {});
     const nowTick = Number.isFinite(system?.currentTick) ? system.currentTick : 0;
     const queueSize = Number.isFinite(trace?.queueSize) ? trace.queueSize : 0;
     const cooldownUntil = Number.isFinite(trace?.cooldownUntil) ? trace.cooldownUntil : 0;
     const cooldownLeft = Math.max(0, cooldownUntil - nowTick);
     const edgeCount = debugServices?.linkGraph?.getNeighbors && prismKey
-      ? (debugServices.linkGraph.getNeighbors(prismKey) || []).length
+      ? (debugServices.linkGraph.getNeighbors(prismKey, { includePending: true }) || []).length
       : 0;
 
     const liveHasInv = hasAdjacentInventory(world, target?.dimId, target?.pos);
@@ -202,7 +203,13 @@ export const PrismProvider = {
     if (queueSize > 0) state = "Busy";
     if (cooldownLeft > 0) state = `Cooling (${cooldownLeft})`;
 
-    const hudLine = `Prism T${tier} | Q${queueSize} | E${edgeCount} | ${state}`;
+    const xp = debugServices?.levelsManager?.getPrismXpProgress
+      ? debugServices.levelsManager.getPrismXpProgress(prismKey, prismBlock)
+      : null;
+    const xpText = xp
+      ? `XP ${xp.current}/${xp.nextRequired}${xp.maxed ? " MAX" : ""}`
+      : "XP ?";
+    const hudLine = `Prism T${tier} | ${xpText} | Q${queueSize} | E${edgeCount} | ${state}`;
 
     const chatLines = [];
     chatLines.push(`Scan ${formatStatusWithReason(diag.scanStatus, diag.scanReason, diag.scanStatus)}`);

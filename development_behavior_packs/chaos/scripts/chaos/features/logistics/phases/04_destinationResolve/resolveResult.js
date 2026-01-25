@@ -2,6 +2,7 @@
 
 export const ResolveKinds = Object.freeze({
   ATTUNED: "attuned",
+  CRYSTALLIZER: "crystallizer",
   CRUCIBLE: "crucible",
   DRIFT: "drift",
   NONE: "none",
