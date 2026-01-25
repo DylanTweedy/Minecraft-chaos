@@ -1,6 +1,7 @@
 # Ignore generated resource and behavior packs
 resource_packs/
 behavior_packs/
+minecraftpe/
 
 # IDE and editor files
 .vscode/
