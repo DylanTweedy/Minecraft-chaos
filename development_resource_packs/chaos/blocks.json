@@ -26,5 +26,14 @@
 	},
 	"chaos:crystallizer": {
 		"sound": "amethyst_block"
+	},
+	"chaos:beam_lens": {
+		"sound": "glass"
+	},
+	"chaos:teleporter": {
+		"sound": "amethyst_block"
+	},
+	"chaos:vacuum_hopper": {
+		"sound": "stone"
 	}
 }

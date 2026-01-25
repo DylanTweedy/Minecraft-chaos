@@ -68,6 +68,18 @@
 		},
 		"godsteel_ingot": {
 			"textures": "textures/items/godsteel_ingot"
+		},
+		"teleporter": {
+			"textures": "textures/items/teleporter"
+		},
+		"vacuum_hopper": {
+			"textures": "textures/items/vacuum_hopper"
+		},
+		"teleporter_tuner": {
+			"textures": "textures/items/teleporter_tuner"
+		},
+		"beam_lens": {
+			"textures": "textures/items/beam_lens"
 		}
 	},
 	"resource_pack_name": "Chaos",

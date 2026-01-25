@@ -20,6 +20,7 @@ import {
   registerDeathmarkComponent,
   registerInsightLensComponent,
   registerInsightGogglesComponent,
+  registerTeleporterTunerComponent,
 } from "./components.js";
 
 import {
@@ -32,8 +33,10 @@ import { startTransferLoop } from "./transferLoop.js";
 import { fxTransferItem } from "../fx/fx.js";
 // import { FX } from "../fx/fxConfig.js"; // TODO: Investigate if FX config is still required/used elsewhere.
 import { makeTransferFx } from "../fx/presets.js";
+import { handleTeleporterTunerUseOn, handleTeleporterTunerUse } from "../features/teleporter/linking.js";
 
 const MIRROR_ID = "chaos:magic_mirror";
+const TELEPORTER_TUNER_ID = "chaos:teleporter_tuner";
 
 let __started = false;
 
@@ -152,6 +155,19 @@ export function startChaos(ctx) {
     DEV_MODE,
     name: "Components: Insight Goggles",
     fn: () => registerInsightGogglesComponent({ system }),
+  });
+
+  runStep({
+    world,
+    DEV_MODE,
+    name: "Components: Teleporter Tuner",
+    fn: () => registerTeleporterTunerComponent({
+      system,
+      world,
+      TELEPORTER_TUNER_ID,
+      handleTeleporterTunerUseOn,
+      handleTeleporterTunerUse,
+    }),
   });
 
   // PHASE 5: Notify

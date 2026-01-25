@@ -1,0 +1,17 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:item": {
+    "description": {
+      "identifier": "chaos:teleporter",
+      "menu_category": { "category": "construction" }
+    },
+    "components": {
+      "minecraft:display_name": { "value": "item.chaos:teleporter.name" },
+      "minecraft:icon": "teleporter",
+      "minecraft:block_placer": {
+        "block": "chaos:teleporter",
+        "replace_block_item": true
+      }
+    }
+  }
+}

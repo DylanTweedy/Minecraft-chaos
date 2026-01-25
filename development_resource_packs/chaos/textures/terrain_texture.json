@@ -1,99 +1,258 @@
-{
-	"resource_pack_name": "vanilla",
-	"texture_name": "atlas.terrain",
-	"padding": 8,
-	"num_mip_levels": 4,
-	"texture_data": {
-		"iron_ore": {
-			"textures": "textures/blocks/iron_ore"
-		},
-		"input_node": {
-			"textures": "textures/blocks/input_node_side"
-		},
-		"input_node2": {
-			"textures": "textures/blocks/input_node_side2"
-		},
-		"input_node3": {
-			"textures": "textures/blocks/input_node_side3"
-		},
-		"input_node4": {
-			"textures": "textures/blocks/input_node_side4"
-		},
-		"input_node5": {
-			"textures": "textures/blocks/input_node_side5"
-		},
-		"output_node": {
-			"textures": "textures/blocks/output_node_side"
-		},
-		"output_node2": {
-			"textures": "textures/blocks/output_node_side2"
-		},
-		"output_node3": {
-			"textures": "textures/blocks/output_node_side3"
-		},
-		"output_node4": {
-			"textures": "textures/blocks/output_node_side4"
-		},
-		"output_node5": {
-			"textures": "textures/blocks/output_node_side5"
-		},
-		"crucible_top": {
-			"textures": "textures/blocks/crucible_top"
-		},
-		"crucible_bottom": {
-			"textures": "textures/blocks/crucible_bottom"
-		},
-		"crucible_side": {
-			"textures": "textures/blocks/crucible_side"
-		},
-		"foundry_top": {
-			"textures": "textures/blocks/foundry-top"
-		},
-		"foundry_bottom": {
-			"textures": "textures/blocks/foundry-bottom"
-		},
-		"foundry_side": {
-			"textures": "textures/blocks/foundry-side"
-		},
-		"crystalizer_top": {
-			"textures": "textures/blocks/crystalizer_top"
-		},
-		"crystalizer_bottom": {
-			"textures": "textures/blocks/crystalizer_bottom"
-		},
-		"crystalizer_side": {
-			"textures": "textures/blocks/crystalizer_side"
-		},
-		"prism": {
-			"textures": "textures/blocks/prism_side"
-		},
-		"prism2": {
-			"textures": "textures/blocks/prism_side2"
-		},
-		"prism3": {
-			"textures": "textures/blocks/prism_side3"
-		},
-		"prism4": {
-			"textures": "textures/blocks/prism_side4"
-		},
-		"prism5": {
-			"textures": "textures/blocks/prism_side5"
-		},
-		"chaos_beam": {
-			"textures": "textures/blocks/chaos_beam"
-		},
-		"chaos_beam2": {
-			"textures": "textures/blocks/chaos_beam2"
-		},
-		"chaos_beam3": {
-			"textures": "textures/blocks/chaos_beam3"
-		},
-		"chaos_beam4": {
-			"textures": "textures/blocks/chaos_beam4"
-		},
-		"chaos_beam5": {
-			"textures": "textures/blocks/chaos_beam5"
-		}
-	},
-	"format_version": "1.19.30"
+﻿{
+    "resource_pack_name":  "vanilla",
+    "texture_name":  "atlas.terrain",
+    "padding":  8,
+    "num_mip_levels":  4,
+    "texture_data":  {
+                         "iron_ore":  {
+                                          "textures":  "textures/blocks/iron_ore"
+                                      },
+                         "input_node":  {
+                                            "textures":  "textures/blocks/input_node_side"
+                                        },
+                         "input_node2":  {
+                                             "textures":  "textures/blocks/input_node_side2"
+                                         },
+                         "input_node3":  {
+                                             "textures":  "textures/blocks/input_node_side3"
+                                         },
+                         "input_node4":  {
+                                             "textures":  "textures/blocks/input_node_side4"
+                                         },
+                         "input_node5":  {
+                                             "textures":  "textures/blocks/input_node_side5"
+                                         },
+                         "output_node":  {
+                                             "textures":  "textures/blocks/output_node_side"
+                                         },
+                         "output_node2":  {
+                                              "textures":  "textures/blocks/output_node_side2"
+                                          },
+                         "output_node3":  {
+                                              "textures":  "textures/blocks/output_node_side3"
+                                          },
+                         "output_node4":  {
+                                              "textures":  "textures/blocks/output_node_side4"
+                                          },
+                         "output_node5":  {
+                                              "textures":  "textures/blocks/output_node_side5"
+                                          },
+                         "crucible_top":  {
+                                              "textures":  "textures/blocks/crucible_top"
+                                          },
+                         "crucible_bottom":  {
+                                                 "textures":  "textures/blocks/crucible_bottom"
+                                             },
+                         "crucible_side":  {
+                                               "textures":  "textures/blocks/crucible_side"
+                                           },
+                         "foundry_top":  {
+                                             "textures":  "textures/blocks/foundry-top"
+                                         },
+                         "foundry_bottom":  {
+                                                "textures":  "textures/blocks/foundry-bottom"
+                                            },
+                         "foundry_side":  {
+                                              "textures":  "textures/blocks/foundry-side"
+                                          },
+                         "crystalizer_top":  {
+                                                 "textures":  "textures/blocks/crystalizer_top"
+                                             },
+                         "crystalizer_bottom":  {
+                                                    "textures":  "textures/blocks/crystalizer_bottom"
+                                                },
+                         "crystalizer_side":  {
+                                                  "textures":  "textures/blocks/crystalizer_side"
+                                              },
+                         "prism":  {
+                                       "textures":  "textures/blocks/prism_side"
+                                   },
+                         "prism2":  {
+                                        "textures":  "textures/blocks/prism_side2"
+                                    },
+                         "prism3":  {
+                                        "textures":  "textures/blocks/prism_side3"
+                                    },
+                         "prism4":  {
+                                        "textures":  "textures/blocks/prism_side4"
+                                    },
+                         "prism5":  {
+                                        "textures":  "textures/blocks/prism_side5"
+                                    },
+                         "chaos_beam":  {
+                                            "textures":  "textures/blocks/chaos_beam"
+                                        },
+                         "chaos_beam2":  {
+                                             "textures":  "textures/blocks/chaos_beam2"
+                                         },
+                         "chaos_beam3":  {
+                                             "textures":  "textures/blocks/chaos_beam3"
+                                         },
+                         "chaos_beam4":  {
+                                             "textures":  "textures/blocks/chaos_beam4"
+                                         },
+                         "chaos_beam5":  {
+                                             "textures":  "textures/blocks/chaos_beam5"
+                                         },
+                         "lens_front":  {
+                                            "textures":  "textures/blocks/lens_front"
+                                        },
+                         "lens_back":  {
+                                           "textures":  "textures/blocks/lens_back"
+                                       },
+                         "lens_side":  {
+                                           "textures":  "textures/blocks/lens_side"
+                                       },
+                         "teleporter":  {
+                                            "textures":  "textures/blocks/teleporter"
+                                        },
+                         "vacuum_hopper":  {
+                                               "textures":  "textures/blocks/vacuum_hopper"
+                                           },
+                         "lens_front_white":  {
+                                                  "textures":  "textures/blocks/lens_front_white"
+                                              },
+                         "lens_back_white":  {
+                                                 "textures":  "textures/blocks/lens_back_white"
+                                             },
+                         "lens_side_white":  {
+                                                 "textures":  "textures/blocks/lens_side_white"
+                                             },
+                         "lens_front_orange":  {
+                                                   "textures":  "textures/blocks/lens_front_orange"
+                                               },
+                         "lens_back_orange":  {
+                                                  "textures":  "textures/blocks/lens_back_orange"
+                                              },
+                         "lens_side_orange":  {
+                                                  "textures":  "textures/blocks/lens_side_orange"
+                                              },
+                         "lens_front_magenta":  {
+                                                    "textures":  "textures/blocks/lens_front_magenta"
+                                                },
+                         "lens_back_magenta":  {
+                                                   "textures":  "textures/blocks/lens_back_magenta"
+                                               },
+                         "lens_side_magenta":  {
+                                                   "textures":  "textures/blocks/lens_side_magenta"
+                                               },
+                         "lens_front_light_blue":  {
+                                                       "textures":  "textures/blocks/lens_front_light_blue"
+                                                   },
+                         "lens_back_light_blue":  {
+                                                      "textures":  "textures/blocks/lens_back_light_blue"
+                                                  },
+                         "lens_side_light_blue":  {
+                                                      "textures":  "textures/blocks/lens_side_light_blue"
+                                                  },
+                         "lens_front_yellow":  {
+                                                   "textures":  "textures/blocks/lens_front_yellow"
+                                               },
+                         "lens_back_yellow":  {
+                                                  "textures":  "textures/blocks/lens_back_yellow"
+                                              },
+                         "lens_side_yellow":  {
+                                                  "textures":  "textures/blocks/lens_side_yellow"
+                                              },
+                         "lens_front_lime":  {
+                                                 "textures":  "textures/blocks/lens_front_lime"
+                                             },
+                         "lens_back_lime":  {
+                                                "textures":  "textures/blocks/lens_back_lime"
+                                            },
+                         "lens_side_lime":  {
+                                                "textures":  "textures/blocks/lens_side_lime"
+                                            },
+                         "lens_front_pink":  {
+                                                 "textures":  "textures/blocks/lens_front_pink"
+                                             },
+                         "lens_back_pink":  {
+                                                "textures":  "textures/blocks/lens_back_pink"
+                                            },
+                         "lens_side_pink":  {
+                                                "textures":  "textures/blocks/lens_side_pink"
+                                            },
+                         "lens_front_gray":  {
+                                                 "textures":  "textures/blocks/lens_front_gray"
+                                             },
+                         "lens_back_gray":  {
+                                                "textures":  "textures/blocks/lens_back_gray"
+                                            },
+                         "lens_side_gray":  {
+                                                "textures":  "textures/blocks/lens_side_gray"
+                                            },
+                         "lens_front_light_gray":  {
+                                                       "textures":  "textures/blocks/lens_front_light_gray"
+                                                   },
+                         "lens_back_light_gray":  {
+                                                      "textures":  "textures/blocks/lens_back_light_gray"
+                                                  },
+                         "lens_side_light_gray":  {
+                                                      "textures":  "textures/blocks/lens_side_light_gray"
+                                                  },
+                         "lens_front_cyan":  {
+                                                 "textures":  "textures/blocks/lens_front_cyan"
+                                             },
+                         "lens_back_cyan":  {
+                                                "textures":  "textures/blocks/lens_back_cyan"
+                                            },
+                         "lens_side_cyan":  {
+                                                "textures":  "textures/blocks/lens_side_cyan"
+                                            },
+                         "lens_front_purple":  {
+                                                   "textures":  "textures/blocks/lens_front_purple"
+                                               },
+                         "lens_back_purple":  {
+                                                  "textures":  "textures/blocks/lens_back_purple"
+                                              },
+                         "lens_side_purple":  {
+                                                  "textures":  "textures/blocks/lens_side_purple"
+                                              },
+                         "lens_front_blue":  {
+                                                 "textures":  "textures/blocks/lens_front_blue"
+                                             },
+                         "lens_back_blue":  {
+                                                "textures":  "textures/blocks/lens_back_blue"
+                                            },
+                         "lens_side_blue":  {
+                                                "textures":  "textures/blocks/lens_side_blue"
+                                            },
+                         "lens_front_brown":  {
+                                                  "textures":  "textures/blocks/lens_front_brown"
+                                              },
+                         "lens_back_brown":  {
+                                                 "textures":  "textures/blocks/lens_back_brown"
+                                             },
+                         "lens_side_brown":  {
+                                                 "textures":  "textures/blocks/lens_side_brown"
+                                             },
+                         "lens_front_green":  {
+                                                  "textures":  "textures/blocks/lens_front_green"
+                                              },
+                         "lens_back_green":  {
+                                                 "textures":  "textures/blocks/lens_back_green"
+                                             },
+                         "lens_side_green":  {
+                                                 "textures":  "textures/blocks/lens_side_green"
+                                             },
+                         "lens_front_red":  {
+                                                "textures":  "textures/blocks/lens_front_red"
+                                            },
+                         "lens_back_red":  {
+                                               "textures":  "textures/blocks/lens_back_red"
+                                           },
+                         "lens_side_red":  {
+                                               "textures":  "textures/blocks/lens_side_red"
+                                           },
+                         "lens_front_black":  {
+                                                  "textures":  "textures/blocks/lens_front_black"
+                                              },
+                         "lens_back_black":  {
+                                                 "textures":  "textures/blocks/lens_back_black"
+                                             },
+                         "lens_side_black":  {
+                                                 "textures":  "textures/blocks/lens_side_black"
+                                             }
+                     },
+    "format_version":  "1.19.30"
 }

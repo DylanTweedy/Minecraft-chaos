@@ -1,5 +1,6 @@
 // scripts/chaos/features/logistics/util/inventoryAdapter.js
 import { ItemStack } from "@minecraft/server";
+import { getVirtualContainerForBlock } from "../vacuumBuffer.js";
 import { FURNACE_BLOCK_IDS, FURNACE_FUEL_FALLBACK_IDS, FURNACE_SLOTS } from "../config.js";
 import { getInventoryMutationGuard } from "./inventoryMutationGuard.js";
 
@@ -26,6 +27,12 @@ function _tryGetBlockContainer(block, debug = null) {
       return null;
     }
     if (debug) debug.reason = "no_container";
+    try {
+      const virtual = getVirtualContainerForBlock(block, null);
+      if (virtual) return virtual;
+    } catch {
+      // ignore
+    }
     const candidates = ["minecraft:inventory", "inventory", "minecraft:container"];
     for (const id of candidates) {
       let comp = null;
@@ -241,6 +248,11 @@ export function tryInsertIntoContainerSlot(containerInfo, slot, itemTypeId, amou
 export function tryInsertAmountForContainer(containerInfo, itemTypeId, amount, meta) {
   const container = containerInfo?.container || containerInfo;
   return _tryInsertIntoContainer(container, itemTypeId, amount, meta).ok;
+}
+
+export function tryInsertAmountForContainerWithRemainder(containerInfo, itemTypeId, amount, meta) {
+  const container = containerInfo?.container || containerInfo;
+  return _tryInsertIntoContainer(container, itemTypeId, amount, meta);
 }
 
 export function tryInsertIntoInventories(inventories, itemTypeId, amount, meta) {

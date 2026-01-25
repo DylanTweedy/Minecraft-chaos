@@ -1,0 +1,15 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:block": {
+    "description": {
+      "identifier": "chaos:vacuum_hopper",
+      "menu_category": { "category": "construction" }
+    },
+    "components": {
+      "minecraft:geometry": "minecraft:geometry.full_block",
+      "minecraft:material_instances": {
+        "*": { "texture": "vacuum_hopper", "render_method": "opaque" }
+      }
+    }
+  }
+}

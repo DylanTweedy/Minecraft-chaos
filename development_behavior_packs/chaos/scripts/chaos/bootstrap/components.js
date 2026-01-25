@@ -7,6 +7,7 @@ let mirrorRegistered = false;
 let deathmarkRegistered = false;
 let insightLensRegistered = false;
 let insightGogglesRegistered = false;
+let teleporterTunerRegistered = false;
 
 export function registerMagicMirrorComponent(ctx) {
   if (mirrorRegistered) return;
@@ -218,4 +219,88 @@ export function registerInsightGogglesComponent(ctx) {
   });
 
   // No goggles interaction menu in Insight v2.
+}
+
+export function registerTeleporterTunerComponent(ctx) {
+  if (teleporterTunerRegistered) return;
+  teleporterTunerRegistered = true;
+
+  const { system, world, TELEPORTER_TUNER_ID, handleTeleporterTunerUseOn, handleTeleporterTunerUse } = ctx || {};
+  if (!system || !TELEPORTER_TUNER_ID || !handleTeleporterTunerUseOn) return;
+
+  system.beforeEvents.startup.subscribe((ev) => {
+    try {
+      ev.itemComponentRegistry.registerCustomComponent("chaos:teleporter_tuner_logic", {
+        onUseOn: (e) => {
+          try {
+            const item = e.itemStack;
+            if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
+            handleTeleporterTunerUseOn(e);
+          } catch {
+            // ignore
+          }
+        },
+      });
+    } catch {
+      // ignore
+    }
+  });
+
+  // Fallback for builds where custom component callbacks are flaky.
+  try {
+    world?.beforeEvents?.itemUseOn?.subscribe((e) => {
+      try {
+        const item = e.itemStack;
+        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
+        handleTeleporterTunerUseOn(e);
+      } catch {
+        // ignore
+      }
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    world?.afterEvents?.itemUseOn?.subscribe((e) => {
+      try {
+        const item = e.itemStack;
+        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
+        handleTeleporterTunerUseOn(e);
+      } catch {
+        // ignore
+      }
+    });
+  } catch {
+    // ignore
+  }
+
+  // Air-use fallback: use view direction to resolve the target.
+  try {
+    world?.beforeEvents?.itemUse?.subscribe((e) => {
+      try {
+        const item = e.itemStack;
+        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
+        handleTeleporterTunerUse?.(e);
+      } catch {
+        // ignore
+      }
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    world?.afterEvents?.itemUse?.subscribe((e) => {
+      try {
+        const item = e.itemStack;
+        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
+        handleTeleporterTunerUse?.(e);
+      } catch {
+        // ignore
+      }
+    });
+  } catch {
+    // ignore
+  }
 }
