@@ -7,7 +7,7 @@ let mirrorRegistered = false;
 let deathmarkRegistered = false;
 let insightLensRegistered = false;
 let insightGogglesRegistered = false;
-let teleporterTunerRegistered = false;
+let transposerTunerRegistered = false;
 
 export function registerMagicMirrorComponent(ctx) {
   if (mirrorRegistered) return;
@@ -221,12 +221,12 @@ export function registerInsightGogglesComponent(ctx) {
   // No goggles interaction menu in Insight v2.
 }
 
-export function registerTeleporterTunerComponent(ctx) {
-  if (teleporterTunerRegistered) return;
-  teleporterTunerRegistered = true;
+export function registerTransposerTunerComponent(ctx) {
+  if (transposerTunerRegistered) return;
+  transposerTunerRegistered = true;
 
-  const { system, world, TELEPORTER_TUNER_ID, handleTeleporterTunerUseOn, handleTeleporterTunerUse } = ctx || {};
-  if (!system || !TELEPORTER_TUNER_ID || !handleTeleporterTunerUseOn) return;
+  const { system, world, TRANSPOSER_TUNER_ID, handleTransposerTunerUseOn, handleTransposerTunerUse } = ctx || {};
+  if (!system || !TRANSPOSER_TUNER_ID || !handleTransposerTunerUseOn) return;
 
   system.beforeEvents.startup.subscribe((ev) => {
     try {
@@ -234,8 +234,8 @@ export function registerTeleporterTunerComponent(ctx) {
         onUseOn: (e) => {
           try {
             const item = e.itemStack;
-            if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
-            handleTeleporterTunerUseOn(e);
+            if (!item || item.typeId !== TRANSPOSER_TUNER_ID) return;
+            handleTransposerTunerUseOn(e);
           } catch {
             // ignore
           }
@@ -251,8 +251,8 @@ export function registerTeleporterTunerComponent(ctx) {
     world?.beforeEvents?.itemUseOn?.subscribe((e) => {
       try {
         const item = e.itemStack;
-        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
-        handleTeleporterTunerUseOn(e);
+        if (!item || item.typeId !== TRANSPOSER_TUNER_ID) return;
+        handleTransposerTunerUseOn(e);
       } catch {
         // ignore
       }
@@ -265,8 +265,8 @@ export function registerTeleporterTunerComponent(ctx) {
     world?.afterEvents?.itemUseOn?.subscribe((e) => {
       try {
         const item = e.itemStack;
-        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
-        handleTeleporterTunerUseOn(e);
+        if (!item || item.typeId !== TRANSPOSER_TUNER_ID) return;
+        handleTransposerTunerUseOn(e);
       } catch {
         // ignore
       }
@@ -280,8 +280,8 @@ export function registerTeleporterTunerComponent(ctx) {
     world?.beforeEvents?.itemUse?.subscribe((e) => {
       try {
         const item = e.itemStack;
-        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
-        handleTeleporterTunerUse?.(e);
+        if (!item || item.typeId !== TRANSPOSER_TUNER_ID) return;
+        handleTransposerTunerUse?.(e);
       } catch {
         // ignore
       }
@@ -294,8 +294,8 @@ export function registerTeleporterTunerComponent(ctx) {
     world?.afterEvents?.itemUse?.subscribe((e) => {
       try {
         const item = e.itemStack;
-        if (!item || item.typeId !== TELEPORTER_TUNER_ID) return;
-        handleTeleporterTunerUse?.(e);
+        if (!item || item.typeId !== TRANSPOSER_TUNER_ID) return;
+        handleTransposerTunerUse?.(e);
       } catch {
         // ignore
       }

@@ -29,6 +29,36 @@ function formatError(e, maxChars = 800) {
   return `${msg}\n§7${trimmed}§r`;
 }
 
+function extractImportDetails(e) {
+  const msg = e?.message ? String(e.message) : String(e);
+  let missing = null;
+  let match = msg.match(/Import\s+\[(.+?)\]\s+not found/i);
+  if (!match) match = msg.match(/Cannot find module\s+['\"](.+?)['\"]/i);
+  if (match) missing = match[1];
+
+  const stack = e?.stack ? String(e.stack) : "";
+  let origin = null;
+  if (stack) {
+    const lines = stack.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (line === msg) continue;
+      if (line.startsWith("at ")) {
+        origin = line.slice(3);
+        break;
+      }
+      if (line.startsWith("@")) {
+        origin = line.slice(1);
+        break;
+      }
+      if (line.includes(".js")) {
+        origin = line;
+        break;
+      }
+    }
+  }
+
+  return { missing, origin };
+}
 system.runTimeout(() => {
   if (__booted) return;
   __booted = true;
@@ -52,6 +82,13 @@ system.runTimeout(() => {
       } catch (e) {
         chat(prefix("§c✗§r", "startChaos() threw an error:"));
         chat("§c" + formatError(e));
+      const details = extractImportDetails(e);
+      if (details.missing) {
+        chat(prefix("§eWhere§r", `Missing module: ${details.missing}`));
+      }
+      if (details.origin) {
+        chat(prefix("§eFrom§r", `Import trace: ${details.origin}`));
+      }
       }
     })
     .catch((e) => {
@@ -61,3 +98,4 @@ system.runTimeout(() => {
       chat(prefix("§eHint§r", "Check: wrong path, missing file, circular import, or export typo."));
     });
 }, 1);
+

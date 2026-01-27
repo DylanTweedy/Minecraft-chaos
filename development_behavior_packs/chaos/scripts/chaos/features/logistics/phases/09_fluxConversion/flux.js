@@ -26,8 +26,9 @@ export function applyFluxConversion(ctx) {
     if (processed >= max) break;
     if (!orb) continue;
 
+    const speed = Number.isFinite(orb.edgeSpeed) ? orb.edgeSpeed : (orb.speed || 0);
     if ((orb.mode === OrbModes.DRIFT || orb.mode === OrbModes.WALKING) && !isFluxTypeId(orb.itemTypeId)) {
-      if (orb.hops >= minHops && (orb.speed || 0) >= minSpeed) {
+      if (orb.hops >= minHops && speed >= minSpeed) {
         orb.itemTypeId = getFluxTypeForTier(1);
         orb.mode = OrbModes.FLUX;
         bumpCounter(ctx, "flux_converted");
@@ -36,7 +37,7 @@ export function applyFluxConversion(ctx) {
       }
     } else if (isFluxTypeId(orb.itemTypeId)) {
       const tier = getFluxTier(orb.itemTypeId);
-      if (tier > 0 && tier < 5 && orb.hops > 0 && (orb.hops % refineHopInterval) === 0 && (orb.speed || 0) >= refineSpeed) {
+      if (tier > 0 && tier < 5 && orb.hops > 0 && (orb.hops % refineHopInterval) === 0 && speed >= refineSpeed) {
         orb.itemTypeId = getFluxTypeForTier(tier + 1);
         bumpCounter(ctx, "flux_refined");
         const prismBlock = resolvePrismBlockForOrb(orb);

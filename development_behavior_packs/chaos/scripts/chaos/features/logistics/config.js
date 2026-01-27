@@ -3,7 +3,12 @@ import { MAX_BEAM_LEN } from "./network/beams/beamConfig.js";
 
 const CRYSTALLIZER_ID = "chaos:crystallizer";
 const CRUCIBLE_ID = "chaos:crucible";
+const FOUNDRY_ID = "chaos:foundry";
+const TRANSPOSER_ID = "chaos:teleporter";
+const COLLECTOR_ID = "chaos:collector";
 const BEAM_ID = "chaos:beam";
+const CHAOS_BEAM_ID = "chaos:chaos_beam";
+const LENS_ID = "chaos:beam_lens";
 
 // Legacy IDs (remove once all imports are gone)
 const INPUT_ID = "chaos:extractor"; // Deprecated - replaced by PRISM_IDS
@@ -16,6 +21,12 @@ const FURNACE_BLOCK_IDS = new Set([
   "minecraft:lit_blast_furnace",
   "minecraft:smoker",
   "minecraft:lit_smoker",
+]);
+
+const GLASS_BLOCK_IDS = new Set([
+  "minecraft:glass",
+  "minecraft:stained_glass",
+  "minecraft:tinted_glass",
 ]);
 
 const FURNACE_FUEL_FALLBACK_IDS = new Set([
@@ -84,7 +95,12 @@ function isPrismId(typeId) {
 const ENDPOINT_IDS = [
   CRYSTALLIZER_ID,
   CRUCIBLE_ID,
+  FOUNDRY_ID,
+  TRANSPOSER_ID,
+  COLLECTOR_ID,
 ];
+
+const BEAM_IDS = new Set([BEAM_ID, CHAOS_BEAM_ID]);
 
 const HYBRID_DRIFT_AMOUNT_BY_TIER = [1, 2, 4, 16, 64];
 const HYBRID_DRIFT_INTERVAL_BY_TIER = [20, 15, 10, 7, 5];
@@ -100,6 +116,28 @@ function isEndpointId(typeId) {
  */
 function isPrismBlock(block) {
   return !!block && isPrismId(block.typeId);
+}
+
+function isLensId(typeId) {
+  return typeId === LENS_ID;
+}
+
+function isLensBlock(block) {
+  return !!block && isLensId(block.typeId);
+}
+
+function isBeamId(typeId) {
+  return BEAM_IDS.has(typeId);
+}
+
+function isBeamBlock(block) {
+  return !!block && isBeamId(block.typeId);
+}
+
+function isGlassBlockId(typeId) {
+  if (!typeId) return false;
+  if (GLASS_BLOCK_IDS.has(typeId)) return true;
+  return typeof typeId === "string" && typeId.startsWith("minecraft:") && typeId.endsWith("_stained_glass");
 }
 
 /**
@@ -248,6 +286,21 @@ const DEFAULTS = {
   debugOrbLifecycleTrace: false,
   minTravelTicks: 1,
   debugEdgeLenTrace: false,
+  lensSpeedBoostPerLens: 0.08,
+  lensSpeedBoostMax: 2.0,
+  lensFxBoostPerLens: 0.08,
+  lensFxBoostMax: 0.6,
+  lensAuraSegmentsPerTick: 32,
+  lensAuraDurationTicks: 60,
+  lensAuraRadius: 0.6,
+  lensAuraAmplifierPerLens: 0.15,
+  lensAuraMaxAmplifier: 2,
+  foundryCraftsPerTick: 4,
+  foundryMaxFluxStored: 100000,
+  crucibleLensBonusPerLens: 0.05,
+  crucibleLensBonusMax: 0.5,
+  foundryLensBonusPerLens: 0.03,
+  foundryLensBonusMax: 0.3,
 };
 
 export {
@@ -266,7 +319,12 @@ export {
   // IDs
   CRYSTALLIZER_ID,
   CRUCIBLE_ID,
+  FOUNDRY_ID,
+  TRANSPOSER_ID,
+  COLLECTOR_ID,
   BEAM_ID,
+  CHAOS_BEAM_ID,
+  LENS_ID,
   ENDPOINT_IDS,
   isEndpointId,
 
@@ -274,6 +332,12 @@ export {
   FURNACE_BLOCK_IDS,
   FURNACE_FUEL_FALLBACK_IDS,
   FURNACE_SLOTS,
+  GLASS_BLOCK_IDS,
+  isGlassBlockId,
+  isLensId,
+  isLensBlock,
+  isBeamId,
+  isBeamBlock,
 
   // Persistence keys
   DP_TRANSFERS,

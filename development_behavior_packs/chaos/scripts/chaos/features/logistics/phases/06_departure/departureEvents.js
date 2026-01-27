@@ -16,6 +16,7 @@ function assignEdge(orb, linkGraph, fromKey, toKey) {
   orb.edgeToKey = toKey;
   orb.edgeEpoch = edge.epoch | 0;
   orb.edgeLength = edge.length | 0;
+  orb.edgeMeta = edge.meta || null;
   orb.progress = 0;
   orb.state = OrbStates.IN_FLIGHT;
   return true;

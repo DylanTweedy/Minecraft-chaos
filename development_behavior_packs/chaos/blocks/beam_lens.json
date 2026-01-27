@@ -1,0 +1,229 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:block": {
+    "description": {
+      "identifier": "chaos:beam_lens",
+      "menu_category": { "category": "construction" },
+      "traits": {
+        "minecraft:placement_direction": {
+          "enabled_states": ["minecraft:facing_direction"]
+        }
+      },
+      "states": {
+        "chaos:lens_color": [
+          "white",
+          "orange",
+          "magenta",
+          "light_blue",
+          "yellow",
+          "lime",
+          "pink",
+          "gray",
+          "light_gray",
+          "cyan",
+          "purple",
+          "blue",
+          "brown",
+          "green",
+          "red",
+          "black"
+        ]
+      }
+    },
+    "components": {
+      "minecraft:geometry": "minecraft:geometry.full_block",
+      "minecraft:material_instances": {
+        "*": { "texture": "lens_side_white", "render_method": "opaque" },
+        "north": { "texture": "lens_front", "render_method": "opaque" },
+        "south": { "texture": "lens_back", "render_method": "opaque" }
+      },
+      "minecraft:loot": "loot_tables/blocks/beam_lens.json"
+    },
+    "permutations": [
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'white'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_white", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'orange'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_orange", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'magenta'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_magenta", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'light_blue'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_light_blue", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'yellow'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_yellow", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'lime'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_lime", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'pink'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_pink", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'gray'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_gray", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'light_gray'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_light_gray", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'cyan'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_cyan", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'purple'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_purple", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'blue'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_blue", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'brown'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_brown", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'green'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_green", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'red'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_red", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:lens_color') == 'black'",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "lens_side_black", "render_method": "opaque" },
+            "north": { "texture": "lens_front", "render_method": "opaque" },
+            "south": { "texture": "lens_back", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('minecraft:facing_direction') == 'north'",
+        "components": { "minecraft:transformation": { "rotation": [0, 0, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:facing_direction') == 'south'",
+        "components": { "minecraft:transformation": { "rotation": [0, 180, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:facing_direction') == 'east'",
+        "components": { "minecraft:transformation": { "rotation": [0, 90, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:facing_direction') == 'west'",
+        "components": { "minecraft:transformation": { "rotation": [0, 270, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:facing_direction') == 'up'",
+        "components": { "minecraft:transformation": { "rotation": [-90, 0, 0] } }
+      },
+      {
+        "condition": "q.block_state('minecraft:facing_direction') == 'down'",
+        "components": { "minecraft:transformation": { "rotation": [90, 0, 0] } }
+      }
+    ]
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:block": {
+    "description": {
+      "identifier": "chaos:chaos_beam",
+      "states": {
+        "chaos:axis": ["x", "y", "z"],
+        "chaos:level": [1, 2, 3, 4, 5]
+      }
+    },
+    "components": {
+      "minecraft:geometry": "geometry.chaos.beam_chaos",
+      "minecraft:material_instances": {
+        "*": {
+          "texture": "chaos_beam",
+          "render_method": "blend",
+          "ambient_occlusion": false,
+          "face_dimming": false
+        }
+      },
+      "minecraft:collision_box": false,
+      "minecraft:selection_box": {
+        "origin": [0.4375, 0.4375, 0.4375],
+        "size": [0.125, 0.125, 0.125]
+      },
+      "minecraft:replaceable": { "value": true },
+      "minecraft:light_emission": 8,
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 0.0 },
+      "minecraft:destructible_by_explosion": { "explosion_resistance": 0 }
+    },
+    "permutations": [
+      {
+        "condition": "q.block_state('chaos:axis') == 'y'",
+        "components": { "minecraft:transformation": { "rotation": [90, 0, 0] } }
+      },
+      {
+        "condition": "q.block_state('chaos:axis') == 'z'",
+        "components": { "minecraft:transformation": { "rotation": [0, 90, 0] } }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 1",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 2",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam2",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 3",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam3",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 4",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam4",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:level') == 5",
+        "components": {
+          "minecraft:material_instances": {
+            "*": {
+              "texture": "chaos_beam5",
+              "render_method": "blend",
+              "ambient_occlusion": false,
+              "face_dimming": false
+            }
+          }
+        }
+      }
+    ]
+  }
+}

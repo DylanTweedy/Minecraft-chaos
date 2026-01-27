@@ -1,6 +1,6 @@
 // scripts/chaos/features/logistics/util/inventoryAdapter.js
 import { ItemStack } from "@minecraft/server";
-import { getVirtualContainerForBlock } from "../vacuumBuffer.js";
+import { getVirtualContainerForBlock } from "../collectorState.js";
 import { FURNACE_BLOCK_IDS, FURNACE_FUEL_FALLBACK_IDS, FURNACE_SLOTS } from "../config.js";
 import { getInventoryMutationGuard } from "./inventoryMutationGuard.js";
 

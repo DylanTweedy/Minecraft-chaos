@@ -10,8 +10,11 @@ import { registerHeldProvider, registerFocusProvider, resolveProvider, setFallba
 import { ClockProvider } from "./providers/clock.js";
 import { PrismProvider } from "./providers/prism.js";
 import { CrystallizerProvider } from "./providers/crystallizer.js";
-import { TeleporterProvider } from "./providers/teleporter.js";
-import { VacuumHopperProvider } from "./providers/vacuumHopper.js";
+import { LensProvider } from "./providers/lens.js";
+import { CrucibleProvider } from "./providers/crucible.js";
+import { FoundryProvider } from "./providers/foundry.js";
+import { TransposerProvider } from "./providers/transposer.js";
+import { CollectorProvider } from "./providers/collector.js";
 import { FallbackProvider } from "./providers/fallback.js";
 import { VanillaContainerProvider } from "./providers/vanillaContainer.js";
 import { isHoldingLens } from "../../items/insightLens.js";
@@ -183,8 +186,11 @@ export function startInsightRouter(config = {}) {
   registerFocusProvider(VanillaContainerProvider);
   registerFocusProvider(CrystallizerProvider);
   registerFocusProvider(PrismProvider);
-  registerFocusProvider(TeleporterProvider);
-  registerFocusProvider(VacuumHopperProvider);
+  registerFocusProvider(LensProvider);
+  registerFocusProvider(CrucibleProvider);
+  registerFocusProvider(FoundryProvider);
+  registerFocusProvider(TransposerProvider);
+  registerFocusProvider(CollectorProvider);
   setFallbackProvider(FallbackProvider);
 
   system.runInterval(() => {

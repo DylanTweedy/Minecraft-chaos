@@ -5,10 +5,11 @@ import { getReasonLabel, prismKeyToContextKey } from "../../util/insightReasons.
 function formatRoutingSummary(counts = {}) {
   const attuned = counts.resolved_attuned || 0;
   const crucible = counts.resolved_crucible || 0;
+  const foundry = counts.resolved_foundry || 0;
   const drift = counts.resolved_drift || 0;
   const none = counts.resolved_none || 0;
-  if (!attuned && !crucible && !drift && !none) return "";
-  return `resolve a=${attuned} c=${crucible} d=${drift} n=${none}`;
+  if (!attuned && !crucible && !foundry && !drift && !none) return "";
+  return `resolve a=${attuned} c=${crucible} f=${foundry} d=${drift} n=${none}`;
 }
 
 function formatIoSummary(counts = {}) {

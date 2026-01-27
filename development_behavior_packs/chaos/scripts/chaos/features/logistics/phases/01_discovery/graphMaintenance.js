@@ -1,5 +1,25 @@
 // scripts/chaos/features/logistics/phases/01_discovery/graphMaintenance.js
 import { bumpCounter } from "../../util/insightCounters.js";
+import { safeJsonParse } from "../../persistence/serializers.js";
+import { DP_COLLECTOR_REGISTRY } from "../../../../core/constants.js";
+import { canonicalizePrismKey } from "../../keys.js";
+
+function readCollectorRegistry(world) {
+  try {
+    if (!world || typeof world.getDynamicProperty !== "function") return [];
+    const raw = world.getDynamicProperty(DP_COLLECTOR_REGISTRY);
+    const parsed = safeJsonParse(raw, []);
+    if (!Array.isArray(parsed)) return [];
+    const keys = [];
+    for (const item of parsed) {
+      const canonical = canonicalizePrismKey(item);
+      if (canonical) keys.push(canonical);
+    }
+    return keys;
+  } catch {
+    return [];
+  }
+}
 
 export function runGraphMaintenance(ctx) {
   const cfg = ctx.cfg || {};
@@ -41,6 +61,19 @@ export function runGraphMaintenance(ctx) {
       }
       bumpCounter(ctx, "graph_sweep_marked");
     }
+  }
+
+  const collectorKeys = readCollectorRegistry(ctx.world);
+  if (collectorKeys.length > 0 && linkGraph?.markNodeDirty) {
+    const cursor = ctx.state?.collectorGraphCursor | 0;
+    const budget = Math.max(1, Number(cfg.linkRebuildBudgetPerTick || 8) | 0);
+    const count = Math.min(collectorKeys.length, budget);
+    for (let i = 0; i < count; i++) {
+      const key = collectorKeys[(cursor + i) % collectorKeys.length];
+      linkGraph.markNodeDirty(key);
+    }
+    if (ctx.state) ctx.state.collectorGraphCursor = (cursor + count) % collectorKeys.length;
+    bumpCounter(ctx, "collector_graph_marked");
   }
 
   let rebuildStats = null;

@@ -1,7 +1,9 @@
 // scripts/chaos/features/logistics/pathfinding/path.js
 import {
-  BEAM_ID,
+  isBeamId,
   CRYSTALLIZER_ID,
+  TRANSPOSER_ID,
+  COLLECTOR_ID,
   PATH_WEIGHT_MAX_LEN,
   PATH_WEIGHT_LEN_EXP,
   PATH_WEIGHT_RANDOM_MIN,
@@ -26,19 +28,19 @@ export function validatePathStart(dim, path) {
 export function isPathBlock(block) {
   if (!block) return false;
   const id = block.typeId;
-  return id === BEAM_ID || isPrismBlock(block) || id === CRYSTALLIZER_ID;
+  return isBeamId(id) || isPrismBlock(block) || id === CRYSTALLIZER_ID || id === TRANSPOSER_ID || id === COLLECTOR_ID;
 }
 
 export function isRelayBlock(block) {
   if (!block) return false;
   const id = block.typeId;
-  return isPrismBlock(block) || id === CRYSTALLIZER_ID;
+  return isPrismBlock(block) || id === CRYSTALLIZER_ID || id === TRANSPOSER_ID || id === COLLECTOR_ID;
 }
 
 export function isNodeBlock(block) {
   if (!block) return false;
   const id = block.typeId;
-  return isPrismBlock(block) || id === CRYSTALLIZER_ID;
+  return isPrismBlock(block) || id === CRYSTALLIZER_ID || id === TRANSPOSER_ID || id === COLLECTOR_ID;
 }
 
 export function findFirstPrismKeyInPath(dim, dimId, path) {

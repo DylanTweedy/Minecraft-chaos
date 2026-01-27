@@ -33,7 +33,7 @@
 	"chaos:teleporter": {
 		"sound": "amethyst_block"
 	},
-	"chaos:vacuum_hopper": {
+	"chaos:collector": {
 		"sound": "stone"
 	}
 }

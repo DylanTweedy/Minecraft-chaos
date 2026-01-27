@@ -3,10 +3,14 @@
 import { startCleanupOnBreak } from "../systems/cleanupOnBreak.js";
 import { startFxQueue } from "../systems/fxQueue.js";
 import { startFilterInteract } from "../systems/filterInteract.js";
+import { startFoundryInteract } from "../systems/foundryInteract.js";
+import { startCollectorInteract } from "../systems/collectorInteract.js";
 import { startCrystallizerSystem } from "../crystallizer.js";
 import { startPrestigeSystem } from "../prestige.js";
 import { startDeathmarkSystem } from "../deathmark.js";
 import { startInsightRouter } from "../core/insight/router.js";
+import { startTransposerSystem } from "../features/transposer/transposerSystem.js";
+import { startCollectorSystem } from "../features/logistics/collector.js";
 
 import {
   initializeScriptLoader,
@@ -66,10 +70,14 @@ export function startSystems({ world, system }) {
     { name: "FX Queue", fn: () => startFxQueue() },
     { name: "Cleanup on Break", fn: () => startCleanupOnBreak() },
     { name: "Filter Interact", fn: () => startFilterInteract() },
+    { name: "Foundry Interact", fn: () => startFoundryInteract() },
+    { name: "Collector Interact", fn: () => startCollectorInteract() },
     { name: "Crystallizer", fn: () => startCrystallizerSystem() },
     { name: "Prestige", fn: () => startPrestigeSystem() },
     { name: "Deathmark System", fn: () => startDeathmarkSystem(world, system) },
     { name: "Insight Router", fn: () => startInsightRouter() },
+    { name: "Transposer System", fn: () => startTransposerSystem() },
+    { name: "Collector", fn: () => startCollectorSystem() },
   ];
 
   for (const sys of systems) {

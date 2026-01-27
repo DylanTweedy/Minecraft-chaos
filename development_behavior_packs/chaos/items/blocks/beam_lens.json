@@ -1,0 +1,17 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:item": {
+    "description": {
+      "identifier": "chaos:beam_lens",
+      "menu_category": { "category": "construction", "group": "chaos:prisms" }
+    },
+    "components": {
+      "minecraft:display_name": { "value": "item.chaos:beam_lens.name" },
+      "minecraft:icon": "beam_lens",
+      "minecraft:block_placer": {
+        "block": "chaos:beam_lens",
+        "replace_block_item": true
+      }
+    }
+  }
+}

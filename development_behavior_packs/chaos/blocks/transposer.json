@@ -1,0 +1,52 @@
+{
+  "format_version": "1.21.130",
+  "minecraft:block": {
+    "description": {
+      "identifier": "chaos:teleporter",
+      "menu_category": { "category": "construction" },
+      "states": {
+        "chaos:transposer_state": [0, 1, 2, 3]
+      }
+    },
+    "components": {
+      "minecraft:geometry": "minecraft:geometry.full_block",
+      "minecraft:material_instances": {
+        "*": { "texture": "transposer_side_unlinked", "render_method": "opaque" },
+        "up": { "texture": "transposer_top_unlinked", "render_method": "opaque" },
+        "down": { "texture": "transposer_bottom", "render_method": "opaque" }
+      }
+    },
+    "permutations": [
+      {
+        "condition": "q.block_state('chaos:transposer_state') == 1",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "transposer_side_linked_unpowered", "render_method": "opaque" },
+            "up": { "texture": "transposer_top_linked_unpowered", "render_method": "opaque" },
+            "down": { "texture": "transposer_bottom", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:transposer_state') == 2",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "transposer_side_charged", "render_method": "opaque" },
+            "up": { "texture": "transposer_top_charged", "render_method": "opaque" },
+            "down": { "texture": "transposer_bottom", "render_method": "opaque" }
+          }
+        }
+      },
+      {
+        "condition": "q.block_state('chaos:transposer_state') == 3",
+        "components": {
+          "minecraft:material_instances": {
+            "*": { "texture": "transposer_side_charged", "render_method": "opaque" },
+            "up": { "texture": "transposer_top_overcharged", "render_method": "opaque" },
+            "down": { "texture": "transposer_bottom", "render_method": "opaque" }
+          }
+        }
+      }
+    ]
+  }
+}

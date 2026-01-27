@@ -8,6 +8,7 @@ export function createCacheManager(deps, cfg) {
   const world = deps.world;
   const getContainerCapacityWithReservations = deps.getContainerCapacityWithReservations;
   const getTotalCountForType = deps.getTotalCountForType;
+  const getExtraInventoriesForPrism = deps.getExtraInventoriesForPrism || null;
   const invalidateInput = deps.invalidateInput || null; // Optional callback for pathfinder invalidation
   const debugEnabled = deps.debugEnabled || false;
   const debugState = deps.debugState || null;
@@ -374,6 +375,14 @@ export function createCacheManager(deps, cfg) {
       prismKey,
       report: inventoryDiagCollector,
     });
+    if (typeof getExtraInventoriesForPrism === "function") {
+      try {
+        const extra = getExtraInventoriesForPrism(prismKey) || [];
+        if (Array.isArray(extra) && extra.length > 0) inventories.push(...extra);
+      } catch {
+        // ignore
+      }
+    }
     prismInventoryListCache.set(prismKey, inventories);
     prismInventoryListCacheTimestamps.set(prismKey, nowTick);
     

@@ -134,7 +134,7 @@ function playTeleportEndSound(entity, location) {
 
     const candidates = ["mob.endermen.portal", "entity.player.teleport", "random.orb"];
 
-    // Prefer player-local sound so the teleporter ALWAYS hears it
+    // Prefer player-local sound so the transposer ALWAYS hears it
     if (entity.typeId === "minecraft:player") {
       for (const id of candidates) {
         if (tryPlaySoundToPlayer(entity, id, 1, 1)) return;

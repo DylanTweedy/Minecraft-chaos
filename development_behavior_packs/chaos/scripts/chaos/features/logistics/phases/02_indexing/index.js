@@ -20,10 +20,11 @@ export function createIndexingPhase() {
       }
       const crucibles = endpoints?.crucible?.length || 0;
       const crystallizers = endpoints?.crystallizer?.length || 0;
+      const foundries = endpoints?.foundry?.length || 0;
       emitPhaseInsight(
         ctx,
         "02_indexing",
-        `filters=${filterKeyCount} links=${filterPrismCount} crucible=${crucibles} crystallizer=${crystallizers}`
+        `filters=${filterKeyCount} links=${filterPrismCount} crucible=${crucibles} crystallizer=${crystallizers} foundry=${foundries}`
       );
       return ok();
     },

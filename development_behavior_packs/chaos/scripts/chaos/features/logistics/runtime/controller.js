@@ -15,6 +15,7 @@ import { createFilterIndexManager } from "../systems/filterIndex.js";
 
 import { getFilterSetForBlock } from "../network/filters.js";
 import { getTotalCountForType } from "../util/inventoryAdapter.js";
+import { getCollectorInventoriesForPrism } from "../collector.js";
 
 import { createDiscoveryPhase } from "../phases/01_discovery/index.js";
 import { createIndexingPhase } from "../phases/02_indexing/index.js";
@@ -24,7 +25,9 @@ import { createArrivalPhase } from "../phases/05_arrival/index.js";
 import { createDeparturePhase } from "../phases/06_departure/index.js";
 import { createInventoryIOPhase } from "../phases/07_inventoryIO/index.js";
 import { createMovementPhase } from "../phases/08_movement/index.js";
+import { createLensAuraPhase } from "../phases/08_lensAura/index.js";
 import { createFluxConversionPhase } from "../phases/09_fluxConversion/index.js";
+import { createFoundryCraftPhase } from "../phases/09_foundryCraft/index.js";
 import { createPersistInsightPhase } from "../phases/10_persistInsight/index.js";
 
 import { createPrismState } from "../state/prisms.js";
@@ -48,7 +51,12 @@ export function createNetworkTransferController(deps = {}, opts = {}) {
   const linkEvents = subscribeLinkEvents({ world, system, prismRegistry, linkGraph, debugLog: () => {} });
 
   const cacheManager = createCacheManager(
-    { world, getContainerCapacityWithReservations: () => 0, getTotalCountForType },
+    {
+      world,
+      getContainerCapacityWithReservations: () => 0,
+      getTotalCountForType,
+      getExtraInventoriesForPrism: (prismKey) => getCollectorInventoriesForPrism(prismKey),
+    },
     cfg
   );
 
@@ -110,10 +118,12 @@ export function createNetworkTransferController(deps = {}, opts = {}) {
     createExportSelectionPhase(),
     createDestinationResolvePhase(),
     createMovementPhase(),
+    createLensAuraPhase(),
     createArrivalPhase(),
     createDeparturePhase(),
     createInventoryIOPhase(),
     createFluxConversionPhase(),
+    createFoundryCraftPhase(),
     createPersistInsightPhase(),
   ];
 

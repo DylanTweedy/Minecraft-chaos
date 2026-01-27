@@ -4,9 +4,12 @@ import { emitPrismReason } from "../../util/insightReasons.js";
 import { ReasonCodes } from "../../util/insightReasonCodes.js";
 import { emitTrace } from "../../../../core/insight/trace.js";
 import { resolveAttuned } from "./resolveAttuned.js";
+import { resolveCollector } from "./resolveCollector.js";
 import { resolveCrystallizer } from "./resolveCrystallizer.js";
 import { resolveCrucible } from "./resolveCrucible.js";
 import { resolveDrift } from "./resolveDrift.js";
+import { resolveFoundry } from "./resolveFoundry.js";
+import { resolveTransposer } from "./resolveTransposer.js";
 import { ResolveKinds, makeResolveResult } from "./resolveResult.js";
 import { isFluxTypeId } from "../../../flux.js";
 
@@ -33,6 +36,34 @@ function buildDeparture(intent, resolved, tick) {
   };
 }
 
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+function resolveFluxEndpoint(ctx, intent) {
+  const options = shuffleInPlace([
+    { kind: ResolveKinds.FOUNDRY, fn: resolveFoundry, counter: "resolved_foundry", trace: "foundry" },
+    { kind: ResolveKinds.CRYSTALLIZER, fn: resolveCrystallizer, counter: "resolved_crystallizer", trace: "crystal" },
+    { kind: ResolveKinds.COLLECTOR, fn: resolveCollector, counter: "resolved_collector", trace: "collector" },
+    { kind: ResolveKinds.TRANSPOSER, fn: resolveTransposer, counter: "resolved_transposer", trace: "transposer" },
+  ]);
+
+  for (const opt of options) {
+    const resolved = opt.fn(ctx, intent);
+    if (!resolved) continue;
+    const result = makeResolveResult(opt.kind, resolved);
+    return { result, counter: opt.counter, trace: opt.trace };
+  }
+
+  return null;
+}
+
 export function resolveDepartureIntents(ctx) {
   const intents = Array.isArray(ctx.exportIntents) ? ctx.exportIntents : [];
   const departures = [];
@@ -46,25 +77,7 @@ export function resolveDepartureIntents(ctx) {
       bumpCounter(ctx, "throttles");
       break;
     }
-    let resolved = null;
-    if (isFluxTypeId(intent.itemTypeId)) {
-      resolved = resolveCrystallizer(ctx, intent);
-      if (resolved) {
-        const result = makeResolveResult(ResolveKinds.CRYSTALLIZER, resolved);
-        departures.push(buildDeparture(intent, result, nowTick));
-        bumpCounter(ctx, "resolved_crystallizer");
-        if (ctx.cfg?.debugOrbLifecycleTrace && typeof emitTrace === "function") {
-          emitTrace(null, "transfer", {
-            text: `[Transfer] Resolve crystallizer ${intent.sourcePrismKey} item=${intent.itemTypeId} src=${intent.containerKey} dest=${result.destPrismKey}`,
-            category: "transfer",
-            dedupeKey: `transfer_resolve_crystal_${intent.sourcePrismKey}_${intent.itemTypeId}`,
-          });
-        }
-        continue;
-      }
-    }
-
-    resolved = resolveAttuned(ctx, intent);
+    let resolved = resolveAttuned(ctx, intent);
     if (resolved) {
       const result = makeResolveResult(ResolveKinds.ATTUNED, resolved);
       departures.push(buildDeparture(intent, result, nowTick));
@@ -77,6 +90,22 @@ export function resolveDepartureIntents(ctx) {
         });
       }
       continue;
+    }
+
+    if (isFluxTypeId(intent.itemTypeId)) {
+      const fluxResolved = resolveFluxEndpoint(ctx, intent);
+      if (fluxResolved?.result) {
+        departures.push(buildDeparture(intent, fluxResolved.result, nowTick));
+        bumpCounter(ctx, fluxResolved.counter);
+        if (ctx.cfg?.debugOrbLifecycleTrace && typeof emitTrace === "function") {
+          emitTrace(null, "transfer", {
+            text: `[Transfer] Resolve ${fluxResolved.trace} ${intent.sourcePrismKey} item=${intent.itemTypeId} src=${intent.containerKey} dest=${fluxResolved.result.destPrismKey}`,
+            category: "transfer",
+            dedupeKey: `transfer_resolve_${fluxResolved.trace}_${intent.sourcePrismKey}_${intent.itemTypeId}`,
+          });
+        }
+        continue;
+      }
     }
 
     resolved = resolveCrucible(ctx, intent);

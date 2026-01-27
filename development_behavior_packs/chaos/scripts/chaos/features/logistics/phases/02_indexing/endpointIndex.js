@@ -1,5 +1,5 @@
 // scripts/chaos/features/logistics/phases/02_indexing/endpointIndex.js
-import { CRYSTALLIZER_ID, CRUCIBLE_ID, isPrismBlock } from "../../config.js";
+import { CRYSTALLIZER_ID, CRUCIBLE_ID, FOUNDRY_ID, TRANSPOSER_ID, COLLECTOR_ID, isPrismBlock } from "../../config.js";
 
 export function buildEndpointIndex(ctx) {
   const linkGraph = ctx.services?.linkGraph;
@@ -7,6 +7,9 @@ export function buildEndpointIndex(ctx) {
   const endpoints = {
     crystallizer: [],
     crucible: [],
+    foundry: [],
+    transposer: [],
+    collector: [],
   };
 
   if (!linkGraph || !cacheManager || typeof linkGraph.getNodeKeys !== "function") {
@@ -25,6 +28,18 @@ export function buildEndpointIndex(ctx) {
     }
     if (CRUCIBLE_ID && block.typeId === CRUCIBLE_ID) {
       endpoints.crucible.push(nodeKey);
+      continue;
+    }
+    if (FOUNDRY_ID && block.typeId === FOUNDRY_ID) {
+      endpoints.foundry.push(nodeKey);
+      continue;
+    }
+    if (TRANSPOSER_ID && block.typeId === TRANSPOSER_ID) {
+      endpoints.transposer.push(nodeKey);
+      continue;
+    }
+    if (COLLECTOR_ID && block.typeId === COLLECTOR_ID) {
+      endpoints.collector.push(nodeKey);
       continue;
     }
     if (isPrismBlock(block)) continue;

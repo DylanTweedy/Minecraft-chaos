@@ -12,10 +12,9 @@ import {
   parseKey,
   resolveBlockForKey,
 } from "./crystallizer.js";
-import { isPrismBlock, getPrismTier, getPrismTypeIdForTier } from "./features/logistics/config.js";
+import { isPrismBlock, getPrismTier, getPrismTypeIdForTier, isBeamId } from "./features/logistics/config.js";
 
 const CRYSTALLIZER_ID = "chaos:crystallizer";
-const BEAM_ID = "chaos:beam";
 
 const DP_INPUT_LEVELS = "chaos:input_levels_v0_json";
 const DP_OUTPUT_LEVELS = "chaos:output_levels_v0_json";
@@ -97,7 +96,7 @@ function scanEdgeFromNode(dim, loc, dir, curNodeType) {
     if (!b) break;
 
     const id = b.typeId;
-    if (id === BEAM_ID) {
+    if (isBeamId(id)) {
       path.push({ x, y, z });
       continue;
     }

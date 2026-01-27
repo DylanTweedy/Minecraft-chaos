@@ -1,7 +1,9 @@
 // scripts/chaos/features/logistics/beam/jobs.js
 import { BlockPermutation } from "@minecraft/server";
-import { BEAM_ID } from "./config.js";
+import { BEAM_ID, CHAOS_BEAM_ID } from "./config.js";
+import { LENS_ID } from "../../config.js";
 import { axisForDir, beamAxisMatchesDir } from "./axis.js";
+import { lensAllowsDir, lensFacingMatchesDir } from "../../util/lens.js";
 
 const buildJobs = [];
 const buildJobsSet = new Set();
@@ -50,6 +52,7 @@ export function enqueueBuildJob(job) {
     ...job,
     step: Math.max(1, Number(job?.step) || 1),
     len: Math.max(0, Number(job?.len) || 0),
+    chaosFront: !!job?.chaosFront,
   });
 
   if (debugLog) {
@@ -94,10 +97,11 @@ export function getBeamJobCounts() {
   return { build: buildJobs.length, collapse: collapseJobs.length };
 }
 
-function placeBeamBlock(block, axis, tier) {
+function placeBeamBlock(block, axis, tier, useChaos = false) {
   const safeAxis = axis || "x";
   const safeTier = clampTier(tier);
-  const perm = BlockPermutation.resolve(BEAM_ID, { "chaos:axis": safeAxis, "chaos:level": safeTier });
+  const typeId = useChaos ? CHAOS_BEAM_ID : BEAM_ID;
+  const perm = BlockPermutation.resolve(typeId, { "chaos:axis": safeAxis, "chaos:level": safeTier });
   block.setPermutation(perm);
 }
 
@@ -116,10 +120,12 @@ function stepBuildJob(world, job) {
 
   const axis = axisForDir(job.dir.dx, job.dir.dy, job.dir.dz);
   const tier = clampTier(job.tier || 1);
+  const chaosTier = job.chaosFront ? 5 : tier;
+  const useChaos = !!job.chaosFront;
 
   if (b.typeId === "minecraft:air") {
     try {
-      placeBeamBlock(b, axis, tier);
+      placeBeamBlock(b, axis, chaosTier, useChaos);
     } catch (e) {
       return true;
     }
@@ -127,16 +133,28 @@ function stepBuildJob(world, job) {
     return job.step >= job.len;
   }
 
-  if (b.typeId === BEAM_ID) {
+  if (b.typeId === BEAM_ID || b.typeId === CHAOS_BEAM_ID) {
     if (!beamAxisMatchesDir(b, job.dir.dx, job.dir.dy, job.dir.dz)) return true;
     const curTier = getBeamTier(b);
-    const newTier = Math.max(curTier, tier);
-    if (newTier !== curTier) {
+    const newTier = Math.max(curTier, chaosTier);
+    if (newTier !== curTier || (useChaos && b.typeId !== CHAOS_BEAM_ID) || (!useChaos && b.typeId !== BEAM_ID)) {
       try {
-        b.setPermutation(b.permutation.withState("chaos:level", newTier));
+        const perm = BlockPermutation.resolve(useChaos ? CHAOS_BEAM_ID : BEAM_ID, {
+          "chaos:axis": axis,
+          "chaos:level": newTier,
+        });
+        b.setPermutation(perm);
       } catch (e) {
         return true;
       }
+    }
+    job.step += 1;
+    return job.step >= job.len;
+  }
+  if (b.typeId === LENS_ID) {
+    if (!lensAllowsDir(b, job.dir.dx, job.dir.dy, job.dir.dz)) return true;
+    if (lensFacingMatchesDir(b, job.dir.dx, job.dir.dy, job.dir.dz)) {
+      job.chaosFront = true;
     }
     job.step += 1;
     return job.step >= job.len;
@@ -157,7 +175,7 @@ function stepCollapseJob(world, job) {
   const z = job.from.z + job.dir.dz * job.step;
   const b = dim.getBlock({ x, y, z });
 
-  if (b?.typeId === BEAM_ID) {
+  if (b?.typeId === BEAM_ID || b?.typeId === CHAOS_BEAM_ID) {
     if (beamAxisMatchesDir(b, job.dir.dx, job.dir.dy, job.dir.dz)) {
       try {
         b.setType("minecraft:air");
@@ -218,7 +236,7 @@ export function tickBeamJobs(world, { buildBudget = 0, collapseBudget = 0 } = {}
 
 export function getPrismTierForBlock(block) {
   if (!block) return 1;
-  if (block.typeId === BEAM_ID) return getBeamTier(block);
+  if (block.typeId === BEAM_ID || block.typeId === CHAOS_BEAM_ID) return getBeamTier(block);
   return getPrismTierFromId(block.typeId);
 }
 

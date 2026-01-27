@@ -4,6 +4,9 @@ export const ResolveKinds = Object.freeze({
   ATTUNED: "attuned",
   CRYSTALLIZER: "crystallizer",
   CRUCIBLE: "crucible",
+  FOUNDRY: "foundry",
+  COLLECTOR: "collector",
+  TRANSPOSER: "transposer",
   DRIFT: "drift",
   NONE: "none",
 });

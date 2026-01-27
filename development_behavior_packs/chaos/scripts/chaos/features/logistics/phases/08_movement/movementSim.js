@@ -43,7 +43,7 @@ function getTierColor(tier) {
   return palette[lvl - 1] || palette[0];
 }
 
-function buildOrbMolang(dir, speedBlocksPerTick, lifetimeSeconds, tier) {
+function buildOrbMolang(dir, speedBlocksPerTick, lifetimeSeconds, tier, lensBoost = 0) {
   try {
     if (!dir) return null;
     const m = new MolangVariableMap();
@@ -56,9 +56,13 @@ function buildOrbMolang(dir, speedBlocksPerTick, lifetimeSeconds, tier) {
     const life = Math.max(0.12, Math.min(5.0, Number(lifetimeSeconds) || 0.35));
     m.setFloat("variable.chaos_lifetime", life);
     const c = getTierColor(tier);
-    m.setFloat("variable.chaos_color_r", c.r);
-    m.setFloat("variable.chaos_color_g", c.g);
-    m.setFloat("variable.chaos_color_b", c.b);
+    const boost = Math.max(0, Math.min(1, Number(lensBoost) || 0));
+    const r = c.r + (1 - c.r) * boost;
+    const g = c.g + (1 - c.g) * boost;
+    const b = c.b + (1 - c.b) * boost;
+    m.setFloat("variable.chaos_color_r", r);
+    m.setFloat("variable.chaos_color_g", g);
+    m.setFloat("variable.chaos_color_b", b);
     m.setFloat("variable.chaos_color_a", c.a);
     return m;
   } catch {
@@ -103,6 +107,7 @@ export function advanceMovement(ctx) {
       moved++;
       continue;
     }
+    orb.edgeMeta = edge.meta || orb.edgeMeta || null;
 
     if (!(orb.edgeEpoch | 0)) {
       orb.edgeEpoch = edge.epoch | 0;
@@ -117,8 +122,15 @@ export function advanceMovement(ctx) {
     }
 
     const speed = Math.max(0.01, Number(orb.speed) || 1);
+    const lensCount = Math.max(0, edge?.meta?.lensCount | 0);
+    const lensSpeedBoost = Math.max(0, Number(ctx.cfg?.lensSpeedBoostPerLens) || 0);
+    const lensSpeedMax = Math.max(1, Number(ctx.cfg?.lensSpeedBoostMax) || 2);
+    const lensScaleRaw = 1 + (lensCount * lensSpeedBoost);
+    const lensScale = Math.min(lensSpeedMax, Math.max(1, lensScaleRaw));
+    const effectiveSpeed = speed * lensScale;
     const edgeLen = Math.max(1, (orb.edgeLength | 0) || (edge.length | 0));
-    orb.progress += speed;
+    orb.progress += effectiveSpeed;
+    orb.edgeSpeed = effectiveSpeed;
 
     const edgeKey = `${orb.edgeFromKey}|${orb.edgeToKey}|${orb.edgeEpoch | 0}`;
     if (orb._fxEdgeKey !== edgeKey) {
@@ -143,12 +155,15 @@ export function advanceMovement(ctx) {
           const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
           const ndir = len > 0.0001 ? { x: dir.x / len, y: dir.y / len, z: dir.z / len } : { x: 0, y: 0, z: 0 };
           const remaining = Math.max(0.01, edgeLen - (orb.progress || 0));
-          const speedPerSec = Math.max(0.6, Math.min(12.0, Number(speed) * 20));
+          const speedPerSec = Math.max(0.6, Math.min(12.0, Number(effectiveSpeed) * 20));
           const lifetime = Math.max(0.1, Math.min(5.0, remaining / speedPerSec));
           const colorSourceKey = orb.sourcePrismKey || orb.edgeFromKey;
           const fromBlock = resolvePrismBlock(ctx, colorSourceKey);
           const tier = fromBlock ? getPrismTier(fromBlock) : 1;
-          const molang = buildOrbMolang(ndir, speed, lifetime, tier);
+          const lensFxBoost = Math.max(0, Number(ctx.cfg?.lensFxBoostPerLens) || 0);
+          const lensFxMax = Math.max(0, Number(ctx.cfg?.lensFxBoostMax) || 0.6);
+          const lensFx = Math.min(lensFxMax, lensCount * lensFxBoost);
+          const molang = buildOrbMolang(ndir, effectiveSpeed, lifetime, tier, lensFx);
           queueFxParticle(dim, particleId, { x: px, y: py, z: pz }, molang);
           orb._fxEdgeKey = edgeKey;
           orb._fxSpawned = true;

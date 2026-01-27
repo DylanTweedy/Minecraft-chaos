@@ -13,15 +13,15 @@ export const DP_PAIRS_CHUNK_PREFIX = "chaos:pairs_chunk_";
 export const DP_PAIRS_MAX_CHUNKS = 8;      // supports fairly big networks
 export const DP_PAIRS_CHUNK_SIZE = 14000;  // keep chunks comfortably sized
 
-// Teleporter pairs (chunked)
+// Transposer pairs (chunked)
 export const DP_TP_PAIRS_COUNT = "chaos:tp_pairs_count";
 export const DP_TP_PAIRS_CHUNK_PREFIX = "chaos:tp_pairs_chunk_";
 export const DP_TP_PAIRS_MAX_CHUNKS = 6;
 export const DP_TP_PAIRS_CHUNK_SIZE = 12000;
 
-// Vacuum hopper registry
-export const DP_VACUUM_HOPPERS = "chaos:vacuum_hoppers_v1_json";
-export const DP_VACUUM_HOPPER_BUFFERS = "chaos:vacuum_hopper_buffers_v1_json";
+// Collector registry
+export const DP_COLLECTOR_REGISTRY = "chaos:collector_registry_v1_json";
+export const DP_COLLECTOR_STATE = "chaos:collector_state_v1_json";
 
 // Sounds (vanilla)
 export const SFX_SELECT_INPUT = "random.click";

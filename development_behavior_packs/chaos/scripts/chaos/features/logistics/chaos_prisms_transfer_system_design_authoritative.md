@@ -41,6 +41,71 @@ Attuned/filter mechanics still apply. If a prism is attached to a furnace-style
 block, exports only read from the output slot. Inserts choose the fuel slot for
 known fuel items, otherwise the input slot. The output slot is never an insert target.
 
+### Collector (World Ingress)
+
+The **Collector** is a world-ingress block that vacuums item entities into a buffer
+and then outputs items to inventories or the prism network. **It is not a prism.**
+
+Core behavior:
+
+* **Intake**: scans nearby item entities (radius-limited, budgeted).
+* **Flux cost**: 1 flux per 1 item vacuumed.
+  * If charge is insufficient, intake fails (no partial drain).
+  * No charge = no suction.
+* **Charging**: sneak-right-click with a flux item to add charge (uses flux value table).
+* **Buffer**: internal, finite capacity (9 slots / stack-based).
+  * Buffer full → suction pauses (no item destruction, no jittery partial pulls).
+* **Redstone disable**: a redstone signal forces the Collector unpowered and pauses intake/output (ready reason `REDSTONE_DISABLED`).
+* **Filters**: right-click with an item toggles it in the filter list.
+  * **Empty filter list = accepts all** (`EMPTY_ACCEPTS_ALL`).
+* **Output order**: `INVENTORY_FIRST`.
+  1. Adjacent inventories (direct insert, adapter rules respected).
+  2. Prism network via beam-range connect.
+* **Network output (beam-range connect)**:
+  * Collector finds a nearby prism within range (max beam length) along a straight,
+    unobstructed line; beams/lenses must align with the line.
+  * No adjacency required.
+  * Collector does **not** route; items enter the normal prism pipeline via the anchor.
+
+Persistence:
+
+* buffer contents
+* filter list
+* stored charge
+* anchor prism key (cached; revalidated)
+* lifetime counters + fail counts
+
+**Insight panel (Collector)**:
+
+1) **Identity**
+   * Block: Collector
+   * Key (dimension + coords)
+2) **Power**
+   * Charge: X / Max
+   * Cost rule: 1 flux per 1 item vacuumed
+   * Ready to vacuum: YES/NO + reason
+3) **Filters**
+   * Filter mode (EMPTY_ACCEPTS_ALL)
+   * Filter count
+   * Bounded filter list (+N more)
+4) **Buffer**
+   * Slots used / capacity
+   * Top buffered stacks (bounded)
+5) **Output / Connectivity**
+   * Adjacent inventory targets (count + first type)
+   * Network anchor status (CONNECTED / NONE / INVALID)
+   * Anchor key (if connected)
+   * Output mode (INVENTORY_FIRST)
+6) **Counters**
+   * Lifetime vacuumed items
+   * Lifetime inserted to inventory
+   * Lifetime handed to network
+   * Fail counts by reason
+
+Implementation note:
+
+* Internal block id is `chaos:collector`.
+
 ---
 
 ## 2. Beams and Network Graph
@@ -362,13 +427,53 @@ When **max-tier refined flux** reaches **max speed**, trigger a special bounded 
 * stores and levels via flux input
 * core progression structure
 
+### Transposer (formerly Teleporter)
+
+* purpose: linked pair that relocates entities/items between two endpoints
+* linking: 1â†”1 pairing via the Transposer Tuner (existing linking flow retained)
+  * prevent self-link
+  * link state persists across reloads
+* power model (Flux):
+  * internal shared charge buffer (charging either end powers both)
+  * overcharge enabled (buffer may exceed the normal max)
+  * if charge is insufficient for a player/NPC teleport, the teleport fails with clear FX + sound; no partial drain
+  * charging: dropping flux items onto a Transposer adds charge (flux tier = charge value)
+  * default buffer: 16 max, 64 overcharge cap
+* costs:
+  * player/NPC teleport: 1 flux
+  * item entity teleport: 0 flux
+* cooldown / anti-ping-pong:
+  * per-entity cooldown tag after teleport
+  * short duration (10â€“20 ticks) to prevent immediate bounce-back
+* explicit non-scope:
+  * logistics orbs / items-in-flight are **not** teleported
+* Insight panel (Transposer):
+  * identity: block name, this-end key, linked-end key (or Unlinked)
+  * link status: UNLINKED / LINKED / LINKED_MISSING / LINKED_UNLOADED
+  * distance (informational only)
+  * power: shared charge X / Max, overcharge enabled
+  * cost rules (player/NPC = 1 flux, item = 0)
+  * ready YES/NO with reason code (NO_LINK, NO_CHARGE, COOLDOWN, DEST_INVALID)
+  * cooldown remaining + last teleport ticks ago
+  * counters: lifetime teleports (players, entities, items) + failed attempts by reason
+* implementation note: internal IDs remain `chaos:teleporter` and `chaos:teleporter_tuner` for compatibility; player-facing text uses "Transposer"
+
 ### Crucible
 
 * overflow sink for any item
 * converts items → flux
 * pressure valve to prevent deadlock
+* conversion uses **flux value table** (EMC-style):
+  * every vanilla item + every Chaos item has a flux value
+  * values live in a dedicated data table (by item id)
+  * conversion is deterministic and inspectable
+  * fallback rule if an item is missing from the table (define a safe default)
+  * implementation note: values are initialized from the item registry with a default,
+    then overridden by explicit item entries
+  * full list is generated into a data file for inspection/editing
+  * **Insight**: targeting a crucible with Insight enabled reveals the default flux value, the configured lens bonus curve (`+X% per lens, capped at Y%`), and a summary of adjacent beam/lens connections so you can confirm the edge metadata matches the intended conversion boost.
 
-### Network Prestige (Crystallizer-driven)
+  ### Network Prestige (Crystallizer-driven)
 
 * applies to **all connected prisms** in the component triggered from
 * spread over time (budgeted)
@@ -381,13 +486,54 @@ When **max-tier refined flux** reaches **max speed**, trigger a special bounded 
 ### Lens
 
 * beam modifier (edge metadata)
-* amplifies beams
+* player-placeable block
+* glass placed into a beam segment **converts to a lens** (color is derived from glass color)
+* has front/back faces; beams and orbs only pass through front/back (no side attachments)
 * color = effect
+* side texture varies by lens color; front/back textures are shared across all colors
+* **lens color variants** (placeholder design):
+  * white: regen
+  * orange: fire resistance
+  * magenta: levitation (short)
+  * light_blue: slow falling
+  * yellow: haste
+  * lime: speed
+  * pink: health boost
+  * gray: resistance
+  * light_gray: night vision
+  * cyan: water breathing
+  * purple: jump boost
+  * blue: conduit power
+  * brown: strength
+  * green: poison (short)
+  * red: weakness
+  * black: blindness (short)
+  * lens blocks may be placed directly or formed by a glass block replacing a beam segment that aligns with the beam axis; the conversion respects the beam axis and neighbor prisms so the final block is always treated as a proper lens and is safe to replace later.
+  * **beam aura**: entities standing inside a chaos beam (not on the lens block) receive the lens effect; the aura is only active while the entity remains in the beam segment.
+    * effect strength/duration scales with lens count on that edge
+    * budgeted scan, no infinite re-apply spam
+  * **foundry/crucible interaction** (optional, color-driven):
+    * lenses can modify conversion efficiency, bonus output chance, or craft speed
+    * keep lens influence **bounded** and inspectable (Insight counters)
+  * **Insight**: the new lens insight provider surfaces the current color/effect, aura configuration (duration, radius, amplifier), speed/FX bonuses, and the status of the adjacent front/back connections so you can confirm a beam is routed correctly before committing items to it.
 
-### Forge
+### Foundry
 
 * consumes flux + beam state
 * uses the network itself as a crafting machine
+* outputs are dropped as items
+* **crafting filter list**:
+  * right-click foundry with an item to toggle it in the filter list
+  * items are crafted in **round-robin order** across the filter list
+  * if list is empty, foundry is idle
+* **flux cost**:
+  * crafting requires total flux value for the target item
+  * foundry stores incoming flux as a buffer and spends it per craft
+  * insufficient flux → wait (no partial craft)
+  * **direct craft**:
+    * right-click with an item acts as a “request” for that item (adds/removes filter)
+    * foundry uses crucible flux values as the cost reference
+  * **Insight**: the foundry insight provider reports the buffer flux stored, the number of filters, the next target in the round-robin cursor, and the lens bonus curve so you can tell whether the unit is waiting on flux, waiting on filters, or ready to craft and drop the next item.
 
 ---
 
@@ -470,3 +616,4 @@ If behavior contradicts this document, fix the code—not the design.
 3. Defined beam-break drop rule (consistent drop location).
 4. Graph-first edge validation (block scans only on rebuild/desync).
 5. Explicit XP + prestige accounting (deterministic and inspectable).
+

@@ -106,150 +106,93 @@
                          "teleporter":  {
                                             "textures":  "textures/blocks/teleporter"
                                         },
-                         "vacuum_hopper":  {
-                                               "textures":  "textures/blocks/vacuum_hopper"
-                                           },
-                         "lens_front_white":  {
-                                                  "textures":  "textures/blocks/lens_front_white"
+                         "transposer_bottom":  {
+                                                   "textures":  "textures/blocks/transposer_bottom"
+                                               },
+                         "transposer_side_unlinked":  {
+                                                          "textures":  "textures/blocks/transposer_side_unlinked"
+                                                      },
+                         "transposer_side_linked_unpowered":  {
+                                                                  "textures":  "textures/blocks/transposer_side_linked_unpowered"
+                                                              },
+                         "transposer_side_charged":  {
+                                                         "textures":  "textures/blocks/transposer_side_charged"
+                                                     },
+                         "transposer_top_unlinked":  {
+                                                         "textures":  "textures/blocks/transposer_top_unlinked"
+                                                     },
+                         "transposer_top_linked_unpowered":  {
+                                                                 "textures":  "textures/blocks/transposer_top_linked_unpowered"
+                                                             },
+                         "transposer_top_charged":  {
+                                                        "textures":  "textures/blocks/transposer_top_charged"
+                                                    },
+                         "transposer_top_overcharged":  {
+                                                            "textures":  "textures/blocks/transposer_top_overcharged"
+                                                        },
+                         "collector_bottom":  {
+                                                  "textures":  "textures/blocks/collector_bottom"
                                               },
-                         "lens_back_white":  {
-                                                 "textures":  "textures/blocks/lens_back_white"
-                                             },
+                         "collector_side_unpowered":  {
+                                                          "textures":  "textures/blocks/collector_side_unpowered"
+                                                      },
+                         "collector_side_powered":  {
+                                                        "textures":  "textures/blocks/collector_side_powered"
+                                                    },
+                         "collector_top_unpowered":  {
+                                                         "textures":  "textures/blocks/collector_top_unpowered"
+                                                     },
+                         "collector_top_powered":  {
+                                                       "textures":  "textures/blocks/collector_top_powered"
+                                                   },
+                         "collector":  {
+                                           "textures":  "textures/blocks/collector_side_unpowered"
+                                       },
                          "lens_side_white":  {
                                                  "textures":  "textures/blocks/lens_side_white"
                                              },
-                         "lens_front_orange":  {
-                                                   "textures":  "textures/blocks/lens_front_orange"
-                                               },
-                         "lens_back_orange":  {
-                                                  "textures":  "textures/blocks/lens_back_orange"
-                                              },
                          "lens_side_orange":  {
                                                   "textures":  "textures/blocks/lens_side_orange"
                                               },
-                         "lens_front_magenta":  {
-                                                    "textures":  "textures/blocks/lens_front_magenta"
-                                                },
-                         "lens_back_magenta":  {
-                                                   "textures":  "textures/blocks/lens_back_magenta"
-                                               },
                          "lens_side_magenta":  {
                                                    "textures":  "textures/blocks/lens_side_magenta"
                                                },
-                         "lens_front_light_blue":  {
-                                                       "textures":  "textures/blocks/lens_front_light_blue"
-                                                   },
-                         "lens_back_light_blue":  {
-                                                      "textures":  "textures/blocks/lens_back_light_blue"
-                                                  },
                          "lens_side_light_blue":  {
                                                       "textures":  "textures/blocks/lens_side_light_blue"
                                                   },
-                         "lens_front_yellow":  {
-                                                   "textures":  "textures/blocks/lens_front_yellow"
-                                               },
-                         "lens_back_yellow":  {
-                                                  "textures":  "textures/blocks/lens_back_yellow"
-                                              },
                          "lens_side_yellow":  {
                                                   "textures":  "textures/blocks/lens_side_yellow"
                                               },
-                         "lens_front_lime":  {
-                                                 "textures":  "textures/blocks/lens_front_lime"
-                                             },
-                         "lens_back_lime":  {
-                                                "textures":  "textures/blocks/lens_back_lime"
-                                            },
                          "lens_side_lime":  {
                                                 "textures":  "textures/blocks/lens_side_lime"
-                                            },
-                         "lens_front_pink":  {
-                                                 "textures":  "textures/blocks/lens_front_pink"
-                                             },
-                         "lens_back_pink":  {
-                                                "textures":  "textures/blocks/lens_back_pink"
                                             },
                          "lens_side_pink":  {
                                                 "textures":  "textures/blocks/lens_side_pink"
                                             },
-                         "lens_front_gray":  {
-                                                 "textures":  "textures/blocks/lens_front_gray"
-                                             },
-                         "lens_back_gray":  {
-                                                "textures":  "textures/blocks/lens_back_gray"
-                                            },
                          "lens_side_gray":  {
                                                 "textures":  "textures/blocks/lens_side_gray"
                                             },
-                         "lens_front_light_gray":  {
-                                                       "textures":  "textures/blocks/lens_front_light_gray"
-                                                   },
-                         "lens_back_light_gray":  {
-                                                      "textures":  "textures/blocks/lens_back_light_gray"
-                                                  },
                          "lens_side_light_gray":  {
                                                       "textures":  "textures/blocks/lens_side_light_gray"
                                                   },
-                         "lens_front_cyan":  {
-                                                 "textures":  "textures/blocks/lens_front_cyan"
-                                             },
-                         "lens_back_cyan":  {
-                                                "textures":  "textures/blocks/lens_back_cyan"
-                                            },
                          "lens_side_cyan":  {
                                                 "textures":  "textures/blocks/lens_side_cyan"
                                             },
-                         "lens_front_purple":  {
-                                                   "textures":  "textures/blocks/lens_front_purple"
-                                               },
-                         "lens_back_purple":  {
-                                                  "textures":  "textures/blocks/lens_back_purple"
-                                              },
                          "lens_side_purple":  {
                                                   "textures":  "textures/blocks/lens_side_purple"
                                               },
-                         "lens_front_blue":  {
-                                                 "textures":  "textures/blocks/lens_front_blue"
-                                             },
-                         "lens_back_blue":  {
-                                                "textures":  "textures/blocks/lens_back_blue"
-                                            },
                          "lens_side_blue":  {
                                                 "textures":  "textures/blocks/lens_side_blue"
                                             },
-                         "lens_front_brown":  {
-                                                  "textures":  "textures/blocks/lens_front_brown"
-                                              },
-                         "lens_back_brown":  {
-                                                 "textures":  "textures/blocks/lens_back_brown"
-                                             },
                          "lens_side_brown":  {
                                                  "textures":  "textures/blocks/lens_side_brown"
-                                             },
-                         "lens_front_green":  {
-                                                  "textures":  "textures/blocks/lens_front_green"
-                                              },
-                         "lens_back_green":  {
-                                                 "textures":  "textures/blocks/lens_back_green"
                                              },
                          "lens_side_green":  {
                                                  "textures":  "textures/blocks/lens_side_green"
                                              },
-                         "lens_front_red":  {
-                                                "textures":  "textures/blocks/lens_front_red"
-                                            },
-                         "lens_back_red":  {
-                                               "textures":  "textures/blocks/lens_back_red"
-                                           },
                          "lens_side_red":  {
                                                "textures":  "textures/blocks/lens_side_red"
                                            },
-                         "lens_front_black":  {
-                                                  "textures":  "textures/blocks/lens_front_black"
-                                              },
-                         "lens_back_black":  {
-                                                 "textures":  "textures/blocks/lens_back_black"
-                                             },
                          "lens_side_black":  {
                                                  "textures":  "textures/blocks/lens_side_black"
                                              }

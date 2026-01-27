@@ -1,6 +1,7 @@
 // scripts/chaos/features/logistics/runtime/registry/linkGraph.js
-import { BEAM_ID, MAX_BEAM_LEN, isPrismBlock, isEndpointId, getPrismTier } from "../../config.js";
+import { LENS_ID, MAX_BEAM_LEN, isPrismBlock, isEndpointId, getPrismTier, isBeamId } from "../../config.js";
 import { beamAxisMatchesDir } from "../../network/beams/axis.js";
+import { lensAllowsDir, getLensColor } from "../../util/lens.js";
 import { key, parseKey } from "../../keys.js";
 import { loadLinkGraph, saveLinkGraph } from "../../persistence/storage.js";
 import { enqueueBuildJob, enqueueCollapseJob } from "../../network/beams/jobs.js";
@@ -152,6 +153,12 @@ export function createLinkGraph(deps) {
       existing.length = edge.length;
       existing.dir = edge.dir;
       existing.tier = edge.tier;
+      const prevLens = existing.meta?.lensCount | 0;
+      const nextLens = edge.meta?.lensCount | 0;
+      const prevColor = existing.meta?.lensColor || null;
+      const nextColor = edge.meta?.lensColor || null;
+      existing.meta = edge.meta || existing.meta || null;
+      if (prevLens !== nextLens || prevColor !== nextColor) markDirty();
       existing.pendingUntilTick = existing.pendingUntilTick || edge.pendingUntilTick;
       return existing;
     }
@@ -190,7 +197,16 @@ export function createLinkGraph(deps) {
         y: parsedA.y + edge.dir.dy * i,
         z: parsedA.z + edge.dir.dz * i,
       });
-      if (!b || b.typeId !== BEAM_ID) return false;
+      if (!b) return false;
+      if (isBeamId(b.typeId)) {
+        if (!beamAxisMatchesDir(b, edge.dir.dx, edge.dir.dy, edge.dir.dz)) return false;
+        continue;
+      }
+      if (b.typeId === LENS_ID) {
+        if (!lensAllowsDir(b, edge.dir.dx, edge.dir.dy, edge.dir.dz)) return false;
+        continue;
+      }
+      return false;
     }
     return true;
   }
@@ -206,7 +222,7 @@ export function createLinkGraph(deps) {
     return isNodeBlock(blockA) && isNodeBlock(blockB);
   }
 
-  function buildEdgeFromScan(fromKey, fromPos, dir, length, tier, nowTick) {
+  function buildEdgeFromScan(fromKey, fromPos, dir, length, tier, nowTick, lensCount = 0, lensColor = null) {
     const toKey = key(fromPos.dimId, fromPos.x + dir.dx * length, fromPos.y + dir.dy * length, fromPos.z + dir.dz * length);
     const normalized = normalizeEdgeEndpoints(fromKey, toKey, dir);
     const id = edgeIdFor(normalized.aKey, normalized.bKey);
@@ -218,6 +234,7 @@ export function createLinkGraph(deps) {
       dir: normalized.dir,
       length: length | 0,
       tier,
+      meta: { tier: tier | 0, lensCount: lensCount | 0, lensColor: lensColor || null },
       state: "pending",
       epoch: 1,
       pendingUntilTick: (nowTick | 0) + clampInt(cfg.linkBuildTicks, 1, 200),
@@ -227,6 +244,8 @@ export function createLinkGraph(deps) {
 
   function scanEdgeFromNode(dim, nodePos, dir) {
     let sawBeam = false;
+    let lensCount = 0;
+    let lensColor = null;
     for (let i = 1; i <= MAX_BEAM_LEN; i++) {
       const x = nodePos.x + dir.dx * i;
       const y = nodePos.y + dir.dy * i;
@@ -240,7 +259,7 @@ export function createLinkGraph(deps) {
       }
       const id = b.typeId;
       if (id === "minecraft:air") continue;
-      if (id === BEAM_ID) {
+      if (isBeamId(id)) {
         sawBeam = true;
         if (!beamAxisMatchesDir(b, dir.dx, dir.dy, dir.dz)) {
           if (diagCollector) {
@@ -250,8 +269,20 @@ export function createLinkGraph(deps) {
         }
         continue;
       }
+      if (id === LENS_ID) {
+        sawBeam = true;
+        if (!lensAllowsDir(b, dir.dx, dir.dy, dir.dz)) {
+          if (diagCollector) {
+            diagCollector({ code: "LensWrongAxis", blockId: id, at: i });
+          }
+          return null;
+        }
+        lensCount++;
+        if (!lensColor) lensColor = getLensColor(b);
+        continue;
+      }
       if (isNodeBlock(b)) {
-        return { len: i, nodeType: getNodeType(b) };
+        return { len: i, nodeType: getNodeType(b), lensCount, lensColor };
       }
       if (diagCollector) {
         const code = sawBeam ? "Obstructed" : "WrongBlock";
@@ -294,12 +325,11 @@ export function createLinkGraph(deps) {
     for (const d of dirs) {
       const hit = scanEdgeFromNode(dim, fromPos, d);
       if (!hit) continue;
-      const edge = buildEdgeFromScan(nodeKey, fromPos, d, hit.len, tier, nowTick);
+      const edge = buildEdgeFromScan(nodeKey, fromPos, d, hit.len, tier, nowTick, hit.lensCount || 0, hit.lensColor || null);
       found.add(edge.edgeId);
-      if (!edges.has(edge.edgeId)) {
-        addOrUpdateEdge(edge, nowTick);
-        added++;
-      }
+      const existed = edges.has(edge.edgeId);
+      addOrUpdateEdge(edge, nowTick);
+      if (!existed) added++;
     }
 
     const existing = getEdgesForNode(nodeKey);
@@ -482,7 +512,7 @@ export function createLinkGraph(deps) {
         bKey: edge.bKey,
         dimId: edge.dimId,
         length: edge.length,
-        meta: { tier: edge.tier | 0 },
+        meta: { tier: edge.tier | 0, lensCount: edge.meta?.lensCount | 0, lensColor: edge.meta?.lensColor || null },
       });
     }
     saveLinkGraph(world, list);
@@ -498,6 +528,8 @@ export function createLinkGraph(deps) {
       const id = entry.edgeId || edgeIdFor(entry.aKey, entry.bKey);
       if (!entry.aKey || !entry.bKey || !entry.dimId) continue;
       const metaTier = entry.meta?.tier ?? entry.tier;
+      const metaLensCount = entry.meta?.lensCount ?? 0;
+      const metaLensColor = entry.meta?.lensColor ?? null;
       const edge = {
         edgeId: id,
         aKey: entry.aKey,
@@ -506,6 +538,7 @@ export function createLinkGraph(deps) {
         dir: entry.dir || deriveDirFromKeys(entry.aKey, entry.bKey),
         length: entry.length | 0,
         tier: metaTier | 0,
+        meta: { tier: metaTier | 0, lensCount: metaLensCount | 0, lensColor: metaLensColor },
         state: "pending",
         epoch: 1,
         pendingUntilTick: 0,
@@ -526,6 +559,34 @@ export function createLinkGraph(deps) {
     getEdgeBetweenKeys,
     getNeighbors,
     buildPathFromParents,
+    getEdgeMetaForSegmentKey(segKey) {
+      const set = segmentToEdges.get(segKey);
+      if (!set || set.size === 0) return null;
+      let best = null;
+      let bestLens = -1;
+      for (const id of set) {
+        const edge = edges.get(id);
+        if (!edge) continue;
+        const lens = edge.meta?.lensCount | 0;
+        if (lens > bestLens) {
+          bestLens = lens;
+          best = edge.meta || null;
+        }
+      }
+      return best;
+    },
+    getSegmentKeysSample(count = 16, cursor = 0) {
+      const keys = Array.from(segmentToEdges.keys());
+      const total = keys.length;
+      if (total === 0) return { keys: [], cursor: 0, total: 0 };
+      const start = Math.abs(cursor | 0) % total;
+      const take = Math.max(0, Math.min(total, count | 0));
+      const out = [];
+      for (let i = 0; i < take; i++) {
+        out.push(keys[(start + i) % total]);
+      }
+      return { keys: out, cursor: (start + take) % total, total };
+    },
     markNodeDirty,
     rebuildDirtyBudgeted,
     validateEdgesBudgeted,

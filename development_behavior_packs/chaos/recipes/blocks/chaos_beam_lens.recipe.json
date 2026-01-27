@@ -1,0 +1,17 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:recipe_shaped": {
+    "description": { "identifier": "chaos:beam_lens" },
+    "tags": ["crafting_table"],
+    "pattern": [
+      " G ",
+      "GFG",
+      " G "
+    ],
+    "key": {
+      "G": { "item": "minecraft:glass" },
+      "F": { "item": "chaos:flux_1" }
+    },
+    "result": { "item": "chaos:beam_lens", "count": 1 }
+  }
+}
